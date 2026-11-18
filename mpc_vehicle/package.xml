@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mpc_vehicle</name><version>0.1.0</version>
+  <description>Guarded low-speed vehicle commissioning for existing MPC</description>
+  <maintainer email="maintainer@example.invalid">JSND MPC</maintainer><license>MIT</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>controller</exec_depend><exec_depend>stack_master</exec_depend>
+  <exec_depend>rclpy</exec_depend><exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>ament_index_python</exec_depend><exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend><exec_depend>ackermann_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend><exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend><exec_depend>std_srvs</exec_depend>
+  <exec_depend>launch_ros</exec_depend><exec_depend>python3-yaml</exec_depend>
+  <exec_depend>vesc_driver</exec_depend><exec_depend>vesc_ackermann</exec_depend>
+  <exec_depend>urg_node</exec_depend><exec_depend>particle_filter</exec_depend>
+  <exec_depend>robot_localization</exec_depend><exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

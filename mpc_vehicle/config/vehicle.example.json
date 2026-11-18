@@ -1,0 +1,21 @@
+{
+  "vehicle_id": "UNVERIFIED",
+  "map_dir": "/REPLACE/with/copied/11_16_3",
+  "vehicle_config": "/REPLACE/with/copied/CAR/vehicle_config.yaml",
+  "static_transforms": "/REPLACE/with/copied/CAR/static_transforms.yaml",
+  "wheelbase": 0.324,
+  "pose_to_rear_axle_m": 0.0,
+  "max_steer_rad": 0.15,
+  "max_steer_rate_radps": 0.3,
+  "speed_limit_mps": 0.2,
+  "acceleration_mps2": 0.2,
+  "geometry_confirmed": false,
+  "bench_authorized": false,
+  "independent_estop_verified": false,
+  "actuator_watchdog_verified": false,
+  "watchdog_timeout_s": 0.0,
+  "hardware_verification_record": "",
+  "estop_source_node": "/vehicle_safety",
+  "joy_source_node": "/joy_node",
+  "drive_approval": ""
+}
