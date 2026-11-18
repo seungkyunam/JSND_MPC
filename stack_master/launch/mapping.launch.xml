@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<!--
+  mapping.launch.xml — build a new map with cartographer SLAM (real car).
+
+  Brings up the real-car sensors + mux (low_level, virtual injection off) and the
+  cartographer SLAM stack. Drive the car around the track, then trigger finish_map
+  (RViz "2D Goal Pose") to save <map>.{pbstream,png,yaml} under stack_master/maps/<map>/.
+
+  Sim is intentionally NOT handled here. Generate the global raceline afterwards
+  with raceline_generator.launch.xml.
+
+  While mapping the car is locked to a fixed, forward-only teleop: hold LT to roll
+  at `mapping_speed` (1.0 m/s), steer with the right stick, nothing else. Start the
+  joy driver yourself (`ros2 run joy joy_node`) - it is not launched here.
+
+    ros2 launch stack_master mapping.launch.xml map:=YOURMAP
+    ros2 launch stack_master mapping.launch.xml map:=YOURMAP mapping_speed:=1.5
+-->
+<launch>
+  <arg name="map"                            description="Map name (folder created under stack_master/maps/)"/>
+  <arg name="vehicle_config" default="$(find-pkg-share stack_master)/config/CAR/vehicle_config.yaml"/>
+  <arg name="use_estop"     default="false"  description="Use emergency stop (true) or not (false)"/>
+  <!-- Constant-speed mapping teleop. mapping_joy_node wraps the raw pad into
+       /joy_mapping (LT = drive forward, right stick = steer, nothing else), and
+       the mux's full-scale joy speed is pinned to mapping_speed so LT means
+       exactly that speed. Set mapping_teleop:=false to drive the raw pad at the
+       usual 4.0 m/s instead. The `joy` node is NOT started here - run it
+       yourself, e.g. `ros2 run joy joy_node`. -->
+  <arg name="mapping_teleop" default="true"   description="Route the pad through mapping_joy_node (fixed-speed, forward-only)"/>
+  <arg name="mapping_speed"  default="1.0"    description="Speed (m/s) commanded while LT is held"/>
+  <arg name="trigger_axis"   default="2"      description="Joy axis for LT (Xbox layout on the Linux joy node)"/>
+  <arg name="trigger_button" default="-1"     description="Joy button for LT if the pad reports it digitally; -1 = use trigger_axis"/>
+  <arg name="steer_axis"     default="3"      description="Joy axis for steering (right stick X)"/>
+
+  <let name="mux_joy_topic" value="/joy_mapping" if="$(var mapping_teleop)"/>
+  <let name="mux_joy_topic" value="/joy"     unless="$(var mapping_teleop)"/>
+  <let name="mux_joy_speed" value="$(var mapping_speed)" if="$(var mapping_teleop)"/>
+  <let name="mux_joy_speed" value="4.0"             unless="$(var mapping_teleop)"/>
+
+  <let name="cartographer_config_dir" value="$(find-pkg-share stack_master)/config"/>
+  <let name="maps_save_dir" value="$(find-pkg-prefix stack_master)/../../src/racing_stack/stack_master/maps/$(var map)"/>
+
+  <!-- ===== Sensors + mux (real hardware; no virtual injection while mapping) ===== -->
+  <include file="$(find-pkg-share stack_master)/launch/low_level.launch.xml">
+    <arg name="sim"            value="false"/>
+    <arg name="map"            value="$(var map)"/>
+    <arg name="vehicle_config" value="$(var vehicle_config)"/>
+    <arg name="use_estop"      value="$(var use_estop)"/>
+    <arg name="virtual"        value="false"/>
+    <arg name="joy_topic"      value="$(var mux_joy_topic)"/>
+    <arg name="joy_max_speed"  value="$(var mux_joy_speed)"/>
+  </include>
+
+  <!-- Fixed-speed mapping teleop: hold LT to roll forward at mapping_speed, steer
+       with the right stick. Forward only, and autodrive can not be engaged. -->
+  <node pkg="stack_master" exec="mapping_joy_node.py" name="mapping_joy" output="screen"
+        if="$(var mapping_teleop)">
+    <param name="joy_in_topic"   value="/joy"/>
+    <param name="joy_out_topic"  value="$(var mux_joy_topic)"/>
+    <param name="trigger_axis"   value="$(var trigger_axis)"   type="int"/>
+    <param name="trigger_button" value="$(var trigger_button)" type="int"/>
+    <param name="steer_axis"     value="$(var steer_axis)"     type="int"/>
+  </node>
+
+  <!-- Remove the measured zero-rate gyro offset before Cartographer integrates IMU data. -->
+  <node pkg="stack_master" exec="imu_bias_corrector_node.py"
+        name="imu_bias_corrector" output="screen">
+    <param from="$(var vehicle_config)"/>
+  </node>
+
+  <!-- ===== Cartographer SLAM (corrected IMU + VESC odometry: mapping_2d.lua) =====
+       /odom -> /vesc/odom feeds cartographer's pose extrapolator only
+       (use_odometry = true, odometry_*_weight = 0), giving the scan matcher a
+       translation prior between scans; heading still comes from the gyro.
+
+       cartographer_node broadcasts NO TF here (mapping_2d.lua: publish_to_tf =
+       false); ekf_localization below owns map->base_link outright. low_level's
+       odom_tf therefore stays false: this car has no wheel encoder, and putting
+       vesc_to_odom's ERPM dead reckoning in the middle of the TF chain makes
+       the car and the live /scan slide across the map in RViz. Feeding that
+       same odometry to cartographer as a prior is fine (it is bounded by the
+       next scan match); letting it carry TF is not. See
+       ekf_cartographer_mapping.yaml's header. -->
+  <node pkg="cartographer_ros" exec="cartographer_node" name="cartographer_node" output="screen"
+        args="-configuration_directory $(var cartographer_config_dir) -configuration_basename mapping_2d.lua -collect_metrics --ros-args --log-level warn">
+    <param name="use_sim_time"  value="false"/>
+    <remap from="/imu" to="/vesc/sensors/imu_corrected"/>
+    <remap from="/odom" to="/vesc/odom"/>
+  </node>
+
+  <node pkg="cartographer_ros" exec="cartographer_occupancy_grid_node"
+        name="cartographer_occupancy_grid_node" output="screen"
+        args="-resolution 0.05 -publish_period_sec 1.0">
+    <param name="use_sim_time" value="false"/>
+    <remap from="/map" to="/map_carto"/>
+  </node>
+
+  <node pkg="stack_master" exec="pose_to_odom_node.py" name="pose_to_odom_node" output="screen">
+    <param name="use_sim_time" value="false"/>
+    <remap from="pose_in"  to="/tracked_pose"/>
+    <remap from="odom_out" to="/tracked_pose/odom"/>
+  </node>
+
+  <node pkg="robot_localization" exec="ekf_node" name="ekf_localization" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/ekf_cartographer_mapping.yaml"/>
+    <param name="use_sim_time" value="false"/>
+    <remap from="odometry/filtered" to="/car_state/odom"/>
+  </node>
+
+  <!-- Save the map: click RViz "2D Goal Pose" to finish SLAM + write the files. -->
+  <node pkg="stack_master" exec="finish_map.py" name="finish_map_node" output="screen">
+    <param name="map_name" value="$(var map)" type="str"/>
+    <param name="maps_dir" value="$(var maps_save_dir)"/>
+  </node>
+</launch>

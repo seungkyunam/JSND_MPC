@@ -1,0 +1,201 @@
+{
+  "environment": {
+    "python": "3.10.12",
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+    "numpy": "1.26.4",
+    "scipy": "1.15.3",
+    "osqp": "1.1.3"
+  },
+  "synthetic_config_not_vehicle_calibration": {
+    "wheelbase": 0.32,
+    "max_steer": 0.53,
+    "max_steer_rate": 2.0,
+    "dt": 0.02,
+    "horizon": 25,
+    "q_position": 12.0,
+    "q_heading": 4.0,
+    "r_steer": 0.2,
+    "r_rate": 1.0,
+    "terminal_scale": 3.0,
+    "solver_time_limit": 0.008,
+    "deadline": 0.015,
+    "max_iter": 400,
+    "max_tracking_error": 1.0,
+    "max_heading_error": 0.7
+  },
+  "scope": "No ROS/DDS/visualization/actuator timing; module cold/warm timing and mocked-message Controller.main_loop",
+  "paths": {
+    "straight": {
+      "module_all": {
+        "count": 200,
+        "p50_ms": 1.6012055000373948,
+        "p95_ms": 2.62923939974371,
+        "p99_ms": 3.0202588097108665,
+        "max_ms": 3.933193000193569,
+        "over_20ms": 0
+      },
+      "module_warm": {
+        "count": 199,
+        "p50_ms": 1.5982720001375128,
+        "p95_ms": 2.6236975001665996,
+        "p99_ms": 2.9890185000112983,
+        "max_ms": 3.1272590003936784,
+        "over_20ms": 0
+      },
+      "module_cold_ms": 3.933193000193569,
+      "osqp_all": {
+        "count": 200,
+        "p50_ms": 0.0487635,
+        "p95_ms": 0.07875269999999997,
+        "p99_ms": 0.09790234999999987,
+        "max_ms": 0.21654600000000002,
+        "over_20ms": 0
+      },
+      "statuses": {
+        "solved": 200
+      },
+      "rms_cross_track_m": 0.01988410159554919,
+      "max_cross_track_m": 0.08,
+      "controller_main_loop_all": {
+        "count": 200,
+        "p50_ms": 2.9381759998159396,
+        "p95_ms": 4.290213150034105,
+        "p99_ms": 4.9976563100881295,
+        "max_ms": 5.625813999813545,
+        "over_20ms": 0
+      },
+      "controller_statuses": {
+        "solved": 200
+      }
+    },
+    "sharp_curve": {
+      "module_all": {
+        "count": 100,
+        "p50_ms": 1.4198720000422327,
+        "p95_ms": 1.9319269997367883,
+        "p99_ms": 2.0836160499857233,
+        "max_ms": 2.396956000211503,
+        "over_20ms": 0
+      },
+      "module_warm": {
+        "count": 99,
+        "p50_ms": 1.4198630001374113,
+        "p95_ms": 1.9010373999662986,
+        "p99_ms": 2.0761360597134626,
+        "max_ms": 2.080450999983441,
+        "over_20ms": 0
+      },
+      "module_cold_ms": 2.396956000211503,
+      "osqp_all": {
+        "count": 100,
+        "p50_ms": 0.053627999999999995,
+        "p95_ms": 0.09240649999999999,
+        "p99_ms": 0.1075151500000001,
+        "max_ms": 0.130597,
+        "over_20ms": 0
+      },
+      "statuses": {
+        "solved": 100
+      },
+      "rms_cross_track_m": 0.027832581732431652,
+      "max_cross_track_m": 0.07962216346564091,
+      "controller_main_loop_all": {
+        "count": 100,
+        "p50_ms": 2.664526999978989,
+        "p95_ms": 3.6244731999204305,
+        "p99_ms": 3.665648980077094,
+        "max_ms": 3.690595000080066,
+        "over_20ms": 0
+      },
+      "controller_statuses": {
+        "solved": 100
+      }
+    },
+    "s_curve": {
+      "module_all": {
+        "count": 250,
+        "p50_ms": 1.5489504999095516,
+        "p95_ms": 2.173726100204476,
+        "p99_ms": 3.0009293099828933,
+        "max_ms": 5.600472999958583,
+        "over_20ms": 0
+      },
+      "module_warm": {
+        "count": 249,
+        "p50_ms": 1.5489229999730014,
+        "p95_ms": 2.1630128000651894,
+        "p99_ms": 3.0012181199890624,
+        "max_ms": 5.600472999958583,
+        "over_20ms": 0
+      },
+      "module_cold_ms": 2.343693000057101,
+      "osqp_all": {
+        "count": 250,
+        "p50_ms": 0.053958500000000006,
+        "p95_ms": 0.08514824999999997,
+        "p99_ms": 0.11805036999999985,
+        "max_ms": 0.198927,
+        "over_20ms": 0
+      },
+      "statuses": {
+        "solved": 250
+      },
+      "rms_cross_track_m": 0.017629933543827074,
+      "max_cross_track_m": 0.07468354959469989,
+      "controller_main_loop_all": {
+        "count": 250,
+        "p50_ms": 2.8767260002950934,
+        "p95_ms": 4.366114099980221,
+        "p99_ms": 5.927669060060902,
+        "max_ms": 7.681099999899743,
+        "over_20ms": 0
+      },
+      "controller_statuses": {
+        "solved": 250
+      }
+    },
+    "static_avoidance": {
+      "module_all": {
+        "count": 350,
+        "p50_ms": 1.4897569999448024,
+        "p95_ms": 2.190715749884476,
+        "p99_ms": 2.898452590065966,
+        "max_ms": 4.67299699994328,
+        "over_20ms": 0
+      },
+      "module_warm": {
+        "count": 349,
+        "p50_ms": 1.4895760000399605,
+        "p95_ms": 2.1921169998677206,
+        "p99_ms": 2.9049566800676865,
+        "max_ms": 4.67299699994328,
+        "over_20ms": 0
+      },
+      "module_cold_ms": 2.15737700000318,
+      "osqp_all": {
+        "count": 350,
+        "p50_ms": 0.0511345,
+        "p95_ms": 0.08778920000000004,
+        "p99_ms": 0.11767841999999995,
+        "max_ms": 0.154038,
+        "over_20ms": 0
+      },
+      "statuses": {
+        "solved": 350
+      },
+      "rms_cross_track_m": 0.016517934003297048,
+      "max_cross_track_m": 0.0799948841997579,
+      "controller_main_loop_all": {
+        "count": 350,
+        "p50_ms": 2.990892000070744,
+        "p95_ms": 4.2439269999704266,
+        "p99_ms": 5.016047450149016,
+        "max_ms": 5.449075000342418,
+        "over_20ms": 0
+      },
+      "controller_statuses": {
+        "solved": 350
+      }
+    }
+  }
+}

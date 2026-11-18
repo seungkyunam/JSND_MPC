@@ -1,0 +1,75 @@
+min_horizon: 0.0
+# [m] How far ahead this planner is held responsible. MUST stay under the length of
+# the path it publishes (stack_master/config/static_avoidance_planner.yaml
+# min_path_end_m, capped at a third of the lap), or a static obstacle between the
+# path's end and this horizon reads as "beyond the path" and blocks the avoidance
+# for as long as it is in view.
+# 10.0 -> 7.0 -> 8.0 -> 10.0: raised in lockstep with the planner's lookahead
+# (6 -> 10) and min_path_end_m (8 -> 10). Without this the state machine keeps
+# calling the raceline "free" past the old horizon, so OVERTAKE still waits for
+# the obstacle to close inside it and the longer, gentler approach the planner
+# can now build is never actually driven. Matches min_path_end_m (10.0) exactly,
+# same relationship as the previous 7.0 <= 8.0.
+# ** NOT capped at track_length/3 at runtime, unlike the planner's own lookahead
+# and min_path_end_m. ** Safe on the tuned maps -- 0818test (36.70 m -> cap
+# 12.23), 0815test3 (34.62 -> 11.54), f (77.65), map_test (86.46). On every
+# sub-30 m map here -- 0804test 17.79, 0804testt2 20.49, 0814test1 20.60,
+# 0814test2 22.31, 0815test1 22.48, 0805test1 22.75, 0810test1 22.84 -- the
+# planner's min_path_end_m is capped to 5.93-7.61 m while this stays 10.0, which
+# breaks the invariant above and brings back "stuck in TRAILING/GB_TRACK on a
+# static obstacle beyond path end". Lower this to track_length/3 on those maps.
+max_horizon: 10.0
+# [m] Extra lateral clearance demanded of the STATIC avoidance path before
+# _check_free_frenet (static/geom branch) calls it safe:
+#
+#   free_dist = |path_d - obs.d_center| - obs.size/2 - gb_ego_width_m/2
+#   blocked when  free_dist < lateral_width_m * clip(gap / free_scaling_ref, 0, 1)
+#
+# This is a RE-VALIDATION against the obstacle's current reading, not a second
+# opinion on the planner's geometry. stack_master/config/static_avoidance_planner
+# .yaml min_free_dist_m (0.16) is the authority and is checked on the finished
+# path before it is ever published; this value only has to be loose enough that a
+# different frame's measurement of the SAME obstacle does not reject a path the
+# planner just accepted.
+#
+# 0.155 -> 0.12. The invariant min_free_dist_m >= this held at 0.160 >= 0.155,
+# but with only 5 mm of slack -- against an obstacle whose measured `size` swings
+# 0.34 m frame to frame (logfile/state_machine_20260822_173630.log, obs id 8:
+# 0.16 -> 0.50 m, so +-0.17 m on each edge). The result was 24 PATH_BLOCKED
+# samples on paths the planner had just published as clear, with the state
+# machine measuring free_dist at 0.088-0.153 where the planner had measured
+# >= 0.160. Across the 2026-08-22 runs the static/geom rejections cluster at
+# median 0.119, p75 0.145 -- i.e. almost all of them are inside that jitter band
+# rather than genuinely tight.
+#
+# 0.155 -> 0.12 -> 0.09, tracking min_free_dist_m 0.16 -> 0.13 so the pair keeps
+# the same 0.04 m of tolerance. Do NOT let the two converge or the jitter
+# reappears. 0.09 still blocks every genuinely bad path: replaying the 290
+# static/geom decisions of the 2026-08-22 runs, all 73 samples with free_dist < 0
+# (the ones where the car really would have hit the obstacle) are still rejected,
+# while total PATH_BLOCKED falls 288 -> 115.
+lateral_width_m: 0.09
+free_scaling_reference_distance_m: 2.0
+# [s] How old the static_otwpnts message may be and still count as "fresh" for the
+# OVERTAKE *entry* gate (_static_path_available()). 0.25 s was tuned for sim, where
+# the planner->state_machine hop is effectively free. On the real car, logfile/
+# state_machine_20260815_154036.log shows the message DOES arrive with real
+# waypoints (raw_wpnts>0 in 133/312 samples) but its header stamp is already
+# 0.40-1.04 s old (mean 0.59 s) by the time state_machine reads it -- every single
+# one past the old 0.25 s threshold, so path_exists never went true and the car sat
+# in TRAILING/GB_TRACK the whole run despite the planner successfully building a
+# path (candidate_valid=true) the entire time. 1.5 s gives margin over the observed
+# max and is safe for STATIC specifically: the obstacle does not move, so a
+# geometrically stale-by-a-second path is still valid, and _check_free_frenet
+# re-validates clearance against the obstacle's CURRENT position every loop
+# regardless of the cached path's age. Do NOT copy this into
+# dynamic_avoidance_planner.yaml -- a moving obstacle's avoidance path really does
+# go stale that fast. The real fix is finding why this one hop takes up to 1 s
+# (CPU load / QoS depth / executor starvation on the car) -- this value only stops
+# that latency from silently discarding an otherwise-good path in the meantime.
+latest_threshold: 1.5
+hyst_timer_sec: 4.0
+killing_timer_sec: 10.0
+on_spline_front_horizon_thres_m: 0.5
+on_spline_min_dist_thres_m: 0.5
+is_closed: False

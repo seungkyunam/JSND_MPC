@@ -1,0 +1,127 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Arguments -->
+  <arg name="sim"            default="false"      description="Use simulator (true) or real hardware (false)"/>
+  <arg name="map"            default=""           description="Map name (required for sim, and for virtual:=true)"/>
+  <let name="config_dir" value="$(find-pkg-share stack_master)/config/SIM" if="$(var sim)"/>
+  <let name="config_dir" value="$(find-pkg-share stack_master)/config/CAR" unless="$(var sim)"/>
+  <arg name="vehicle_config" default="$(var config_dir)/vehicle_config.yaml"/>
+  <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
+  <!-- virtual_perception (scan_overlay + virtual opponent + static obstacles).
+       Defaults ON in sim (preserves prior behavior), OFF on the real car; toggle
+       with virtual:=true (e.g. to overlay a virtual opponent onto the real LiDAR). -->
+  <arg name="virtual"        default="$(var sim)"          description="Inject virtual opponent/obstacles into the perception stack"/>
+  <!-- Human-drive joy source + full-scale speed for it. mapping.launch.xml
+       overrides both to route the mux through mapping_joy_node at a fixed,
+       reduced speed; everything else keeps the raw pad at 4.0 m/s. -->
+  <arg name="joy_topic"      default="/joy"                description="Joy topic simple_mux honours for human drive"/>
+  <arg name="joy_max_speed"  default="4.0"                 description="Speed (m/s) at full throttle deflection on joy_topic"/>
+  <!-- odom->base_link TF (dead reckoning). Off by default: sim doesn't run this
+       node at all, and mapping/kiss either own map->base_link outright or fuse
+       odometry internally. localization.launch.xml turns this on for
+       localization:=pf|cartographer, where a downstream EKF owns map->odom and
+       needs this node to supply the other half of the REP-105 chain (see
+       ekf_pf.yaml / ekf_cartographer.yaml). -->
+  <arg name="odom_tf"        default="false"               description="Have vesc_to_odom_node publish odom->base_link TF"/>
+  <arg name="scan_viz_hz"    default="5.0"                 description="[Hz] Rate of the /scan_viz mirror that RViz watches (localisation always gets the full 40 Hz /scan). 0 disables the mirror. Live-tunable: ros2 param set /scan_throttle rate_hz X"/>
+
+  <!-- map paths (needed by the simulator and by virtual_perception in both sim and real) -->
+  <let name="maps_dir" value="$(find-pkg-share stack_master)/maps"/>
+  <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
+
+  <!-- ========== REAL HARDWARE SENSORS ========== -->
+  <group unless="$(var sim)">
+    <!-- VESC: motor driver + ackermann converter + wheel odometry (/vesc/odom) -->
+    <group>
+      <push_ros_namespace namespace="vesc"/>
+      <node pkg="vesc_driver" exec="vesc_driver_node" name="vesc_driver_node" output="screen">
+        <param from="$(var vehicle_config)"/>
+      </node>
+      <include file="$(find-pkg-share vesc_ackermann)/launch/ackermann_to_vesc_node.launch.xml">
+        <arg name="vesc_config" value="$(var vehicle_config)"/>
+      </include>
+      <include file="$(find-pkg-share vesc_ackermann)/launch/vesc_to_odom_node.launch.xml">
+        <arg name="vesc_config" value="$(var vehicle_config)"/>
+        <arg name="publish_tf"  value="$(var odom_tf)"/>
+      </include>
+    </group>
+
+    <!-- LiDAR: publishes /scan (frame_id: laser). With virtual:=true the raw scan goes
+         to /scan_raw so scan_overlay (virtual_perception) can own /scan; otherwise the
+         identity remap leaves it on /scan. -->
+    <let name="lidar_scan_out" value="/scan_raw" if="$(var virtual)"/>
+    <let name="lidar_scan_out" value="/scan"     unless="$(var virtual)"/>
+    <node pkg="urg_node" exec="urg_node_driver" name="urg_node" output="screen">
+      <param from="$(var vehicle_config)"/>
+      <remap from="/scan" to="$(var lidar_scan_out)"/>
+    </node>
+
+    <!-- Low-rate /scan mirror for RViz (/scan_viz). Localisation keeps the full
+         40 Hz /scan; only the pitwall's view is throttled, because a 40 Hz scan
+         over WiFi was enough on its own to starve the control loop. Costs
+         nothing while /scan_viz has no subscriber. scan_viz_hz:=0 disables it. -->
+    <node pkg="stack_master" exec="scan_throttle_node.py" name="scan_throttle" output="screen">
+      <param name="input_topic"  value="$(var lidar_scan_out)"/>
+      <param name="output_topic" value="/scan_viz"/>
+      <param name="rate_hz"      value="$(var scan_viz_hz)" type="float"/>
+    </node>
+
+    <!-- Static TFs (base_link->laser, IMU frames) now come from per-vehicle config
+         so they can differ by SIM/CAR — edit config/CAR/static_transforms.yaml,
+         no launch change needed. config_dir is CAR here (this is the unless-sim
+         group); in sim base_link->laser comes from the gym URDF and there is no IMU. -->
+    <node pkg="stack_master" exec="static_tf_publisher.py" name="static_tf_publisher" output="screen">
+      <param from="$(var config_dir)/static_transforms.yaml"/>
+    </node>
+
+  </group>
+
+  <!-- ========== SIMULATOR ========== -->
+  <!-- gym_bridge: virtual /scan + odometry, optional TF -->
+  <group if="$(var sim)">
+    <!-- ego scan -> /scan_raw when the virtual overlay owns /scan, else straight to /scan -->
+    <let name="gym_scan_out" value="/scan_raw" if="$(var virtual)"/>
+    <let name="gym_scan_out" value="/scan"     unless="$(var virtual)"/>
+    <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
+      <arg name="map_yaml_path" value="$(var map_path).yaml"/>
+      <arg name="ego_scan_out"  value="$(var gym_scan_out)"/>
+    </include>
+  </group>
+
+  <!-- ========== VIRTUAL PERCEPTION (sim + real) ==========
+       The SAME package for both: base scan comes in on /scan_raw (gym or urg),
+       scan_overlay owns /scan, and the virtual opponent + static obstacles +
+       tracking_merger run. Gated by `virtual`; when off, the sensor owns /scan
+       directly and none of these nodes start. -->
+  <group if="$(var virtual)">
+    <include file="$(find-pkg-share virtual_perception)/launch/virtual_perception.launch.xml">
+      <arg name="map_path"       value="$(var map_path).yaml"/>
+      <arg name="ego_odom_topic" value="/car_state/odom"/>
+      <arg name="scan_in"        value="/scan_raw"/>
+      <arg name="scan_out"       value="/scan"/>
+    </include>
+  </group>
+
+  <!-- ========== KEYBOARD TELEOP SOURCE (sim only) ========== -->
+  <!-- keyboard_joy (pynput -> /joy_keyboard). pynput needs a focused keyboard +
+       display, so only start it in sim (single machine); it always runs here so the
+       pitwall panel can switch the mux to keyboard at runtime. On the real (headless)
+       car, run keyboard_joy_node on the operator laptop instead. The mux starts on joy
+       and only honours /joy_keyboard once the panel flips /ego/use_keyboard. -->
+  <node pkg="stack_master" exec="keyboard_joy_node.py" name="keyboard_joy" output="screen"
+        if="$(var sim)"/>
+
+  <!-- Joystick / Command mux -->
+  <node pkg="stack_master" exec="simple_mux_node.py" name="simple_mux" output="log">
+    <param from="$(var vehicle_config)"/>
+    <param name="in_topic"      value="/vesc/high_level/ackermann_cmd"/>
+    <param name="out_topic"     value="/vesc/ackermann_cmd"/>
+    <param name="joy_topic"     value="$(var joy_topic)"/>
+    <param name="joy_max_speed" value="$(var joy_max_speed)" type="float"/>
+    <param name="use_estop" value="$(var use_estop)"/>
+    <param name="sim" value="$(var sim)"/>
+    <!-- use_keyboard defaults False (joy); the pitwall panel flips it at runtime via
+         /ego/use_keyboard. keyboard_joy still publishes /joy_keyboard in sim regardless. -->
+  </node>
+
+</launch>

@@ -1,0 +1,207 @@
+<?xml version="1.0"?>
+<!--
+  quali.launch.xml  (예선용 — race.launch.xml 에서 동적 장애물(head-to-head) 제거)
+  ==============================================================================
+  예선 진행 순서와 이 런치의 관계:
+
+    1) 첫 3바퀴  : 장애물 없음. 충돌 없이 완주가 목표, 속도는 중요치 않음.
+                   -> GB_TRACK 만 사용. speed_scale 을 낮춰서 출발.
+    2) 다음 3바퀴: 정적 장애물. 충돌 없이 회피.
+                   -> detect/tracking -> static_avoidance_planner -> OVERTAKE.
+    3) 마지막 2분: 최대 속도로 무충돌 주행.
+                   -> speed_scale 을 올려서 마무리 (아래 "페이즈 전환" 참고).
+
+  race.launch.xml 대비 빠진 것 (예선에서 상대 차가 없으므로 전부 불필요):
+    - lane_change_planner / sqp_planner   (동적 회피 = 움직이는 상대 추월)
+    - gp_traj_predictor 3개 노드          (상대 궤적 GP 예측)
+  이 노드들이 없으면 /planner/avoidance/otwpnts, /opponent_prediction/* 는
+  아무도 publish 하지 않는다. state_machine 은 이 토픽들이 비어 있으면
+  _check_overtaking_mode() 가 항상 False 이므로, OVERTAKE 진입 경로가
+  _check_static_overtaking_mode() (정적 회피) 하나만 남는다 — 의도된 동작이다.
+  recovery_spliner 의 ot_blended 경로도 자연히 꺼지고 plain recovery 만 쓴다.
+
+  그대로 남긴 것:
+    perception   : detect (C++) + tracking (Python)  — 정적 장애물 인식에 필수
+    state machine: state_machine                     — GB_TRACK/TRAILING/OVERTAKE/RECOVERY/START
+    planning     : static_avoidance_node (정적 회피), recovery_spliner, start_spline_node_v2
+    control      : controller_manager                — L1 / Pure-Pursuit
+
+  ot_planner 는 "lane_change" 로 고정한다. 동적 플래너를 띄우지 않는데도
+  이 값이 필요한 이유는 state_machine_node.py 의 구독 게이트 때문이다:
+  /planner/avoidance/static_otwpnts 구독이 ot_planner in {sqp, lane_change}
+  조건 안에 들어 있어서, 다른 값으로 두면 정적 회피 경로 자체가 도달하지 않는다.
+
+  페이즈 전환 (섹터 on/off) — 기본은 바퀴 수 기반 자동, 딱 두 구간이다:
+
+    초반 fast_after_laps (10) 바퀴 : 섹터를 아예 안 쓴다. 맵의 speed_scaling.yaml
+      에 섹터가 몇 개로 잘려 있든 무시하고, 트랙 전체를 speed_scale (0.7) 한 값
+      으로만 달린다 (speed_sector_tuner 의 use_sector_scaling:=false +
+      default_scaling:=speed_scale).
+
+    10바퀴 완주 이후 (끝까지)     : race_phase_speed 노드가 use_sector_scaling 을
+      true 로 한 번 돌리고 끝. 그때부터는 맵의 speed_scaling.yaml 에 적힌 섹터별
+      scaling 이 "적힌 그대로" 적용된다 — 여기에 곱해지는 배율 같은 건 없다.
+      한 번 전환되면 되돌아오지 않는다(세션 끝까지 유지).
+
+    두 값 모두 아래 런치 인자로 바꾼다:
+
+      ros2 launch stack_master quali.launch.xml map:=f \
+           speed_scale:=0.6 fast_after_laps:=8
+
+    바퀴 수는 lap_analyser 의 /lap_data 를 쓰고, 완주한 바퀴만 센다(첫 결승선
+    통과부터 카운트 시작). auto_speed_up:=false 로 끄면 이 노드를 아예 안 띄우고,
+    처음부터 speed_scaling.yaml 로 달린다 — 전환은 직접 한다.
+
+  즉 어택 구간 속도는 맵의 speed_scaling.yaml 하나로만 정한다. 더 빠르게/느리게
+  가고 싶으면 런치 인자가 아니라 그 yaml 의 섹터 scaling 을 고치면 된다.
+
+  수동 조작 (언제든, 재실행 없이 live):
+    ros2 param set /speed_sector_tuner default_scaling 0.5      # 균일 구간 속도
+    ros2 param set /speed_sector_tuner use_sector_scaling true  # 섹터 조기 투입
+    ros2 param set /speed_sector_tuner phase_multiplier 0.9     # 섹터 전체 트림
+  phase_multiplier 는 각 섹터 scaling 에 곱해지는 배율이다(상한 clip 이 아님).
+  이 런치는 건드리지 않으므로 yaml 값(보통 1.0) 그대로 남고, 그래서 전환 후
+  yaml 이 그대로 나온다. 위처럼 직접 넣으면 주행 중 전 섹터를 한 번에 트림할 수
+  있다. 균일 구간(use_sector_scaling false) 에서는 섹터 scaling 도
+  phase_multiplier 도 전부 무시되고 default_scaling 하나만 쓴다.
+
+  SIM : ros2 launch stack_master quali.launch.xml map:=f sim:=true
+  REAL: ros2 launch stack_master quali.launch.xml map:=f sim:=false
+-->
+<launch>
+  <arg name="map"        description="Map name (folder in stack_master/maps/)"/>
+  <arg name="sim"        default="false" description="Use simulator (true) or real hardware (false)"/>
+  <arg name="localization" default="pf" description="Real-car localization backend: cartographer | pf | kiss (ignored when sim:=true)"/>
+  <arg name="virtual"    default="$(var sim)" description="Inject virtual (static) obstacles for testing; on by default in sim, off on the real car"/>
+  <arg name="speed_scale" default="0.8"
+       description="Flat scaling (0.0-2.0) used over the WHOLE lap for the first fast_after_laps laps, sectors ignored: 장애물 없는 첫 3바퀴 + 정적 장애물 3바퀴 구간용. After the switch it is gone -- the map's speed_scaling.yaml drives on its own."/>
+  <arg name="fast_after_laps" default="10"
+       description="Completed laps (lap_analyser /lap_data) after which the flat speed_scale gives way to the map's speed_scaling.yaml. 예선 3+3바퀴에 어택 초반 여유분을 더한 값."/>
+  <arg name="auto_speed_up" default="true"
+       description="Run the lap-counting flat -> sector switch. false 면 처음부터 맵의 speed_scaling.yaml 로 달리고 전환은 ros2 param set 으로 직접 한다."/>
+
+  <!-- Opening laps run sector-less only when the lap-counting node is there to end
+       them; without it, falling back to the map's sectors from the start beats
+       being stuck on one flat speed for the whole session. -->
+  <let name="start_sector_scaling" value="false" if="$(var auto_speed_up)"/>
+  <let name="start_sector_scaling" value="true"  unless="$(var auto_speed_up)"/>
+  <arg name="debug" default="false"
+       description="Enable verbose debug logging that's off during a normal race (KISS STAT prints, state_machine/static_avoidance per-run debug log files under logfile/). Pass debug:=true to turn it back on for diagnosis."/>
+  <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
+  <let name="racecar_version" value="SIM" if="$(var sim)"/>
+  <let name="racecar_version" value="CAR" unless="$(var sim)"/>
+  <!-- 위 헤더 참고: 동적 플래너는 안 띄우지만 static_otwpnts 구독 게이트 때문에 필요. -->
+  <let name="ot_planner" value="lane_change"/>
+
+  <!-- quali 의 speed_scale 을 include 전에 다른 이름으로 붙잡아 둔다.
+       아래 include 안에서 speed_scale 을 1.0 으로 덮어쓰는 순간, 같은 블록의
+       $(var speed_scale) 도 1.0 이 되어 버린다 (arg 는 그 자리에서 즉시
+       launch configuration 을 바꾼다). 이름을 분리하지 않으면 오프닝 랩 속도가
+       조용히 1.0 으로 올라간다. -->
+  <let name="opening_scale" value="$(var speed_scale)"/>
+
+  <!-- ===== Base system: sensors/sim + raceline + frenet odom ===== -->
+  <include file="$(find-pkg-share stack_master)/launch/base_system.launch.xml">
+    <arg name="map"          value="$(var map)"/>
+    <arg name="sim"          value="$(var sim)"/>
+    <arg name="localization" value="$(var localization)"/>
+    <arg name="virtual"      value="$(var virtual)"/>
+    <!-- speed_scale MUST be passed explicitly as 1.0, and NOT omitted.
+         =====================================================================
+         base_system has its own arg ALSO named speed_scale, with a completely
+         different meaning: it seeds speed_sector_tuner's phase_multiplier,
+         which multiplies every sector's scaling. Ours is the flat opening
+         speed, handed to default_scaling on the next line.
+
+         Omitting it does NOT give base_system its 1.0 default. ROS 2 launch
+         propagates launch configurations INTO an <include>, and
+         DeclareLaunchArgument only applies its default when the name is not
+         already set. So base_system re-declaring speed_scale with
+         default="1.0" is a no-op once this file has set it to 0.7. The 0.7
+         leaked straight through to phase_multiplier.
+
+         The effect was silent and quali-only (race.launch.xml declares no
+         speed_scale, so it really did get 1.0): after the phase switch the car
+         drove sector scaling x 0.7. With 0820test2's 1.2 that is 0.84, i.e.
+         SLOWER than the raceline, when the yaml asked for 1.2. That is exactly
+         the "quali never speeds up like race does" symptom.
+
+         Verify with: ros2 run stack_master check_scaling.py
+         (phase_multiplier must read 1.0). -->
+    <arg name="speed_scale"     value="1.0"/>
+    <arg name="default_scaling" value="$(var opening_scale)"/>
+    <arg name="sector_scaling"  value="$(var start_sector_scaling)"/>
+    <arg name="debug"        value="$(var debug)"/>
+  </include>
+
+  <!-- ===== Race-phase speed switch =====
+       base_system starts the tuner sector-less on speed_scale; this node flips
+       use_sector_scaling once fast_after_laps laps are done, handing the car to the
+       map's speed_scaling.yaml as written. It only ever writes that one parameter
+       once, so a manual `ros2 param set` at any point (before or after) still wins. -->
+  <group if="$(var auto_speed_up)">
+    <node pkg="stack_master" exec="race_phase_speed_node.py" name="race_phase_speed" output="screen">
+      <!-- default_scale is logged only (base_system seeds the real value); explicit
+           type because `speed_scale:=1` on the command line would otherwise be
+           inferred as an int and clash with the node's double declaration. -->
+      <param name="default_scale"   value="$(var speed_scale)"     type="float"/>
+      <param name="fast_after_laps" value="$(var fast_after_laps)" type="int"/>
+    </node>
+  </group>
+
+  <!-- ===== Perception: LiDAR obstacle detection (C++) + tracking (Python) =====
+       detect publishes /detect/raw_obstacles (Frenet filled at the source);
+       tracking reads it and publishes /tracking/obstacles_raw. tracking_merger
+       (virtual_perception) owns /tracking/obstacles when virtual:=true. -->
+  <node pkg="perception" exec="detect" name="detect" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/opponent_tracker_params.yaml"/>
+    <param name="map" value="$(var map)" type="str"/>
+  </node>
+  <let name="tracking_out" value="/tracking/obstacles_raw" if="$(var virtual)"/>
+  <let name="tracking_out" value="/tracking/obstacles"     unless="$(var virtual)"/>
+  <node pkg="perception" exec="tracking_node" name="tracking" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/opponent_tracker_params.yaml"/>
+    <remap from="/tracking/obstacles" to="$(var tracking_out)"/>
+  </node>
+
+  <!-- ===== State machine: the racing brain =====
+       timetrials_only 는 false 로 둔다. true 면 obstacle_perception_cb 가
+       장애물을 통째로 버려서 2)/3) 단계의 정적 회피가 동작하지 않는다. -->
+  <node pkg="state_machine" exec="state_machine" name="state_machine" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/state_machine_params.yaml"/>
+    <param name="sim"             value="$(var sim)"/>
+    <param name="racecar_version" value="$(var racecar_version)"/>
+    <param name="timetrials_only" value="false"/>
+    <param name="ot_planner"      value="$(var ot_planner)"/>
+    <param name="map"             value="$(var map)" type="str"/>
+    <param name="debug_log_enabled" value="$(var debug)"/>
+  </node>
+
+  <!-- Recovery planner -> /planner/recovery/wpnts
+       (라인 이탈 후 복귀. 동적 플래너가 없으므로 /planner/ot_blended_recovery/wpnts
+        는 항상 비어 있고 state_machine 은 plain recovery 로 폴백한다.) -->
+  <node pkg="recovery_spliner" exec="recovery_spliner_node" name="recovery_spliner_node" output="screen"/>
+
+  <!-- Start planner -> /planner/start_wpnts -->
+  <node pkg="spliner" exec="start_spline_node_v2" name="start_planner" output="screen"/>
+
+  <!-- Static avoidance -> /planner/avoidance/static_otwpnts
+       예선 2)/3) 단계의 핵심 노드. /tracking/obstacles 를 직접 읽는다
+       (노드 docstring 참고: /behavior_strategy 로 게이트하면 OVERTAKE 진입
+        순간 장애물을 잃는다). /behavior_strategy 는 후보 선택 힌트로만 쓴다. -->
+  <node pkg="spliner" exec="static_avoidance_node" name="static_avoidance_planner" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/static_avoidance_planner.yaml"/>
+    <param name="debug_log_enabled" value="$(var debug)"/>
+    <remap from="/planner/avoidance/otwpnts" to="/planner/avoidance/static_otwpnts"/>
+  </node>
+
+  <!-- ===== Control: L1 / Pure-Pursuit controller =====
+       Subscribes /behavior_strategy + car state, publishes high_level/ackermann_cmd
+       (-> simple_mux -> vehicle). Common controller.yaml; save_params writes back
+       to the same file. -->
+  <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
+    <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller.yaml"/>
+    <param name="sim" value="$(var sim)"/>
+  </node>
+</launch>
