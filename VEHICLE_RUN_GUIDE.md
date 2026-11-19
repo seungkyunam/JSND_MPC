@@ -6,6 +6,24 @@
 
 **기본값은 shadow이며 실제 VESC 명령 publisher나 차량 드라이버를 생성하지 않는다.** 소프트웨어 경로는 구현했지만 실제 Jazzy 차량의 장치·비상정지·watchdog·맵 정합성 검증을 완료한 상태는 아니다. 미검증 플래그를 true로 바꾸는 것만으로 검증을 대신할 수 없다. 바퀴 공중 시험을 포함한 모든 실제 출력은 물리 조건 확인과 명시적인 재무장이 필요하다.
 
+## Clone부터 Shadow까지 한 번에 실행
+
+Jazzy와 기존 JSND Jazzy underlay가 차량에 이미 설치되어 있으면 다음 스크립트가 저장소를 clone/update하고, 의존성 설치와 격리 빌드를 수행한 뒤 Shadow만 시작한다. `vehicle.json`은 실제 장치 확인을 마친 프로파일의 절대 경로여야 한다.
+
+```bash
+git clone --branch main --single-branch \
+  https://github.com/seungkyunam/JSND_MPC.git "$HOME/JSND_MPC"
+cd "$HOME/JSND_MPC"
+bash ./install_jazzy_shadow.sh \
+  --repo-dir "$HOME/JSND_MPC" \
+  --underlay "$HOME/JSND" \
+  --profile "$HOME/jsnd_mpc_assets/vehicle.json" \
+  --domain 219 \
+  --run-shadow
+```
+
+이 절차는 `shadow`만 실행하며 bench/drive, VESC, 기존 pitwall, joy 또는 맵핑 노드를 시작하지 않는다. Jazzy가 없는 개발 호스트에서는 이 명령을 실제로 검증할 수 없으며, 이 저장소의 로컬 검증은 Humble 오프라인 테스트에 한정된다.
+
 ## 1. 제공하는 기능과 제한
 
 | 모드 | 하드웨어 노드 | 출력 | 조건 |

@@ -32,6 +32,7 @@ PP 복구는 그대로 `ros2 run joy joy_node` 및 `race.launch.xml controller:=
 - 기존 ROS 패키지 소스·설정·지도·라이선스와 MPC 구현·테스트·배포 스크립트 포함
 - MPC: `controller/controller/mpc/`
 - 배포 및 실행 절차: [mpc_deployment/README.md](mpc_deployment/README.md)
+- Jazzy Clone→설치→빌드→Shadow 자동 절차: `install_jazzy_shadow.sh`
 - 시뮬레이션 기록과 제한: [stack_master/README_MPC_SIM.md](stack_master/README_MPC_SIM.md)
 - Humble 빌드·제한된 시뮬레이션 관찰 완료. Jazzy 코드 대응 및 배포 회귀 테스트
   18개 통과. 실제 Jazzy 빌드·Python ABI·DDS·PP/MPC 실행은 미검증입니다.

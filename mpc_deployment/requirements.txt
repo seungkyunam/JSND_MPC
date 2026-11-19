@@ -2,5 +2,5 @@ numpy>=1.23,<2
 scipy>=1.9
 osqp>=1.0,<2
 
-# tf_transformations on Humble needs a NumPy >=1.24 compatible transforms3d.
+# ROS tf_transformations compatibility helper for the supported ROS 2 releases.
 transforms3d>=0.4.2
