@@ -1,7 +1,16 @@
+> 속도·조향 통합 MPC의 현재 검증 상태와 실행 명령: [INTEGRATED_MPC_STATUS.md](INTEGRATED_MPC_STATUS.md). 실제 11_16_3 ROS 3랩 및 실차 검증은 미완료입니다.
+
 # JSND_MPC
 
 JSND 소스에서 분리한 LTV-MPC 시뮬레이션 개발 저장소입니다.
-기존 PP 제어기가 기본값이며 MPC는 `sim:=true`에서만 사용할 수 있습니다.
+시뮬레이션은 속도·조향 통합 MPC만 실행합니다. PP와 조향 전용 MPC 소스는 복구용으로 보존합니다.
+
+이 PC의 기존 `test0` 맵 실행:
+
+```bash
+cd /home/sk/JSND_MPC
+SIM_ONLY_ISOLATED=YES bash run_test0_sim.sh
+```
 
 ## 범위와 검증 상태
 
@@ -18,10 +27,10 @@ MPC 의존성은 `mpc_deployment/requirements.txt`를 기준으로 하며, 루�
 기존 Conda 설정과 requirements는 이전 환경 자료이므로 MPC 설치 절차와
 혼용하지 마세요. 원래 운영 문서는 `docs/legacy/`에 보존했습니다.
 
-실차 MPC 사용은 금지되어 있습니다. 시뮬레이션도 구동계를 물리적으로
-비활성화하고 실제 ROS 네트워크·브리지와 격리한 환경에서 실행해야 합니다.
-`11_16_3` 지도는 제공되지 않습니다. 기존 launch의 PP 기본 설정이 실차용일 수
-있으므로 시뮬레이션은 위 문서의 `run_mpc.sh` 절차를 따르세요.
+실차는 별도 `mpc_vehicle` Shadow/Bench/Drive 안전 게이트 경로만 사용하며,
+현장 검증과 승인 전에는 하드웨어 출력이 차단됩니다. 시뮬레이션은 실제 차량과
+분리된 localhost ROS 도메인에서 실행합니다. 사용자 승인에 따라 기존 `test0` 맵을
+사용하며 `11_16_3`와 실차 검증을 대신하지 않습니다.
 
 ## 소스 출처
 

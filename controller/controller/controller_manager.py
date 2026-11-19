@@ -16,7 +16,7 @@ from frenet_conversion.frenet_converter import FrenetConverter
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Bool
+from std_msgs.msg import Float32, Bool, String
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -65,7 +65,9 @@ class ControllerManager(Node):
                          automatically_declare_parameters_from_overrides=True)
 
         self.name = "controller_manager"
-        self.loop_rate = 50  # rate in hertz
+        self.loop_rate = int(self._get_param('control_loop_rate_hz', 50))
+        if self.loop_rate < 20 or self.loop_rate > 100:
+            raise ValueError('control_loop_rate_hz must be between 20 and 100 Hz')
         self.scan = None
         self._save_requested = False
 
@@ -100,13 +102,15 @@ class ControllerManager(Node):
         self.lateral_controller = self._get_param('lateral_controller', 'PP')
         if self.lateral_controller not in ('PP', 'MPC'):
             raise ValueError('lateral_controller must be PP or MPC (startup parameter)')
+        if self.lateral_controller == 'MPC' and not self.use_sim:
+            raise ValueError('Use the mpc_vehicle Shadow/Bench/Drive safety gate for hardware')
         mpc_values = {name: self._get_param(name, value) for name, value in MPC_DEFAULTS.items()}
         self.pose_to_rear_axle_m = mpc_values['mpc_pose_to_rear_axle_m']
         self.lateral_mpc = None
         if self.lateral_controller == 'MPC':
-            from controller.mpc.lateral_mpc import LateralMPC
+            from controller.mpc.integrated_mpc import IntegratedMPC
             config = make_config(mpc_values, self.wheelbase, wheelbase_explicit, self.loop_rate)
-            self.lateral_mpc = LateralMPC(config)
+            self.lateral_mpc = IntegratedMPC(config)
         self.measuring = self._get_param('measure', False)
         self.state_machine_rate = self._get_param('state_machine_rate', 40)
 
@@ -146,6 +150,7 @@ class ControllerManager(Node):
             self.measure_pub = self.create_publisher(Float32, '/controller/latency', 10)
             if self.lateral_controller == 'MPC':
                 self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
+                self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
 
         # FTG controller (params injected from /state_machine/* equivalents)
         self.ftg_controller = FTG(
@@ -428,8 +433,9 @@ class ControllerManager(Node):
         # Logic to select controller
         if self.state != "FTGONLY":
             speed, acceleration, jerk, steering_angle = self.controller_cycle()
-        else:
+        elif self.lateral_controller != 'MPC':
             speed, steering_angle = self.ftg_cycle()
+        # MPC-only mode stops in FTGONLY; no alternate driving controller.
 
         ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
         self.drive_pub.publish(ack_msg)
@@ -440,6 +446,7 @@ class ControllerManager(Node):
                 msg = Float32()
                 msg.data = float(1000 * result.elapsed_s)
                 self.mpc_time_pub.publish(msg)
+                self.mpc_status_pub.publish(String(data=result.status))
         if self.measuring:
             end = time.perf_counter()
             msg = Float32()

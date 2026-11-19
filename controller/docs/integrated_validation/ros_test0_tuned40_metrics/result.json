@@ -1,0 +1,20 @@
+{
+  "map": "test0",
+  "success": true,
+  "laps_s": [
+    27.41225242614746,
+    20.787917375564575,
+    20.744279861450195
+  ],
+  "failures": {},
+  "collision": false,
+  "collision_samples": 7934,
+  "rmse_m": 0.046251803621698194,
+  "max_error_m": 0.11728234460567777,
+  "max_speed_mps": 1.9968075538353074,
+  "progress_m": 124.95990298838915,
+  "solver_max_ms": 14.736099243164062,
+  "solver_p99_ms": 7.377797126770018,
+  "control_period_max_ms": 89.65229988098145,
+  "control_period_p99_ms": 39.32023048400879
+}

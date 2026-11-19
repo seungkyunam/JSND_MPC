@@ -1,5 +1,7 @@
 # ROS2 Jazzy 실차 MPC: shadow → 바퀴 공중 bench → 저속 drive
 
+> 2026-11-18 통합 MPC 변경의 최신 구현·검증 결과와 실행 명령은 [INTEGRATED_MPC_STATUS.md](INTEGRATED_MPC_STATUS.md)를 참조한다. 아래 이전 업로드 시점 결과는 현 통합 MPC의 실차 검증 결과가 아니다.
+
 이 문서는 새 **`mpc_vehicle` 실행 경로**의 사용법이다. 기존 `run_mpc.sh`와 race launch의 시뮬레이션 차단은 그대로 유지한다. 기존 Pure Pursuit, `simple_mux` 구현 및 `/home/sk/JSND`는 수정하지 않는다.
 
 **기본값은 shadow이며 실제 VESC 명령 publisher나 차량 드라이버를 생성하지 않는다.** 소프트웨어 경로는 구현했지만 실제 Jazzy 차량의 장치·비상정지·watchdog·맵 정합성 검증을 완료한 상태는 아니다. 미검증 플래그를 true로 바꾸는 것만으로 검증을 대신할 수 없다. 바퀴 공중 시험을 포함한 모든 실제 출력은 물리 조건 확인과 명시적인 재무장이 필요하다.
@@ -14,7 +16,7 @@
 
 초기 프로파일의 속도 제한은 0.2m/s, 조향 0.15rad, 조향 변화 0.3rad/s, 가속 0.2m/s²다. **예시값이며 실제 장치의 검증값이 아니다.** 소프트웨어는 속도 0.5m/s, 조향 0.3rad, 각속도 1rad/s, 가속 0.5m/s²보다 큰 프로파일을 거부한다. 후진은 전달하지 않는다. 실차 고속 레이싱 기능을 승인하는 모드는 없다.
 
-새 노드는 기존 `controller.mpc.LateralMPC` solver를 그대로 사용한다. `11_16_3/global_waypoints.json`의 IQP 글로벌 경로를 폐곡선으로 읽어 가까운 지점부터 로컬 구간을 추출한다. 기존 JSON 속도에 sector scaling의 최솟값을 보수적으로 적용하고 저속 상한을 씌운다(배율로 원래 JSON 속도를 높이지 않음). sector YAML의 `only_FTG=true`는 거부한다. 이 실차 경로는 전역 경로 추종 전용이며 기존 state_machine의 동적 회피·추월·FTG로 넘어가지 않는다. 장애물 앞에서는 정지한다. 기존 PP/state_machine의 실행 동작을 바꾸지 않는다.
+새 노드는 공통 `controller.mpc.integrated_mpc.IntegratedMPC`로 속도와 조향을 함께 최적화한다. 가속·감속·횡가속도 상한도 프로파일에서 검증한다. `11_16_3/global_waypoints.json`의 IQP 글로벌 경로를 폐곡선으로 읽어 가까운 지점부터 로컬 구간을 추출한다. 기존 JSON 속도에 sector scaling의 최솟값을 보수적으로 적용하고 저속 상한을 씌운다(배율로 원래 JSON 속도를 높이지 않음). sector YAML의 `only_FTG=true`는 거부한다. 이 실차 경로는 전역 경로 추종 전용이며 기존 state_machine의 동적 회피·추월·FTG로 넘어가지 않는다. 장애물 앞에서는 정지한다. 기존 PP/state_machine의 실행 동작을 바꾸지 않는다.
 
 ## 2. 터미널 1: SSH, 소스 준비, Jazzy 의존성
 
@@ -293,7 +295,7 @@ ros2 service call /mpc_vehicle/stop std_srvs/srv/Trigger '{}'
 ## 9. simple_mux–VESC 연결 및 PP 중복 방지
 
 ```text
-11_16_3 JSON + /car_state/odom → 기존 LateralMPC solver
+11_16_3 JSON + /car_state/odom → 공통 IntegratedMPC solver
   → /mpc_vehicle/raw_command ───────────┐
 /joy (검증된 단일 입력) ────────────────┤
                                      ↓
@@ -352,7 +354,7 @@ bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" drive
 - `build_mpc_vehicle.sh`, `run_mpc_vehicle.sh`: 기존 시뮬레이션 스크립트와 별개인 Jazzy 준비/실행 경로.
 - 이 가이드 갱신.
 
-원래 PP 및 MPC solver 알고리즘, 원래 simple_mux/VESC 코드, 기존 시뮬레이션 guard, `/home/sk/JSND`는 수정하지 않는다. 차량별 승인 파일이나 실제 자격증명을 저장소에 추가하지 않는다. 업로드 커밋은 `git log -1 --format=%H`로 확인한다.
+원래 PP 소스와 조향 전용 MPC는 보존하며, 원래 simple_mux/VESC 코드, 기존 시뮬레이션 guard, `/home/sk/JSND`는 수정하지 않는다. 차량별 승인 파일이나 실제 자격증명을 저장소에 추가하지 않는다. 업로드 커밋은 `git log -1 --format=%H`로 확인한다.
 
 새 안전 로직의 단위 검사와 localhost DDS shadow 검사를 수행한다. DDS 검사는 가짜 센서/명령만 사용하고 VESC/실차 드라이버/기존 Humble 주행 시뮬레이션을 띄우지 않는다. 시험 환경이 Humble인 경우 이는 새 adapter의 통신 호환 검사일 뿐 Jazzy 차량 검증 결과가 아니다.
 

@@ -16,7 +16,8 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from controller.mpc.lateral_mpc import MPCResult, SafetyRequest
+from controller.mpc.integrated_mpc import IntegratedResult
+from controller.mpc.lateral_mpc import SafetyRequest
 from offline_support import ROOT, cycle, make_controller, regression_cases, regression_outputs, virtual_path
 
 
@@ -35,32 +36,32 @@ class FakeMPC:
         self.success = success
         self.calls = []
 
-    def solve(self, state, waypoints, speeds, previous):
-        self.calls.append((state.copy(), waypoints.copy(), speeds, previous))
-        return MPCResult(0.02, SafetyRequest.NONE if self.success else SafetyRequest.STOP,
+    def solve(self, state, waypoints, previous):
+        self.calls.append((state.copy(), waypoints.copy(), state[3], previous))
+        return IntegratedResult(0.02, 1.25, .3, SafetyRequest.NONE if self.success else SafetyRequest.STOP,
                          'solved' if self.success else 'injected_failure', 0.001,
                          reference=np.array([[0, 0, 0], [1, 0, 0]]))
 
     def reject(self, reason, previous):
-        return MPCResult(previous, SafetyRequest.STOP, reason, 0.0)
+        return IntegratedResult(previous, 0., 0., SafetyRequest.STOP, reason, 0.0)
 
 
-@pytest.mark.parametrize('state', ['GB_TRACK', 'TRAILING', 'OVERTAKE', 'RECOVERY', 'START'])
-def test_mpc_preserves_speed_and_bypasses_all_pp_shaping(state):
+@pytest.mark.parametrize('state', ['GB_TRACK', 'OVERTAKE', 'RECOVERY', 'START'])
+def test_mpc_owns_speed_and_bypasses_all_pp_shaping(state):
     path = virtual_path('static_avoidance')
     fake = FakeMPC()
     mpc = make_controller(lateral_controller='MPC', lateral_mpc=fake)
     pp = make_controller(lateral_controller='PP')
-    for method in ('calc_steering_angle_for_future', 'calc_future_L1_point',
+    for method in ('calc_speed_command', 'speed_adjust_heading', 'AEB_for_weird_local_wpnt', 'calc_steering_angle_for_future', 'calc_future_L1_point',
                    'compute_future_heading_correction', 'acc_scaling',
-                   'speed_steer_scaling', 'steer_scaling_for_lat_err'):
+                   'speed_steer_scaling', 'steer_scaling_for_lat_err', 'calc_speed_command', 'speed_adjust_heading'):
         setattr(mpc, method, Mock(side_effect=AssertionError('PP shaping called by MPC')))
     args = dict(state=state, opponent=[4.0, 0.0, 0.0, True, True] if state == 'TRAILING' else None)
     a, b = cycle(mpc, path, **args), cycle(pp, path, **args)
-    assert a[:3] == b[:3]
+    assert a[:3] == (1.25, .3, 0.)
     assert a[3] == 0.02
     np.testing.assert_array_equal(fake.calls[0][1], path)
-    assert fake.calls[0][2] == 2.0
+    assert fake.calls[0][0][3] == 2.0
     assert mpc.current_steer_command == mpc.curr_steering_angle == 0.02
 
 
@@ -69,12 +70,14 @@ def test_failure_stop_cannot_be_undone_by_legacy_aeb():
     controller.AEB_for_weird_local_wpnt = Mock(return_value=2.0)
     result = cycle(controller, virtual_path('straight'))
     assert result[0] == 0.0
-    controller.AEB_for_weird_local_wpnt.assert_called_once()
+    controller.AEB_for_weird_local_wpnt.assert_not_called()
 
 
 @pytest.mark.parametrize('path', [np.empty((0, 9)), np.zeros((5, 9)), np.full((30, 9), np.nan)])
 def test_invalid_local_input_stops_before_legacy_preprocessing(path):
-    controller = make_controller(lateral_controller='MPC', lateral_mpc=FakeMPC())
+    from controller.mpc.integrated_mpc import IntegratedMPC, IntegratedConfig
+    controller = make_controller(lateral_controller='MPC', lateral_mpc=IntegratedMPC(IntegratedConfig(
+        wheelbase=.3302, max_steer=.4189, max_steer_rate=3.2)))
     controller.calc_speed_command = Mock(side_effect=AssertionError('bad input reached speed logic'))
     assert cycle(controller, path, position=[0, 0, 0])[0] == 0.0
     assert not controller.mpc_result.success
@@ -85,12 +88,12 @@ def test_rear_axle_transform_and_applied_steer_feedback():
     controller = make_controller(lateral_controller='MPC', lateral_mpc=fake, pose_to_rear_axle_m=-0.1)
     controller.record_applied_steering(0.15)
     cycle(controller, virtual_path('straight'), position=[0, 0.05, 0])
-    np.testing.assert_allclose(fake.calls[0][0], [-0.1, 0.05, 0])
+    np.testing.assert_allclose(fake.calls[0][0], [-0.1, 0.05, 0, 2.])
     assert fake.calls[0][3] == 0.15
 
 
 def test_pp_record_applied_does_not_change_legacy_state():
-    controller = make_controller()
+    controller = make_controller(lateral_controller='PP')
     controller.record_applied_steering(0.3)
     assert controller.current_steer_command == controller.curr_steering_angle == 0
 
@@ -106,7 +109,7 @@ def guarded(name, *args, **kwargs):
 builtins.__import__ = guarded
 from offline_support import make_controller, cycle, virtual_path
 from controller.mpc.configuration import MPC_DEFAULTS
-assert cycle(make_controller(), virtual_path('straight'))[0] > 0
+assert cycle(make_controller(lateral_controller='PP'), virtual_path('straight'))[0] > 0
 '''
     env = {**os.environ, 'PYTHONPATH': str(ROOT / 'controller') + os.pathsep + str(Path(__file__).parent)}
     subprocess.run([sys.executable, '-c', script], env=env, check=True, capture_output=True, text=True)
@@ -122,17 +125,17 @@ def manager_method(name):
     return namespace[name]
 
 
-def test_ftg_priority_and_final_steering_feedback():
+def test_mpc_stops_in_ftg_without_alternate_controller():
     manager = SimpleNamespace(
-        _save_requested=False, mapping=False, controller=Mock(),
+        _save_requested=False, mapping=False, lateral_controller='MPC', controller=Mock(),
         waypoint_array_in_map=np.ones((30, 9)), position_in_map=np.ones((1, 3)),
         position_in_map_frenet=np.ones(4), measuring=False, state='FTGONLY',
         controller_cycle=Mock(side_effect=AssertionError('MPC invoked during FTG')),
         ftg_cycle=Mock(return_value=(1.0, 0.3)), create_ack_msg=Mock(), drive_pub=Mock())
     manager_method('control_loop')(manager)
-    manager.ftg_cycle.assert_called_once()
-    manager.create_ack_msg.assert_called_once_with(1.0, 0, 0, 0.3)
-    manager.controller.record_applied_steering.assert_called_once_with(0.3)
+    manager.ftg_cycle.assert_not_called()
+    manager.create_ack_msg.assert_called_once_with(0, 0, 0, 0)
+    manager.controller.record_applied_steering.assert_called_once_with(0)
 
 
 def test_waypoint_watchdog_still_overrides_mpc():
@@ -151,3 +154,11 @@ def test_parameter_batch_rejected_before_any_mutation():
     params = [SimpleNamespace(name='KP', value=100), SimpleNamespace(name='lateral_controller', value='MPC')]
     result = manager_method('dyn_param_cb')(manager, params)
     assert not result.successful and not hasattr(manager, 'KP')
+
+
+@pytest.mark.parametrize('state', ['TRAILING', 'FTGONLY', 'UNKNOWN'])
+def test_unsupported_behavior_stops_without_pp(state):
+    fake = FakeMPC()
+    controller = make_controller(lateral_controller='MPC', lateral_mpc=fake)
+    assert cycle(controller, virtual_path('straight'), state=state)[0] == 0.
+    assert not fake.calls

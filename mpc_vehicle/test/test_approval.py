@@ -6,10 +6,10 @@ from mpc_vehicle import core
 
 def test_drive_report_bound_to_map_config_and_code(tmp_path, monkeypatch):
     p = json.loads((Path(__file__).parents[1]/'config/vehicle.example.json').read_text())
-    folder=tmp_path/'11_16_3'; folder.mkdir()
+    folder=tmp_path/'custom_track'; folder.mkdir()
     for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml', 'map.pgm'):
         (folder/name).write_text('{}')
-    (folder/'11_16_3.yaml').write_text('image: map.pgm\n')
+    (folder/'custom_track.yaml').write_text('image: map.pgm\n')
     p.update(map_dir=str(folder), vehicle_id='test-fixture', geometry_confirmed=True,
              bench_authorized=True, independent_estop_verified=True,
              actuator_watchdog_verified=True, watchdog_timeout_s=.2)

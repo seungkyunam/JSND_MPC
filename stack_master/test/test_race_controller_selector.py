@@ -12,7 +12,7 @@ VALIDATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VALIDATOR)
 
 
-@pytest.mark.parametrize('controller,sim', [('pp', 'false'), ('pp', 'true'), ('mpc', 'true')])
+@pytest.mark.parametrize('controller,sim', [('mpc', 'true'), ('pp', 'true'), ('pp', 'false')])
 def test_allowed_controller_modes(controller, sim):
     context = LaunchContext()
     context.launch_configurations.update(controller=controller, sim=sim)
@@ -27,7 +27,7 @@ def test_disallowed_modes_fail_before_launch(controller, sim):
         VALIDATOR.validate_controller(context)
 
 
-def test_validator_precedes_base_and_default_is_pp():
+def test_validator_precedes_base_and_default_preserves_pp():
     root = ET.parse(ROOT / 'launch/race.launch.xml').getroot()
     controller_arg = next(item for item in root.findall('arg') if item.get('name') == 'controller')
     assert controller_arg.get('default') == 'pp'

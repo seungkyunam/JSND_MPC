@@ -1,0 +1,25 @@
+{
+  "git_base": "413f80776e04dae14b73ec12953aecd3e195b252",
+  "files": {
+    "controller/controller/mpc/lateral_mpc.py": {
+      "snapshot": "original_lateral_mpc.py",
+      "sha256": "772bed10520c483850539f997ba23cd1cefdc9d1cfcf8b27588991025e63bddf"
+    },
+    "controller/controller/mpc/bicycle.py": {
+      "snapshot": "original_bicycle.py",
+      "sha256": "841f983909bd12ca6e2472fee6669337a448ff119435c1d61b4ca3b712100445"
+    },
+    "stack_master/launch/race.launch.xml": {
+      "snapshot": "original_race.launch.xml",
+      "sha256": "d7aff8151c88502fe23bd8e6fe73cbf16e51f482eaab6b1257111f2afd3b166c"
+    },
+    "stack_master/launch/validate_controller.launch.py": {
+      "snapshot": "original_validate_controller.launch.py",
+      "sha256": "be1fdf903bdc6571363009293f218ce1423107f08e5c41d194fcb8235f519fcc"
+    },
+    "run_mpc.sh": {
+      "snapshot": "original_run_mpc.sh",
+      "sha256": "9816a566e27c1916050741d82aeb8513d846ec09a4ac60346f7a51b4f05bbe65"
+    }
+  }
+}

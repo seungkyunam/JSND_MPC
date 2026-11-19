@@ -1,0 +1,15 @@
+{
+  "kind": "ideal_kinematic_not_ROS",
+  "map": "stack_master/maps/test0",
+  "laps_s": [
+    21.5,
+    20.82,
+    20.82
+  ],
+  "continuous_success": true,
+  "failures": {},
+  "rmse_m": 0.03274793498794683,
+  "max_error_m": 0.060003582018194064,
+  "max_speed_mps": 1.9999979854576144,
+  "solve_p99_ms": 8.968823959585357
+}

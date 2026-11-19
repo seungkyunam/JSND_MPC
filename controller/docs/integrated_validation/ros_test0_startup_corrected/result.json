@@ -1,0 +1,44 @@
+{
+  "sim_only": true,
+  "map": "test0",
+  "ros_distro": "humble",
+  "checks": {
+    "simulator_node": true,
+    "mpc_sim_controller": true,
+    "selected_map": true,
+    "controller_to_mux": true,
+    "joy_to_mux": true,
+    "command_observed": true,
+    "mpc_calculation_observed": true,
+    "mux_output_topic": true
+  },
+  "success": true,
+  "controller": {
+    "sim": true,
+    "lateral_controller": "MPC",
+    "drive_topic": "/vesc/high_level/ackermann_cmd"
+  },
+  "mux": {
+    "joy_topic": "/joy",
+    "in_topic": "/vesc/high_level/ackermann_cmd",
+    "out_topic": "/vesc/ackermann_cmd"
+  },
+  "global_republisher": {
+    "map": "test0"
+  },
+  "observed": {
+    "waypoints": 418,
+    "commands": 1,
+    "solve_times": 1
+  },
+  "drive_publishers": [
+    "controller_manager"
+  ],
+  "drive_subscribers": [
+    "simple_mux",
+    "mpc_deployment_observer"
+  ],
+  "joy_subscribers": [
+    "simple_mux"
+  ]
+}

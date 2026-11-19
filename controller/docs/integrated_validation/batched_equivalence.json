@@ -1,0 +1,5 @@
+{
+  "states_compared": 11,
+  "max_control_difference": 8.870681966755001e-14,
+  "timing_check": "disabled ONLY in this numerical equivalence check"
+}

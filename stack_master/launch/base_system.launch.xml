@@ -119,7 +119,9 @@
        Lap times + lateral error + distance-to-boundary stats and RViz markers.
        Needs /global_waypoints, /car_state/odom_frenet, /car_state/odom and
        /state_marker (state machine) - all available once the stack is up. -->
-  <node pkg="lap_analyser" exec="lap_analyser" name="lap_analyser" output="screen">
+  <!-- Legacy logger writes into its installed package (possibly a read-only underlay).
+       Simulation uses mpc_deployment/record_laps.py with an explicit output directory. -->
+  <node pkg="lap_analyser" exec="lap_analyser" name="lap_analyser" output="screen" unless="$(var sim)">
     <param name="loc_algo" value="$(var localization)"/>
   </node>
 

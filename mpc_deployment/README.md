@@ -1,3 +1,5 @@
+> 최신 통합 MPC 실행/검증은 [INTEGRATED_MPC_STATUS.md](../INTEGRATED_MPC_STATUS.md)를 참조한다. 아래 문서는 차량 안전 게이트와 기존 PP 복구 경로를 함께 설명한다.
+
 # MPC SSH staging (simulation only)
 
 This stages source for an isolated ROS 2 Humble or Jazzy simulation. Jazzy is

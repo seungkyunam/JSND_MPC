@@ -12,7 +12,8 @@ class Controller:
     Input and output topics are managed by the controller manager.
 
     ROS2 port note: the ROS1 MAP (steering-lookup) branch was intentionally removed.
-    PP is the default; optional steering-only MPC uses the same local path.
+    The legacy PP implementation is preserved for recovery/tests only.
+    Runtime managers select integrated speed/steering MPC.
     The marker publisher and loggers are
     injected by the manager so this class stays ROS-node-free.
     """
@@ -193,7 +194,34 @@ class Controller:
         except (TypeError, ValueError, IndexError):
             return True
 
+    def integrated_loop(self, state, position, waypoints, speed):
+        # Entire PP speed/steering preprocessing is bypassed. Unsupported behavior
+        # states stop rather than silently losing opponent-following safeguards.
+        try:
+            position = np.asarray(position, dtype=float)
+            waypoints = np.asarray(waypoints, dtype=float)
+            if position.shape != (1, 3):
+                raise ValueError('invalid pose shape')
+            rear = position[0].copy()
+            rear[:2] += self.pose_to_rear_axle_m * np.array([np.cos(rear[2]), np.sin(rear[2])])
+            if state not in ('GB_TRACK', 'START', 'OVERTAKE', 'RECOVERY'):
+                result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
+            else:
+                result = self.lateral_mpc.solve(np.r_[rear, speed], waypoints, self.curr_steering_angle)
+        except (ValueError, IndexError, TypeError):
+            rear = np.zeros(3)
+            result = self.lateral_mpc.reject('invalid_local_control_input', self.curr_steering_angle)
+        self.mpc_result = result
+        self._report_mpc_result()
+        self.record_applied_steering(result.steering)
+        point = result.reference[-1, :2] if result.success else rear[:2]
+        nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
+        return (result.speed if result.success else 0., result.acceleration, 0., result.steering,
+                point, float(np.linalg.norm(point-rear[:2])), nearest, 0., rear.reshape(1, 3))
+
     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+        if self.lateral_controller == "MPC":
+            return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now)
         if self.lateral_controller == "MPC" and self._invalid_mpc_input(
                 position_in_map, waypoint_array_in_map, speed_now, position_in_map_frenet, acc_now):
             self.mpc_result = self.lateral_mpc.reject("invalid_local_control_input", self.curr_steering_angle)

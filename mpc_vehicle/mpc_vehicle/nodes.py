@@ -17,7 +17,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Joy, LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
-from controller.mpc.lateral_mpc import LateralMPC, MPCConfig
+from controller.mpc.integrated_mpc import IntegratedMPC, IntegratedConfig
 from .core import GatePolicy, load_profile
 
 PREFIX = '/mpc_vehicle'
@@ -88,9 +88,11 @@ class VehicleController(Node):
             self.path = self.path[:-1]; self.speeds = self.speeds[:-1]
         if np.max(np.linalg.norm(np.roll(self.path, -1, axis=0)-self.path, axis=1)) > .5:
             raise ValueError('global raceline is not a continuous closed loop (gap > 0.5 m)')
-        self.mpc = LateralMPC(MPCConfig(
+        self.mpc = IntegratedMPC(IntegratedConfig(
             wheelbase=p['wheelbase'], max_steer=p['max_steer_rad'],
-            max_steer_rate=p['max_steer_rate_radps'], horizon=15))
+            max_steer_rate=p['max_steer_rate_radps'], horizon=20,
+            max_speed=p['speed_limit_mps'], max_accel=p['acceleration_mps2'],
+            max_decel=p['deceleration_mps2'], max_lateral_accel=p['lateral_acceleration_mps2']))
         self.odom = None; self.odom_at = -math.inf
         self.applied = None; self.applied_at = -math.inf
         self.create_subscription(Odometry, '/car_state/odom', self.odom_cb, qos_profile_sensor_data)
@@ -130,11 +132,12 @@ class VehicleController(Node):
                 indices = (np.arange(-3, min(len(self.path)-3, 200)) + nearest) % len(self.path)
                 path = self.path[indices]
                 # Existing global profile is only reduced, never increased; no new race speed profile.
-                speed = min(self.p['speed_limit_mps'], float(np.min(self.speeds[indices[3:30]])))
                 previous = self.applied.drive.steering_angle
-                measured = abs(self.odom.twist.twist.linear.x)
+                measured = self.odom.twist.twist.linear.x
                 if not math.isfinite(measured): raise ValueError('nonfinite speed')
-                result = self.mpc.solve([*xy, yaw], path, max(speed, measured), previous)
+                profile_path = np.column_stack((path, np.minimum(self.speeds[indices], self.p['speed_limit_mps'])))
+                result = self.mpc.solve([*xy, yaw, measured], profile_path, previous)
+                speed = result.speed
                 ok = result.success
                 steer = result.steering
                 reason = result.status

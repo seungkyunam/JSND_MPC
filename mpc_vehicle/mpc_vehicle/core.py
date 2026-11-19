@@ -18,8 +18,8 @@ def software_id():
     h = hashlib.sha256()
     for path in sorted(Path(__file__).parent.glob('*.py')):
         h.update(path.name.encode()); h.update(path.read_bytes())
-    # Includes the actual installed MPC and original mux/vehicle launch assets.
-    import controller.mpc.lateral_mpc as mpc
+    # Includes the actual installed integrated MPC and original mux/vehicle assets.
+    import controller.mpc.integrated_mpc as mpc
     for path in sorted(Path(mpc.__file__).parent.glob('*.py')):
         h.update(path.name.encode()); h.update(path.read_bytes())
     from ament_index_python.packages import get_package_share_directory, get_package_prefix
@@ -31,6 +31,26 @@ def software_id():
             if path.is_file() and path.suffix in ('.py', '.yaml'):
                 h.update(str(path.relative_to(root)).encode()); h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def map_yaml_path(folder):
+    """Resolve a map's YAML without tying commissioning to one map name."""
+    folder = Path(folder)
+    named = folder / f'{folder.name}.yaml'
+    if named.is_file():
+        return named
+    import yaml
+    candidates = []
+    for path in sorted(folder.glob('*.yaml')):
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+        except Exception:
+            continue
+        if isinstance(data, dict) and isinstance(data.get('image'), str):
+            candidates.append(path)
+    if len(candidates) != 1:
+        raise ValueError('map_dir must contain one map YAML with an image entry')
+    return candidates[0]
 
 
 def approval_binding(p):
@@ -52,19 +72,19 @@ def load_profile(path, mode):
     p = json.loads(Path(path).read_text())
     for name, low, high in [('wheelbase', .1, 1.), ('max_steer_rad', .01, .3),
                           ('max_steer_rate_radps', .01, 1.), ('speed_limit_mps', .01, .5),
-                          ('acceleration_mps2', .01, .5)]:
+                          ('acceleration_mps2', .01, .5), ('deceleration_mps2', .01, 2.),
+                          ('lateral_acceleration_mps2', .01, 2.)]:
         v = p[name]
         if type(v) not in (int, float) or not math.isfinite(v) or not low <= v <= high:
             raise ValueError(f'invalid commissioning limit: {name}')
     if not math.isfinite(p['pose_to_rear_axle_m']) or abs(p['pose_to_rear_axle_m']) > 1:
         raise ValueError('invalid signed rear axle offset')
     folder = Path(p['map_dir'])
-    if folder.name != '11_16_3':
-        raise ValueError('only the verified 11_16_3 map is supported')
-    for name in ('11_16_3.yaml', 'global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml'):
+    map_yaml = map_yaml_path(folder)
+    for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml'):
         if not (folder/name).is_file(): raise ValueError(f'missing map file: {name}')
     import yaml
-    map_data = yaml.safe_load((folder/'11_16_3.yaml').read_text())
+    map_data = yaml.safe_load(map_yaml.read_text())
     image = Path(map_data['image'])
     if image.is_absolute() or '..' in image.parts or not (folder/image).is_file():
         raise ValueError('map image must be copied inside map directory')

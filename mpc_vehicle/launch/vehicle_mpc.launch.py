@@ -8,6 +8,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from mpc_vehicle.preflight import check
+from mpc_vehicle.core import map_yaml_path
 
 
 def configure(context):
@@ -37,7 +38,7 @@ def configure(context):
             Node(package='stack_master', executable='imu_bias_corrector_node.py', name='imu_bias_corrector',
                  parameters=[vehicle], output='screen'),
             Node(package='nav2_map_server', executable='map_server', name='map_server', parameters=[{
-                 'yaml_filename': str(Path(p['map_dir'])/'11_16_3.yaml'), 'frame_id': 'map',
+                 'yaml_filename': str(map_yaml_path(Path(p['map_dir']))), 'frame_id': 'map',
                  'topic_name': 'map', 'use_sim_time': False}], output='screen'),
             Node(package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_localization',
                  parameters=[{'autostart': True, 'node_names': ['map_server'], 'use_sim_time': False}], output='screen'),

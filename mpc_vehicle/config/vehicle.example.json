@@ -1,6 +1,6 @@
 {
   "vehicle_id": "UNVERIFIED",
-  "map_dir": "/REPLACE/with/copied/11_16_3",
+  "map_dir": "/REPLACE/with/copied/MAP_NAME",
   "vehicle_config": "/REPLACE/with/copied/CAR/vehicle_config.yaml",
   "static_transforms": "/REPLACE/with/copied/CAR/static_transforms.yaml",
   "wheelbase": 0.324,
@@ -9,6 +9,8 @@
   "max_steer_rate_radps": 0.3,
   "speed_limit_mps": 0.2,
   "acceleration_mps2": 0.2,
+  "deceleration_mps2": 0.5,
+  "lateral_acceleration_mps2": 0.5,
   "geometry_confirmed": false,
   "bench_authorized": false,
   "independent_estop_verified": false,

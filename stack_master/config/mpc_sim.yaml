@@ -1,12 +1,22 @@
 controller_manager:
   ros__parameters:
     measure: true
+    control_loop_rate_hz: 40
     start_speed: 0.6
     wheelbase: 0.3302
     mpc_geometry_confirmed: true
     mpc_pose_to_rear_axle_m: 0.0
     mpc_max_steer_rad: 0.4189
     mpc_max_steer_rate_radps: 3.2
-    mpc_horizon: 15
+    mpc_horizon: 10
+    mpc_preview_dt: 0.1
+    mpc_braking_preview_ratio: 0.3
+    mpc_max_speed_mps: 2.0
+    mpc_max_accel_mps2: 1.5
+    mpc_max_decel_mps2: 2.5
+    mpc_max_lateral_accel_mps2: 3.0
+    mpc_max_iter: 400
+    mpc_solver_time_limit_s: 0.012
+    mpc_deadline_s: 0.020
     mpc_q_heading: 8.0
     mpc_r_rate: 2.0

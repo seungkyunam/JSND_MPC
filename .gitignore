@@ -44,6 +44,10 @@ race_utils/f110_utils/nodes/lap_analyser/data/
 /.vscode/
 /mpc-build.*/
 .pytest_cache/
+controller/docs/integrated_validation/**/*.csv
+controller/docs/integrated_validation/**/*.png
+controller/docs/integrated_validation/**/*.json
+controller/docs/integrated_validation/**/*.xml
 
 # Standalone source repository: generated and local files
 .git/
