@@ -6,6 +6,27 @@ import fcntl
 from pathlib import Path
 from .core import load_profile
 
+DDS_PROFILE = 'cyclonedds_vehicle_localhost.xml'
+
+
+def packaged_dds_uri():
+    """URI of the loopback-only CycloneDDS profile installed with this package."""
+    from ament_index_python.packages import get_package_share_directory
+    return 'file://' + str(Path(get_package_share_directory('mpc_vehicle')) / 'config' / DDS_PROFILE)
+
+
+def check_dds_environment():
+    """Only the packaged loopback profile (or none) may configure DDS."""
+    for key in ('ROS_DISCOVERY_SERVER', 'FASTRTPS_DEFAULT_PROFILES_FILE',
+                'FASTDDS_DEFAULT_PROFILES_FILE', 'ROS_STATIC_PEERS'):
+        if os.environ.get(key): raise ValueError('custom DDS configuration refused: '+key)
+    uri = os.environ.get('CYCLONEDDS_URI')
+    if uri:
+        if uri != packaged_dds_uri():
+            raise ValueError('custom DDS configuration refused: CYCLONEDDS_URI')
+        if os.environ.get('RMW_IMPLEMENTATION') != 'rmw_cyclonedds_cpp':
+            raise ValueError('packaged CycloneDDS profile requires RMW_IMPLEMENTATION=rmw_cyclonedds_cpp')
+
 
 def check(profile, mode, confirmation):
     p = load_profile(profile, mode)
@@ -17,9 +38,7 @@ def check(profile, mode, confirmation):
     if (os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE') != 'LOCALHOST'
             or os.environ.get('ROS_LOCALHOST_ONLY')):
         raise ValueError('Jazzy LOCALHOST discovery required; unset ROS_LOCALHOST_ONLY')
-    for key in ('ROS_DISCOVERY_SERVER', 'CYCLONEDDS_URI', 'FASTRTPS_DEFAULT_PROFILES_FILE',
-                'FASTDDS_DEFAULT_PROFILES_FILE', 'ROS_STATIC_PEERS'):
-        if os.environ.get(key): raise ValueError('custom DDS configuration refused: '+key)
+    check_dds_environment()
     if mode == 'shadow': return p
     expected = 'WHEELS_LIFTED' if mode == 'bench' else 'CONTROLLED_LOW_SPEED_TEST'
     if confirmation != expected:

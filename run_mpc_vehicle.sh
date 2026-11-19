@@ -21,9 +21,22 @@ export PYTHONDONTWRITEBYTECODE=1
 [[ ${ROS_DOMAIN_ID:-} =~ ^[0-9]{1,3}$ ]] && (( 10#$ROS_DOMAIN_ID <= 232 )) || {
   echo 'Explicit ROS_DOMAIN_ID (0..232) required; match local safety/joy nodes' >&2; exit 1;
 }
-for variable in ROS_DISCOVERY_SERVER CYCLONEDDS_URI FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE ROS_STATIC_PEERS; do
+for variable in ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE ROS_STATIC_PEERS; do
   [[ -z ${!variable:-} ]] || { echo "Custom DDS not supported for commissioning: $variable" >&2; exit 1; }
 done
+# The vehicle stack runs CycloneDDS with SPDP multicast on loopback; the
+# built-in LOCALHOST profile cannot discover it. Use the packaged loopback-only
+# profile instead of whatever CYCLONEDDS_URI the shell inherited.
+if [[ -n ${RMW_IMPLEMENTATION:-} && $RMW_IMPLEMENTATION != rmw_cyclonedds_cpp ]]; then
+  echo "Commissioning requires rmw_cyclonedds_cpp (got $RMW_IMPLEMENTATION)" >&2; exit 1
+fi
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+dds_profile="$build_root/install/mpc_vehicle/share/mpc_vehicle/config/cyclonedds_vehicle_localhost.xml"
+[[ -r $dds_profile ]] || { echo "Missing packaged DDS profile: $dds_profile" >&2; exit 1; }
+if [[ -n ${CYCLONEDDS_URI:-} && $CYCLONEDDS_URI != "file://$dds_profile" ]]; then
+  echo "Replacing inherited CYCLONEDDS_URI ($CYCLONEDDS_URI) with loopback-only $dds_profile" >&2
+fi
+export CYCLONEDDS_URI="file://$dds_profile"
 unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 confirm=''

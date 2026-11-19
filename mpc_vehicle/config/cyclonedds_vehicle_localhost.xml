@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Loopback-only CycloneDDS profile for mpc_vehicle commissioning.
+
+  The existing vehicle stack (racing_stack/cyclonedds.xml) discovers peers by
+  SPDP multicast on 127.0.0.1 plus the Wi-Fi interface, with
+  ParticipantIndex=none. A participant using rmw_cyclonedds' built-in
+  ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST profile (multicast off, unicast
+  peers on index ports) never discovers those nodes, in either direction.
+
+  This profile keeps the commissioning stack on the loopback interface only
+  (no Wi-Fi traffic, no remote joystick/pitwall control), but speaks the same
+  SPDP-multicast-on-loopback discovery as the existing vehicle nodes, so that
+  shadow mode can read the on-board sensors and the gate can see the on-board
+  joy/estop sources.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface address="127.0.0.1" multicast="true"/>
+      </Interfaces>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>none</ParticipantIndex>
+    </Discovery>
+    <Internal>
+      <SocketReceiveBufferSize min="10MB"/>
+      <SocketSendBufferSize min="10MB"/>
+    </Internal>
+  </Domain>
+</CycloneDDS>

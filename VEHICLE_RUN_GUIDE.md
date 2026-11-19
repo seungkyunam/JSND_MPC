@@ -182,7 +182,7 @@ export ROS_DOMAIN_ID
 bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" shadow
 ```
 
-기존 차량의 도메인과 대상 센서·joy·안전 입력 도메인을 확인하여 같은 값을 입력한다. 스크립트는 도메인을 임의로 추정하지 않고 명시된 0..232만 허용한다. Jazzy LOCALHOST discovery를 사용하므로 입력 노드는 차량과 같은 호스트에서 실행한다. 원격 joystick/Wi-Fi 제어는 지원하지 않는다.
+기존 차량의 도메인과 대상 센서·joy·안전 입력 도메인을 확인하여 같은 값을 입력한다. 스크립트는 도메인을 임의로 추정하지 않고 명시된 0..232만 허용한다. Jazzy LOCALHOST discovery와 패키지에 포함된 루프백 전용 CycloneDDS 프로파일(`mpc_vehicle/config/cyclonedds_vehicle_localhost.xml`)을 사용하므로 입력 노드는 차량과 같은 호스트에서 실행한다. 원격 joystick/Wi-Fi 제어는 지원하지 않는다.
 
 shadow는 하드웨어 노드를 전혀 띄우지 않는다. 기존 센서 그래프가 없다면 입력 대기 상태가 정상이다. 데이터가 있어도 gate는 시작 시 disarmed다. Shadow와 기존 PP의 데이터 비교는 가능하지만, 기존 PP 자체가 보내는 물리 출력까지 shadow가 차단하는 것은 아니다. 먼저 물리적으로 구동기를 비활성화한다.
 
@@ -244,7 +244,11 @@ read -r -p '확인한 로컬 차량 ROS_DOMAIN_ID (0..232, 모든 터미널 동�
 export ROS_DOMAIN_ID
 unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI="file://$MPC_BUILD/install/mpc_vehicle/share/mpc_vehicle/config/cyclonedds_vehicle_localhost.xml"
 ```
+
+`run_mpc_vehicle.sh`도 같은 루프백 전용 CycloneDDS 프로파일을 강제한다. 기존 차량 스택(`racing_stack/cyclonedds.xml`, 루프백 SPDP 멀티캐스트)과는 상호 발견되지만 Wi-Fi 인터페이스는 사용하지 않는다. CycloneDDS 기본 LOCALHOST 프로파일(설정 파일 없음)로는 기존 차량 노드를 발견하지 못한다.
 
 터미널 2: 장치가 연결된 차량에서 **하나만** 사용한다. 실제 버튼/축 매핑 확인 전 무장하지 않는다.
 
