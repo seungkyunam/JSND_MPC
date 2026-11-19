@@ -37,3 +37,13 @@ def test_validator_precedes_base_and_default_preserves_pp():
     base = next(index for index, item in enumerate(children)
                 if item.tag == 'include' and 'base_system.launch.xml' in item.get('file', ''))
     assert validator < base
+
+
+def test_single_terminal_wrapper_reuses_race_and_starts_joy():
+    root = ET.parse(ROOT / 'launch/race_with_joy.launch.xml').getroot()
+    args = {item.get('name'): item.get('default') for item in root.findall('arg')}
+    assert set(args) == {'map', 'sim', 'controller'}
+    include = root.find('include')
+    assert include is not None and include.get('file', '').endswith('/race.launch.xml')
+    joy = root.find('node')
+    assert joy is not None and joy.get('pkg') == 'joy' and joy.get('exec') == 'joy_node'

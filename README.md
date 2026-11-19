@@ -12,6 +12,21 @@ cd /home/sk/JSND_MPC
 SIM_ONLY_ISOLATED=YES bash run_test0_sim.sh
 ```
 
+기존 `race.launch.xml`과 `joy_node`를 한 터미널에서 함께 실행하려면:
+
+```bash
+cd /home/sk/JSND_MPC
+source controller/test/sim_environment.bash
+export SIM_ONLY_ISOLATED=YES
+ros2 launch stack_master race_with_joy.launch.xml \
+  map:=test0 sim:=true controller:=mpc
+```
+
+이 wrapper는 `race.launch.xml`을 포함하고 `joy_node`를 같은 launch 자식으로
+실행하므로 Ctrl+C가 두 프로세스 그룹에 함께 전달됩니다. 기존 개별 실행과
+PP 복구는 그대로 `ros2 run joy joy_node` 및 `race.launch.xml controller:=pp`를
+사용합니다.
+
 ## 범위와 검증 상태
 
 - 기존 ROS 패키지 소스·설정·지도·라이선스와 MPC 구현·테스트·배포 스크립트 포함

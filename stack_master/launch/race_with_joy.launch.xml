@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!-- Single-terminal convenience wrapper. It reuses race.launch.xml unchanged. -->
+<launch>
+  <arg name="map" description="Map name (folder in stack_master/maps/)"/>
+  <arg name="sim" default="false" description="Use simulator (true) or real hardware"/>
+  <arg name="controller" default="pp" description="Lateral controller: pp or mpc"/>
+
+  <!-- The race launch remains the owner of stack_master, sensors, mux and
+       controller selection. Its existing validation is intentionally retained. -->
+  <include file="$(find-pkg-share stack_master)/launch/race.launch.xml">
+    <arg name="map" value="$(var map)"/>
+    <arg name="sim" value="$(var sim)"/>
+    <arg name="controller" value="$(var controller)"/>
+  </include>
+
+  <!-- joy_node is a sibling child of this launch, so launch shutdown on Ctrl+C
+       terminates it together with the race process group. -->
+  <node pkg="joy" exec="joy_node" name="joy_node" output="screen"/>
+</launch>
