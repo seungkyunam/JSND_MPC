@@ -1,12 +1,11 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 12:25, 배선 정리 후 Bench 재개 — RB 전 점검 중)**
+> **현재 상태 요약 (2026-11-22 12:35, Bench RB 직전 — 사용자 구동 승인 대기)**
 > - 목표: 기존 JSND 구조 유지 + controller_manager에 Integrated MPC(속도+조향) → 실차 저속 자율주행
-> - 코드: Jetson `~/JSND_INT` `integrated-mpc` `82a1fd5` (변경 없음, 재빌드 없음)
-> - 실차: 12:17 race.launch(mpc) 재기동, **실행 중**. RB 미입력, **모터·서보 구동 0회**
-> - 통과: behavior GB_TRACK(차량 앞 비운 뒤 TRAILING 해소), RB 전 명령 경로 0 / VESC 명령 미발행
-> - 미통과: ① 노트북 RViz 미접속 → 2D Pose Estimate 미지정 ② MPC `invalid_local_control_input` 15~21% (정지 odom 속도 잡음)
-> - 다음: 2D Pose Estimate → mpc_status 재측정 → 사용자 승인 후 RB 3~5 s (상세 아래 "단계 6")
+> - 코드: Jetson `~/JSND_INT` `integrated-mpc` `82a1fd5` (변경·재빌드 없음)
+> - 실차: race.launch(mpc) 12:17부터 실행 중, 12:29 2D Pose Estimate 지정, rosbag 기록 중. **모터·서보 구동 0회**
+> - 통과: GB_TRACK 100%, MPC solved 90%(나머지 정지 odom 잡음 reject, 안전측), RB 전 명령 0·VESC 명령 미발행, VESC 11.4 V fault 0
+> - 다음: 사용자 승인 → LB → RB 3~5 s → LB (상세 아래 "단계 7")
 
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
@@ -209,3 +208,19 @@
 | P6 | `invalid_local_control_input` 15~21% | 정지 중 `/car_state/odom` twist.x 잡음 8 s n=400: min −0.0468, max +0.0404, **−0.02 미만 72건(18%)** → `Controller.py` `STANDSTILL_NOISE_MPS=0.02` 초과 → `invalid_or_reverse_speed` → reject(속도 0, 안전측) | 미해결. 거부 시 속도 램프가 0으로 리셋되어 정지 출발 시 최소 ERPM 도달 전 반복 리셋 가능(추정). 안전 한계라 임의 완화 안 함 → 자세 정합 후 재측정, 남으면 대응 결정 필요 |
 | P1 | 초기 자세 미지정 (재발) | 노트북 pitwall/RViz 미접속 | 사용자 2D Pose Estimate 대기 |
 | P2 | TF 관련 로그 165건 (`detect` 노드) | 미분석 | 관찰 |
+
+## 2026-11-22 단계 7: 2D Pose Estimate 후 재측정 및 구동 준비 (모터 구동 0회, 코드 변경 없음)
+| 항목 | 결과 |
+|---|---|
+| `/initialpose` | 12:29:25 수신 x=1.17 y=0.04 yaw=−0.008 (노트북 RViz) |
+| `/behavior_strategy` (5 s) | GB_TRACK 250/250 ✓ |
+| `/controller/mpc_status` (5 s) | solved 181 / `invalid_local_control_input` 20 → **solved 90%** |
+| 정지 odom vx (5 s, n=249) | min −0.0299, max +0.0283, −0.02 미만 24건(9.6%) → reject 비율과 일치 |
+| 위치추정 | x=1.04 y=−0.03 yaw=−0.01, 5 s 변동 0.05/0.03 m, wp119 0.19 m, 방향오차 0.58 rad (허용 0.7, 여유 작음) |
+| RB 전 | `active_host` none, high_level speed max 0.000, mux 출력 0건, VESC 11.4 V fault 0 ✓ |
+| 기록 | rosbag `~/bench_logs/bag_mpc_*` (12:34~) |
+
+### 판단
+- P6 원인 = **정지 odom 잡음 확정**. 코드 수정 안 함: reject는 속도 0(안전측)이고, `mpc_cmd_max_lead_mps=0.5`로 reject 사이 0.5 m/s까지 램프 가능. 바퀴 회전 후 odom>0이면 reject 소멸 예상(실차 확인 필요). 출발 시 단속 가능성 있음
+- 방향오차 0.58 rad: bench에서 바퀴 회전 시 추정 자세가 전진해 envelope 이탈 → STOP 가능(안전측)
+- 배터리 11.4 V로 저하 중
