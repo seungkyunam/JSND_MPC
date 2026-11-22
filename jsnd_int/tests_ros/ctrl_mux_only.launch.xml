@@ -1,0 +1,56 @@
+<launch>
+  <!-- GENERATED from race.launch.xml (controller blocks verbatim) + low_level simple_mux. No VESC/sensors. -->
+  <arg name="sim"        default="false" description="Use simulator (true) or real hardware (false)"/>
+  <arg name="controller" default="pp"
+       description="pp: legacy Pure-Pursuit + speed control (default). mpc: integrated speed+steering MPC (config/mpc_car.yaml). Any other value starts no controller."/>
+  <arg name="mpc_pydeps" default="$(env HOME)/JSND_INT/pydeps"
+       description="Directory holding only the osqp package; prepended to PYTHONPATH of controller_manager in mpc mode only."/>
+  <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen"
+        if="$(eval &quot;'$(var controller)' == 'pp'&quot;)">
+    <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
+    <!-- HEAD-TO-HEAD OVERLAY, and it must stay AFTER controller.yaml: the later
+         param block wins for the keys it names. It carries only the trailing
+         gains, which controller.yaml tunes for a static box and which are stiff
+         enough behind a MOVING opponent to floor the speed command at zero two
+         metres back (see that file's header for the arithmetic). quali.launch.xml
+         deliberately does not load it, because quali has static obstacles only,
+         where the base gains are the right ones. -->
+    <param from="$(find-pkg-share stack_master)/config/dynamic_controller.yaml"/>
+    <!-- Points at the BASE file, as upstream does. Note save_params writes the
+         whole L1 set, so saving while the overlay is loaded copies the H2H
+         trailing gains into controller.yaml. Leave save_params false in a race. -->
+    <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller.yaml"/>
+    <param name="sim" value="$(var sim)"/>
+  </node>
+  <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen"
+        if="$(eval &quot;'$(var controller)' == 'mpc'&quot;)">
+    <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
+    <!-- HEAD-TO-HEAD OVERLAY, and it must stay AFTER controller.yaml: the later
+         param block wins for the keys it names. It carries only the trailing
+         gains, which controller.yaml tunes for a static box and which are stiff
+         enough behind a MOVING opponent to floor the speed command at zero two
+         metres back (see that file's header for the arithmetic). quali.launch.xml
+         deliberately does not load it, because quali has static obstacles only,
+         where the base gains are the right ones. -->
+    <param from="$(find-pkg-share stack_master)/config/dynamic_controller.yaml"/>
+    <!-- Points at the BASE file, as upstream does. Note save_params writes the
+         whole L1 set, so saving while the overlay is loaded copies the H2H
+         trailing gains into controller.yaml. Leave save_params false in a race. -->
+    <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller.yaml"/>
+    <param name="sim" value="$(var sim)"/>
+    <!-- Integrated MPC: replaces PP steering AND legacy speed control. FTGONLY still runs FTG;
+         behavior_strategy, simple_mux, estop and VESC paths are unchanged. -->
+    <param from="$(find-pkg-share stack_master)/config/mpc_car.yaml"/>
+    <param name="lateral_controller" value="MPC" type="str"/>
+    <env name="PYTHONPATH" value="$(var mpc_pydeps):$(env PYTHONPATH '')"/>
+  </node>
+  <node pkg="stack_master" exec="simple_mux_node.py" name="simple_mux" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/CAR/vehicle_config.yaml"/>
+    <param name="in_topic"      value="/vesc/high_level/ackermann_cmd"/>
+    <param name="out_topic"     value="/vesc/ackermann_cmd"/>
+    <param name="joy_topic"     value="/joy"/>
+    <param name="joy_max_speed" value="4.0" type="float"/>
+    <param name="use_estop" value="true"/>
+    <param name="sim" value="false"/>
+  </node>
+</launch>

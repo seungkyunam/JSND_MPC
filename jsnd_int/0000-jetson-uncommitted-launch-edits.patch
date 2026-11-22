@@ -1,0 +1,68 @@
+diff --git a/stack_master/launch/mapping.launch.xml b/stack_master/launch/mapping.launch.xml
+index b06f698..94cc5cb 100644
+--- a/stack_master/launch/mapping.launch.xml
++++ b/stack_master/launch/mapping.launch.xml
+@@ -10,8 +10,9 @@
+   with raceline_generator.launch.xml.
+ 
+   While mapping the car is locked to a fixed, forward-only teleop: hold LT to roll
+-  at `mapping_speed` (1.0 m/s), steer with the right stick, nothing else. Start the
+-  joy driver yourself (`ros2 run joy joy_node`) - it is not launched here.
++  at `mapping_speed` (1.0 m/s), steer with the right stick, nothing else. The joy
++  driver (joy_node -> /joy) is launched here; pass launch_joy:=false if you
++  already run it elsewhere.
+ 
+     ros2 launch stack_master mapping.launch.xml map:=YOURMAP
+     ros2 launch stack_master mapping.launch.xml map:=YOURMAP mapping_speed:=1.5
+@@ -24,8 +25,9 @@
+        /joy_mapping (LT = drive forward, right stick = steer, nothing else), and
+        the mux's full-scale joy speed is pinned to mapping_speed so LT means
+        exactly that speed. Set mapping_teleop:=false to drive the raw pad at the
+-       usual 4.0 m/s instead. The `joy` node is NOT started here - run it
+-       yourself, e.g. `ros2 run joy joy_node`. -->
++       usual 4.0 m/s instead. The `joy` node is started below (launch_joy). -->
++  <arg name="launch_joy"     default="true"   description="Start joy_node (/joy) here; false if it already runs elsewhere"/>
++  <arg name="joy_device_id"  default="0"      description="joy_node device_id (/dev/input/jsN)"/>
+   <arg name="mapping_teleop" default="true"   description="Route the pad through mapping_joy_node (fixed-speed, forward-only)"/>
+   <arg name="mapping_speed"  default="1.0"    description="Speed (m/s) commanded while LT is held"/>
+   <arg name="trigger_axis"   default="2"      description="Joy axis for LT (Xbox layout on the Linux joy node)"/>
+@@ -51,6 +53,11 @@
+     <arg name="joy_max_speed"  value="$(var mux_joy_speed)"/>
+   </include>
+ 
++  <!-- Joystick driver -> /joy -->
++  <node pkg="joy" exec="joy_node" name="joy_node" output="screen" if="$(var launch_joy)">
++    <param name="device_id" value="$(var joy_device_id)" type="int"/>
++  </node>
++
+   <!-- Fixed-speed mapping teleop: hold LT to roll forward at mapping_speed, steer
+        with the right stick. Forward only, and autodrive can not be engaged. -->
+   <node pkg="stack_master" exec="mapping_joy_node.py" name="mapping_joy" output="screen"
+diff --git a/stack_master/launch/race.launch.xml b/stack_master/launch/race.launch.xml
+index 5342540..f0ccbb1 100644
+--- a/stack_master/launch/race.launch.xml
++++ b/stack_master/launch/race.launch.xml
+@@ -37,6 +37,9 @@
+        description="Forwarded to base_system: run lap_analyser's relocalizer node (pf only), which re-seeds the particle filter at the nearest global-waypoint pose every relocalize_every_n_laps completed laps. No-op under cartographer/kiss/sim. Pass auto_relocalize:=false to disable it entirely (e.g. while diagnosing a bad pose jump after a fast corner)."/>
+   <arg name="relocalize_every_n_laps" default="3"
+        description="Forwarded to base_system: completed laps between automatic pf re-seeds. Ignored when auto_relocalize:=false."/>
++  <arg name="launch_joy" default="true"
++       description="Start joy_node (/joy) on the real car (never in sim). Pass launch_joy:=false if it already runs elsewhere."/>
++  <arg name="joy_device_id" default="0" description="joy_node device_id (/dev/input/jsN)"/>
+   <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
+   <let name="racecar_version" value="SIM" if="$(var sim)"/>
+   <let name="racecar_version" value="CAR" unless="$(var sim)"/>
+@@ -59,6 +62,13 @@
+     <arg name="relocalize_every_n_laps" value="$(var relocalize_every_n_laps)"/>
+   </include>
+ 
++  <!-- ===== Joystick driver -> /joy (real car only; simple_mux reads it for human drive / autodrive arming) ===== -->
++  <group unless="$(var sim)">
++    <node pkg="joy" exec="joy_node" name="joy_node" output="screen" if="$(var launch_joy)">
++      <param name="device_id" value="$(var joy_device_id)" type="int"/>
++    </node>
++  </group>
++
+   <!-- ===== Perception: LiDAR obstacle detection (C++) + tracking (Python) =====
+        detect publishes /detect/raw_obstacles (Frenet filled at the source);
+        tracking reads it and publishes /tracking/obstacles_raw. tracking_merger

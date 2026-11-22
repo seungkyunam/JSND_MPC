@@ -76,3 +76,7 @@
 - VESC 속도 PID 최소 ERPM 실제값 미확인 (시험은 900 가정)
 - simple_mux 명령 freshness 1.0 s 그대로 (설정만으로 0.25 s 가능, 미적용)
 - RB 전 대기 중에도 setpoint가 최대 0.5 m/s까지 쌓여 RB 즉시 0.5 m/s 명령 (PP는 즉시 프로파일 속도)
+
+## 2026-11-22 단계 2b: 통합 코드 GitHub 반영
+- 이 브랜치 `jsnd_int/`에 JSND_INT 수정 파일 4개 + 패치 2개 + 시험 코드 추가 (루트 `controller/`, `stack_master/` 및 Jetson 미커밋 변경은 건드리지 않음)
+- push 직전 재시험: 오프라인 8 passed (solver p99 3.5 ms), ROS safety 시나리오 전 항목 기대대로 (제어 40.1 Hz, 주기 p99 28 ms, MPC p99 6.3 ms)

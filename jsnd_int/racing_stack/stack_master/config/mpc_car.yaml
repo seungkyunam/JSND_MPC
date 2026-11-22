@@ -1,0 +1,34 @@
+# Integrated speed+steering MPC for the real car (race.launch.xml controller:=mpc).
+# Loaded AFTER controller.yaml / dynamic_controller.yaml; only MPC keys live here.
+# First low-speed runs: conservative limits. Legacy PP/speed settings stay untouched.
+controller_manager:
+  ros__parameters:
+    measure: true
+    control_loop_rate_hz: 40          # sim-validated rate (Jetson CPU margin); PP keeps 50 Hz
+    # --- geometry (source: CAR/vehicle_config.yaml + mpc-build.vehicle-assets/vehicle.json,
+    #     geometry_confirmed=true there) ---
+    wheelbase: 0.324
+    mpc_pose_to_rear_axle_m: 0.0      # /car_state/odom pose is the rear axle
+    mpc_geometry_confirmed: true
+    # --- actuator limits: CONFIRM ON THE CAR before driving ---
+    mpc_max_steer_rad: 0.4            # = ftg_max_steer; servo range allows ~0.49 rad
+    mpc_max_steer_rate_radps: 3.2     # sim value; bench profile used 0.3 (commissioning only)
+    # --- speed envelope (first low-speed run) ---
+    mpc_max_speed_mps: 1.0
+    mpc_max_accel_mps2: 1.0
+    mpc_max_decel_mps2: 2.0
+    mpc_max_lateral_accel_mps2: 2.0
+    mpc_braking_preview_ratio: 0.3
+    # --- solver budget (sim-tuned) ---
+    mpc_horizon: 10
+    mpc_preview_dt: 0.1
+    mpc_max_iter: 400
+    mpc_solver_time_limit_s: 0.012
+    mpc_deadline_s: 0.020
+    mpc_q_heading: 8.0
+    mpc_r_rate: 2.0
+    # --- acceleration -> VESC speed setpoint ---
+    mpc_cmd_max_lead_mps: 0.5         # setpoint may lead measured odom speed by at most this
+    mpc_odom_timeout_s: 0.2           # stale /car_state/odom -> 0 speed
+    # --- existing FTG (FTGONLY) is unchanged; only its speed cap is lowered for first runs ---
+    ftg_max_speed: 1.0                # controller.yaml keeps 2.0 for PP mode
