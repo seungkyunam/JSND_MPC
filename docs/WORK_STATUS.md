@@ -106,3 +106,20 @@
 - **VESC 최소 ERPM 미확인**: 11-20 기록상 923 ERPM 명령 → 실제 ~460~530 ERPM 회전(무부하). 그 이하 미시험
 - **실제 조향 한계·변화율 미측정**: 0.15 rad / 0.3 rad/s는 보수값. servo gain −0.99 / offset 0.487도 검증 기록 없음
 - JSND에는 Gate의 A 버튼 E-stop이 **없음**. 정지 수단 = LB(스틱 중립=0), controller/mux 명령 끊김(0.25 s + VESC watchdog 0.2 s), 배터리 스위치
+
+## 2026-11-22 단계 3b: GitHub ↔ Jetson 실행 코드 동일성 검증 (코드 변경 없음)
+- 대상: GitHub `jsnd-integrated-mpc` `a8f7524` (새로 clone) ↔ Jetson `~/JSND_INT` `82a1fd5` 소스 ↔ `~/JSND_INT/install` 설치본(실제 실행)
+- sha256 일치 (앞 12자리):
+  | 파일 | 해시 |
+  |---|---|
+  | `combined/src/Controller.py` | be24290c1b1e |
+  | `controller_manager.py` | fa5e0ede4755 |
+  | `launch/race.launch.xml` | be47b8c308e5 |
+  | `launch/low_level.launch.xml` | 16bfc164fc4e |
+  | `config/mpc_car.yaml` | 8f9da23dfb0c |
+  | `scripts/simple_mux_node.py` | 42a2397d5315 |
+  | `mpc/integrated_mpc.py` (루트 `controller/controller/mpc/`) | e1bbcc6a0691 |
+  | `mpc/configuration.py` / `lateral_mpc.py` / `bicycle.py` / `__init__.py` | 6c1ce57cf60e / 772bed10520c / 841f983909bd / f963a5520473 |
+- 패치 재현: JSND `2091417` + `0000` + `git am 0001 0002` → JSND_INT의 변경 파일 12개(mapping.launch 포함) 모두 동일
+- 이 브랜치가 main 대비 추가한 것: `docs/` 3개, `jsnd_int/` 14개뿐. 맵·빌드·venv/pydeps·인증정보 없음
+- JSND 원본(미커밋 2건 그대로), `~/JSND_MPC` 미커밋 18건, `main`(`c8f84e2`) 무변경
