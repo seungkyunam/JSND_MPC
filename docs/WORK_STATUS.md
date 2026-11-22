@@ -461,3 +461,8 @@ JSND_INT `91d0e26 → 8c35270`, 이 브랜치 `jsnd_int/0006-*.patch` + 사본. 
 - 100 Hz 실측(전체 스택, load 13/6코어, MAXN_SUPER): 모니터 켬 controller 74~78 Hz·MPC p99 14.5 ms·deadline 12% / 모니터 끔 89 Hz·p99 11.3 ms·deadline 4% → **100 Hz 불가**. rclpy 모니터 CPU ~27%
 - 사용자 결정 → JSND_INT `22ab8de`: race.launch MPC 기본 **50 Hz**, `mpc_deadline_s = 0.8/rate`, `mpc_solver_time_limit_s = 0.4/rate` (100 Hz면 기존 8/4 ms, 50 Hz 16/8 ms), `mpc_monitor:=false` 기본(켜려면 `mpc_monitor:=true`)
 - 50 Hz 실측(래치): controller **50.2 Hz** (p50 19.9, p99 28.5 ms), mux 100.2 Hz, MPC p50 0.77 / **p99 5.64** / max 7.74 ms, load 7.5. mpc_status `outside_heading_envelope` 100% → PF 초기 자세 미지정(RViz 2D Pose Estimate 필요). 속도 0, `latched: startup`
+
+## 2026-11-22 단계 15: MPC 최고속도 1.5 m/s 프로파일
+- 사용자 요청(1.0 x 1.5). JSND_INT `e53b31a`: `config/mpc_profile_1p5.yaml` 추가(`mpc_max_speed_mps` 1.5만). 조향 0.4/0.3, 50 Hz, LB 수동 1.0 그대로
+- MPC 파라미터는 실행 중 변경 불가 → launch 재기동 `mpc_profile:=1p5`. 재기동 확인: max_speed 1.5, 50 Hz, 래치, 모터 0. 2D Pose Estimate 재지정 필요
+- 참고: 횡가속 한도 2.0 m/s² → 곡률 1.11 코너는 MPC가 약 1.34 m/s 이하로 감속
