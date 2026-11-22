@@ -455,3 +455,9 @@ JSND_INT `91d0e26 → 8c35270`, 이 브랜치 `jsnd_int/0006-*.patch` + 사본. 
 - pitwall 패널(`race_utils/pitwall`): Telemetry 아래 "MPC monitor" 고정폭 텍스트. 수신 시에만 갱신(~2 Hz), 3 s 끊기면 N/A. 기존 기능 변경 없음
 - 검증: `stack_master`·`pitwall` 빌드 성공(JSND_INT 오버레이). 모니터 노드 단독(domain 219): 데이터 없음 → 모두 N/A, 주입값 → 주기·p99·초과·실패 개수 정상
 - 노트북 반영: 노트북 작업본에 이 사본(pitwall 2파일)을 넣고 READMEforlaptop 146행의 `colcon build --packages-select stack_master pitwall` 재빌드 필요. 노트북이 relay(domain 174) 경유면 `/pitwall/mpc_monitor`를 relay 화이트리스트에 추가해야 함(173 직접 접속이면 불필요)
+
+## 2026-11-22 단계 14: 실차 무구동 점검 (래치 유지, 모터 0, E-stop 해제 없음)
+- 장치: VESC `/dev/ttyACM0`, F710 `js0`, LiDAR ping OK. JSND_INT = install 확인
+- 100 Hz 실측(전체 스택, load 13/6코어, MAXN_SUPER): 모니터 켬 controller 74~78 Hz·MPC p99 14.5 ms·deadline 12% / 모니터 끔 89 Hz·p99 11.3 ms·deadline 4% → **100 Hz 불가**. rclpy 모니터 CPU ~27%
+- 사용자 결정 → JSND_INT `22ab8de`: race.launch MPC 기본 **50 Hz**, `mpc_deadline_s = 0.8/rate`, `mpc_solver_time_limit_s = 0.4/rate` (100 Hz면 기존 8/4 ms, 50 Hz 16/8 ms), `mpc_monitor:=false` 기본(켜려면 `mpc_monitor:=true`)
+- 50 Hz 실측(래치): controller **50.2 Hz** (p50 19.9, p99 28.5 ms), mux 100.2 Hz, MPC p50 0.77 / **p99 5.64** / max 7.74 ms, load 7.5. mpc_status `outside_heading_envelope` 100% → PF 초기 자세 미지정(RViz 2D Pose Estimate 필요). 속도 0, `latched: startup`
