@@ -60,7 +60,11 @@ SCENARIOS = {
                           ('LB manual then A', 12.8, 'drive'), ('A button (LB held)', 13.0, 'latch'),
                           ('joy lost', 16.8, 'latch'), ('soft estop topic', 21.5, 'latch')],
                   phases=[]),
+    # 2026-11-22 step 12: LB manual with the stick fully forward -> MPC mode caps at joy_max_speed 1.0 m/s
+    'lbmax': None,
 }
+SCENARIOS['lbmax'] = dict(SCENARIOS['estop'], stick_value=1.0, events=[
+    (('LB + stick 1.0 (manual, full)' if n.startswith('LB + stick') else n), t, k) for n, t, k in SCENARIOS['estop']['events']])
 SC = SCENARIOS[sys.argv[1] if len(sys.argv) > 1 else 'safety']
 PHASES = SC['phases']
 
@@ -320,7 +324,7 @@ def main():
     end = time.monotonic() + SC['duration']
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=0.005)
-    if sys.argv[1:2] == ['estop']:
+    if sys.argv[1:2] in (['estop'], ['lbmax']):
         summarize_estop(node)
     else:
         summarize(node.log)

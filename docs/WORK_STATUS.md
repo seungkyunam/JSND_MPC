@@ -1,10 +1,9 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 단계 11 — 실차 점검 준비, 차량 전원 꺼짐, 모터 구동 없음)**
-> - 코드·빌드: GitHub `fd4bf56` = JSND_INT `701b49a` = install (미커밋 없음). 버튼 RB 자율 / LB 기존 수동 / A 비상정지 래치 유지
-> - 실차 100 Hz·OSQP·E-stop 점검: **미실시** — VESC `/dev/ttyACM0`·LiDAR 미응답(전원 꺼짐 추정). 읽기 전용 점검 스크립트 `jsnd_int/tests_ros/bench_check.py` 준비
-> - **사용자 결정 대기**: ① MPC 조향 한계(0.15 유지 / 0.4 후보) ② LB 수동 최고속도(A 4.0 유지 / B 1.0 / C 2.0) ③ 전원 투입·launch 승인
-> - 1랩 완주는 ① 결정 필요 (0.15 rad로 코너 불가)
+> **현재 상태 요약 (2026-11-22 단계 12 — 조향 0.4 rad · MPC 모드 LB 1.0 m/s 적용, 모터 구동 없음)**
+> - 코드: JSND_INT `91d0e26` = install. MPC 조향 ±0.4 rad / 변화율 0.3 rad/s 유지, MPC 모드 LB 수동 최고 1.0 m/s(PP 모드 4.0 그대로). RB 자율 / LB 수동 / A 비상정지 래치
+> - 실차 점검 미실시: VESC·LiDAR 전원 상태 미확인(단계 11 기준 꺼짐). 다음은 전원 투입 → launch → bench_check
+> - 남은 확인: 서보 기계 한계·바퀴 실제 각도 미측정, 0.3 rad/s 변화율 실차 추종 검증 필요
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
 
@@ -420,3 +419,22 @@ python3 ~/JSND_INT/tests_ros/bench_check.py 10      # 읽기 전용
 | mpc_status | solved 대부분 |
 | controller 속도 (RB 전) | 0.000 |
 | estop_state | 시작 `latched: startup…`, A 후 `latched: button [0]` |
+
+
+## 2026-11-22 단계 12: MPC 조향 0.4 rad · MPC 모드 LB 수동 1.0 m/s (모터 구동 없음)
+JSND_INT `701b49a → 91d0e26` (`stack_master/config/mpc_car.yaml`, `stack_master/launch/race.launch.xml`만), 이 브랜치 `jsnd_int/0005-*.patch` + 사본. 재빌드: `stack_master`만. JSND 원본·PP·FTG 코드 변경 없음.
+
+### 1. 조향
+- `mpc_max_steer_rad` 0.15 → **0.4** (= FTG `ftg_max_steer`, 수동 `joy_max_steer`). servo = 0.487 ∓ 0.99×0.4 = **0.091 ~ 0.883** → VESC servo_min/max 0~1 안(0~1 ⇔ +0.492/−0.518 rad)
+- simple_mux 조향 클립(`_clip`)은 기존부터 주석 처리 → mux는 조향을 자르지 않음(확인). 서보 클램프는 VESC 드라이버(0~1)
+- `mpc_max_steer_rate_radps` **0.3 유지**. 오프라인 11_18_6 1랩(1.0 m/s, 이상적 운동학 모델): 최대 |조향| 0.336, 변화율이 0.3에서 포화, 최대 횡오차 0.052 m (3.2 rad/s와 동일 수준). 서보 지연·위치추정 튐은 모델에 없음 → **실차 검증 필요**
+- 서보 기계 끝점·바퀴 실제 각도 **미측정**
+
+### 2. LB 수동 최고속도
+- race.launch `joy_max_speed` 인자: `controller:=mpc` → **1.0 m/s**(스틱 끝 4614 ERPM), 그 외 4.0(low_level 기본값과 동일 → PP 동작 불변)
+- launch 해석(프로세스 미실행): mpc → mux `joy_max_speed 1.0`, safety_mode True, 100 Hz / controller 조향 0.4·0.3, 100 Hz, N=10, vmax 1.0. pp → `joy_max_speed 4.0`, 50 Hz
+- ROS 모의 `tests_ros/run.sh mpc lbmax`(domain 219, VESC 없음, LB+스틱 1.0): mux 최대 **1.000 m/s**, A 래치 0.055 s, mux/controller 100.1 Hz, MPC p99 2.46 ms, solved 2394/2395(deadline 1건)
+
+### 3. 시험
+- 오프라인 `test_mpc_integration.py -k "step12 or bench_lifted"`: 4 passed
+- 참고: `test_stabilization.py` 2건(`held_steering_worsens…`, `drive_windows_no_osqp…`)은 0.15 조건에서 기록된 bench 입력 재생 진단이라 CAR 설정 0.4를 읽으면 실패. lowspeed+0.4 재생은 OSQP 실패 0건, exp2mps(2.0, bench 전용)+0.4는 368틱 중 1틱 4 ms 시간한도(해당 틱 정지). 시험 고정은 사용자 지시로 중단(미수정)

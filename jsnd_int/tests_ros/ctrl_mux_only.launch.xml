@@ -11,6 +11,7 @@
        description="simple_mux latched E-stop: LB/A = stop latch (no manual drive), RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
   <arg name="mux_rate_hz" default="$(eval &quot;'100' if '$(var controller)' == 'mpc' else '50'&quot;)"
        description="simple_mux output rate. Default 100 Hz for controller:=mpc, legacy 50 Hz otherwise."/>
+  <arg name="joy_max_speed" default="$(eval &quot;'1.0' if '$(var controller)' == 'mpc' else '4.0'&quot;)"/>
   <arg name="mpc_pydeps" default="$(env HOME)/JSND_INT/pydeps"
        description="Directory holding only the osqp package; prepended to PYTHONPATH of controller_manager in mpc mode only."/>
   <!-- controller:=pp (unchanged legacy node) -->
@@ -62,7 +63,7 @@
     <param name="in_topic"      value="/vesc/high_level/ackermann_cmd"/>
     <param name="out_topic"     value="/vesc/ackermann_cmd"/>
     <param name="joy_topic"     value="/joy"/>
-    <param name="joy_max_speed" value="4.0" type="float"/>
+    <param name="joy_max_speed" value="$(var joy_max_speed)" type="float"/>
     <param name="use_estop" value="true"/>
     <param name="joy_freshness_threshold" value="0.25" type="float"/>  <!-- = low_level cmd_freshness default -->
     <param name="safety_mode" value="$(var safety_mode)"/>

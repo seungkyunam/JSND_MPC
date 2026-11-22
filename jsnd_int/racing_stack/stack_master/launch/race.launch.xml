@@ -29,7 +29,9 @@
        description="controller:=mpc only: control loop rate (MPC solved every tick). 40 = previous rate."/>
   <!-- simple_mux options, forwarded through base_system/localization/low_level -->
   <arg name="safety_mode" default="$(eval &quot;'$(var controller)' == 'mpc'&quot;)"
-       description="simple_mux latched E-stop: LB/A = stop latch (no manual drive), RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
+       description="simple_mux latched E-stop: A = stop latch, LB hold = manual drive, RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
+  <arg name="joy_max_speed" default="$(eval &quot;'1.0' if '$(var controller)' == 'mpc' else '4.0'&quot;)"
+       description="simple_mux manual (LB) speed at full stick [m/s]. controller:=mpc: 1.0 (= MPC lowspeed). Otherwise legacy 4.0 (low_level default)."/>
   <arg name="mux_rate_hz" default="$(eval &quot;'100' if '$(var controller)' == 'mpc' else '50'&quot;)"
        description="simple_mux output rate. Default 100 Hz for controller:=mpc, legacy 50 Hz otherwise."/>
   <arg name="mpc_pydeps" default="$(env HOME)/JSND_INT/pydeps"

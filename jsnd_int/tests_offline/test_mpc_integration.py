@@ -98,15 +98,60 @@ def test_legacy_setpoint_never_leaves_standstill():
 
 
 def test_bench_lifted_conservative_steer():
-    """Next real test: wheels lifted, mpc_car.yaml as is (steer 0.15 rad / 0.3 rad/s)."""
+    """Next real test: wheels lifted, mpc_car.yaml as is (step 12: steer 0.4 rad / 0.3 rad/s)."""
     log, status, _ = closed_loop(make_controller(), 400, lifted=True)
     cmd, v, steer = log[:, 0], log[:, 1], log[:, 2]
     assert all(s == 'solved' for s in status), set(status)
     assert cmd[0] <= CAR['mpc_max_accel_mps2'] * DT + 1e-9          # starts from 0
     assert np.all(np.diff(cmd) <= CAR['mpc_max_accel_mps2'] * DT + 1e-9)  # limited accel
     assert v.max() > 0.5 and cmd.max() <= CAR['mpc_max_speed_mps'] + 1e-9
-    assert np.abs(steer).max() <= 0.15 + 1e-9
-    assert np.all(np.abs(np.diff(steer)) <= 0.3 * DT + 1e-9)
+    assert np.abs(steer).max() <= CAR['mpc_max_steer_rad'] + 1e-9
+    assert np.all(np.abs(np.diff(steer)) <= CAR['mpc_max_steer_rate_radps'] * DT + 1e-9)
+
+
+VEHICLE = yaml.safe_load((ROOT / 'config/CAR/vehicle_config.yaml').read_text())['vesc/**']['ros__parameters']
+LAUNCH = (ROOT / 'launch/race.launch.xml').read_text()
+
+
+def test_step12_steer_limit_and_servo_range():
+    """MPC steer = legacy FTG/manual 0.4 rad; rate kept 0.3 rad/s; servo command stays inside VESC 0..1."""
+    assert CAR['mpc_max_steer_rad'] == 0.4 and CAR['mpc_max_steer_rate_radps'] == 0.3
+    assert 'ftg_max_steer: 0.4' in (ROOT / 'config/controller.yaml').read_text()
+    gain, off = VEHICLE['steering_angle_to_servo_gain'], VEHICLE['steering_angle_to_servo_offset']
+    servo = [off + gain * d for d in (-CAR['mpc_max_steer_rad'], CAR['mpc_max_steer_rad'])]
+    assert VEHICLE['servo_min'] < min(servo) and max(servo) < VEHICLE['servo_max'], servo
+    for prof in ROOT.glob('config/mpc_profile_*.yaml'):   # profiles must not override steering
+        assert 'steer' not in prof.read_text().split('ros__parameters')[-1]
+    assert CAR['control_loop_rate_hz'] == 100 and CAR['mpc_horizon'] == 10
+
+
+def test_step12_lb_manual_speed_mpc_only():
+    """race.launch: joy_max_speed 1.0 only for controller:=mpc, legacy 4.0 otherwise."""
+    assert ('<arg name="joy_max_speed" default="$(eval &quot;\'1.0\' if \'$(var controller)\' == '
+            '\'mpc\' else \'4.0\'&quot;)"') in LAUNCH
+    low = (ROOT / 'launch/low_level.launch.xml').read_text()
+    assert 'name="joy_max_speed"  default="4.0"' in low
+
+
+def test_step12_lap_with_car_limits():
+    """One 11_18_6 lap at 1.0 m/s with mpc_car.yaml limits as shipped (0.4 rad / 0.3 rad/s)."""
+    ctrl = make_controller()
+    length = np.sum(np.linalg.norm(np.diff(RACELINE[:, :2], axis=0), axis=1))
+    pose = pose_on_line(0).astype(float); v = dist = max_lat = 0.0; steers = []
+    while dist < length and len(steers) < 3000:
+        cmd, steer = step(ctrl, 'GB_TRACK', pose, local_window(nearest(pose)), v)
+        assert ctrl.mpc_result.status == 'solved', ctrl.mpc_result.status
+        v += ((cmd if abs(cmd * ERPM_GAIN) >= VESC_MIN_ERPM else 0.0) - v) * DT / 0.15
+        yaw = pose[0, 2]
+        pose[0, 0] += v * np.cos(yaw) * DT; pose[0, 1] += v * np.sin(yaw) * DT
+        pose[0, 2] += v * np.tan(steer) / CAR['wheelbase'] * DT
+        dist += v * DT; steers.append(steer)
+        max_lat = max(max_lat, np.min(np.linalg.norm(RACELINE[:, :2] - pose[0, :2], axis=1)))
+    steers = np.array(steers)
+    assert dist >= length and max_lat < 0.10
+    assert np.abs(steers).max() <= 0.4 + 1e-9 and np.abs(steers).max() > 0.15   # 0.15 would not suffice
+    print(f'\nlap {length:.1f} m in {len(steers)*DT:.1f} s, max|steer| {np.abs(steers).max():.3f}, '
+          f'max rate {np.abs(np.diff(steers)).max()/DT:.3f} rad/s, max lateral {max_lat:.3f} m')
 
 
 def test_integrated_setpoint_starts_and_respects_limits():

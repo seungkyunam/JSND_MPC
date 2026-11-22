@@ -1,10 +1,10 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
-## 0. 현재 위치 (2026-11-22 단계 11 — WORK_STATUS 참고)
-- 코드: GitHub `fd4bf56` = JSND_INT `701b49a` = install. 버튼 RB 자율(유지) / LB 기존 수동(유지, 최대 4.0 m/s) / A 비상정지 래치
-- 실차 점검 보류: VESC·LiDAR 전원 꺼짐. 점검 스크립트 `~/JSND_INT/tests_ros/bench_check.py` (= `jsnd_int/tests_ros/bench_check.py`) 준비
-- **사용자 결정 대기**: ① MPC 조향 한계 0.15 유지 / 0.4 후보 (1랩 필수) ② LB 수동 최고속도 A 4.0 / B 1.0 / C 2.0 ③ 전원 투입·launch 승인
-- 다음: 전원 투입 → launch → 2D Pose Estimate → `bench_check.py 10` → (승인) reset → RB → A. 최소 명령어는 WORK_STATUS 단계 11
+## 0. 현재 위치 (2026-11-22 단계 12 — WORK_STATUS 참고)
+- 코드: JSND_INT `91d0e26` = install. MPC 조향 ±0.4 rad / 0.3 rad/s, MPC 모드 LB 수동 최고 1.0 m/s(PP 4.0 불변). RB 자율 / LB 수동 / A 비상정지 래치
+- 실차 모터 구동 없음. VESC·LiDAR 전원 상태 미확인
+- 다음: 전원 투입 → launch → 2D Pose Estimate → `bench_check.py 10` → (승인) reset → RB → A (4바퀴 공중). 이후 서보만으로 조향 끝점·바퀴 각도 측정, 0.3 rad/s 추종 확인
+- 4-1의 `git log` 기대값은 `91d0e26`, 4-6-2의 servo 범위는 0.091–0.883
 
 ## 1. 환경 (Jetson)
 | 항목 | 값 |

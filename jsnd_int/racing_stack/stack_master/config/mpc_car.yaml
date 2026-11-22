@@ -16,10 +16,14 @@ controller_manager:
     wheelbase: 0.324
     mpc_pose_to_rear_axle_m: 0.0      # /car_state/odom pose is the rear axle
     mpc_geometry_confirmed: true
-    # --- actuator limits: UNMEASURED. Conservative values verified on 2026-11-20 bench
-    #     (mpc-build.vehicle-assets/vehicle.json). Servo 0.487 -/+ 0.99*0.15 = 0.339..0.636,
-    #     inside servo_min/max 0..1 and FTG's 0.4 rad. Raise only after measuring the car. ---
-    mpc_max_steer_rad: 0.15
+    # --- actuator limits: servo mechanical limit / wheel angle still UNMEASURED. ---
+    # 2026-11-22 (step 12): max steer 0.15 -> 0.4 rad = legacy FTG (ftg_max_steer) and
+    #   manual (joy_max_steer) limit already used on this car. Servo = 0.487 -/+ 0.99*0.4
+    #   = 0.091..0.883, inside servo_min/max 0..1 (0..1 <=> +0.492/-0.518 rad); PP uses 0.53.
+    # Rate 0.3 rad/s kept (2026-11-20 bench value). Offline 11_18_6 lap at 1.0 m/s with
+    #   0.4/0.3: max |steer| 0.336, rate saturates at 0.3, max lateral error 0.05 m (same as
+    #   3.2 rad/s). Real servo lag / localisation jumps not modelled -> verify on the car.
+    mpc_max_steer_rad: 0.4
     mpc_max_steer_rate_radps: 0.3
     # --- speed envelope (first low-speed run) ---
     mpc_max_speed_mps: 1.0            # profile overlay sets the active value (2.0 only in mpc_profile_exp2mps.yaml)
