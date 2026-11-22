@@ -180,7 +180,9 @@ class Controller:
 
     def _report_mpc_result(self):
         if self.mpc_result.status != self._mpc_last_status:
-            if self.mpc_result.success:
+            if self.mpc_result.success and self.mpc_result.status != 'solved':
+                self.logger_warn(f"[MPC] {self.mpc_result.status}")  # bounded plan continuation
+            elif self.mpc_result.success:
                 self.logger_info("[MPC] tracking local path")
             else:
                 self.logger_warn(f"[MPC] STOP requested: {self.mpc_result.status}")
@@ -236,9 +238,11 @@ class Controller:
                 result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
             else:
                 result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints, self.curr_steering_angle)
-        except (ValueError, IndexError, TypeError):
+        except (ValueError, IndexError, TypeError) as exc:
+            # Reason kept in the status (e.g. invalid_or_reverse_speed) so the log
+            # tells input loss from a reverse/odom-undershoot after hard braking.
             rear = np.zeros(3)
-            result = self.lateral_mpc.reject('invalid_local_control_input', self.curr_steering_angle)
+            result = self.lateral_mpc.reject('invalid_local_control_input:'+str(exc), self.curr_steering_angle)
         self.mpc_result = result
         self._report_mpc_result()
         steering = result.steering if result.success else self._mpc_recenter_steering()

@@ -61,7 +61,8 @@ def legacy_module():
 
 
 # Legacy bench configuration (what ran at 12:37-12:48): 40 Hz, 400 iterations, 12 ms.
-LEGACY = {'mpc_max_iter': 400, 'mpc_solver_time_limit_s': 0.012, 'mpc_deadline_s': 0.020}
+LEGACY = {'mpc_max_iter': 400, 'mpc_solver_time_limit_s': 0.012, 'mpc_deadline_s': 0.020,
+          'mpc_max_steer_rad': 0.15}   # steer limit in force at the 2026-11-22 bench (step 12 raised it to 0.4)
 
 
 def replay(mpc, idx, sequential=True):
@@ -132,12 +133,20 @@ def test_drive_windows_no_osqp_failure_and_equivalent_to_legacy():
     finally:
         im.IntegratedMPC.WARM_START_DUAL = True
     same = [(x, y) for x, y in zip(a, b) if x.status == y.status == 'solved']
-    assert sum(x.status != y.status for x, y in zip(a, b)) <= 1
+    # 2026-11-22 profile refinement: legacy STOPs on a profile miss at the reached
+    # positions; the new module re-solves with tightened stage caps (same strict check).
+    changed = collections.Counter((x.status, y.status) for x, y in zip(a, b) if x.status != y.status)
+    assert set(changed) <= {('nonlinear_speed_profile_violation', 'solved')}, changed
     assert len(same) > 0.8 * len(idx)
     diff = np.array([[x.steering - y.steering, x.speed - y.speed] for x, y in same])
     assert np.abs(diff).max() < 5e-4
-    new_seq = replay(make_mpc(rate=100), idx)
+    # inputs were recorded with the 0.15 rad limit -> replay under that limit
+    new_seq = replay(make_mpc({'mpc_max_steer_rad': 0.15}, rate=100), idx)
     assert not any(r.status.startswith('osqp:') for r in new_seq)
+    # step 12 (0.4 rad): real-car lowspeed profile has no OSQP failure on the same inputs.
+    # (exp2mps 2.0 m/s + 0.4 rad: 1/368 ticks hits the 4 ms time limit -> that tick stops; bench-only profile)
+    low = replay(make_mpc(rate=100, profile='lowspeed'), idx)
+    assert CAR['mpc_max_steer_rad'] == 0.4 and not any(r.status.startswith('osqp:') for r in low)
 
 
 def test_budget_miss_recovers_over_ticks():

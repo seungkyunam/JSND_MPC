@@ -1,0 +1,409 @@
+From 586ba135c03304d0f1777c7536c64ff28da543c3 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Sun, 22 Nov 2026 15:53:32 +0900
+Subject: [PATCH] MPC corner stall: profile refinement, steer-rate-consistent
+ caps, bounded plan continuation on compute misses
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../controller/combined/src/Controller.py     |  10 +-
+ controller/controller/mpc/integrated_mpc.py   | 298 ++++++++++++------
+ 2 files changed, 213 insertions(+), 95 deletions(-)
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index d7ecb9e..0a51a41 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -180,7 +180,9 @@ class Controller:
+ 
+     def _report_mpc_result(self):
+         if self.mpc_result.status != self._mpc_last_status:
+-            if self.mpc_result.success:
++            if self.mpc_result.success and self.mpc_result.status != 'solved':
++                self.logger_warn(f"[MPC] {self.mpc_result.status}")  # bounded plan continuation
++            elif self.mpc_result.success:
+                 self.logger_info("[MPC] tracking local path")
+             else:
+                 self.logger_warn(f"[MPC] STOP requested: {self.mpc_result.status}")
+@@ -236,9 +238,11 @@ class Controller:
+                 result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
+             else:
+                 result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints, self.curr_steering_angle)
+-        except (ValueError, IndexError, TypeError):
++        except (ValueError, IndexError, TypeError) as exc:
++            # Reason kept in the status (e.g. invalid_or_reverse_speed) so the log
++            # tells input loss from a reverse/odom-undershoot after hard braking.
+             rear = np.zeros(3)
+-            result = self.lateral_mpc.reject('invalid_local_control_input', self.curr_steering_angle)
++            result = self.lateral_mpc.reject('invalid_local_control_input:'+str(exc), self.curr_steering_angle)
+         self.mpc_result = result
+         self._report_mpc_result()
+         steering = result.steering if result.success else self._mpc_recenter_steering()
+diff --git a/controller/controller/mpc/integrated_mpc.py b/controller/controller/mpc/integrated_mpc.py
+index 64e16d2..8af445b 100644
+--- a/controller/controller/mpc/integrated_mpc.py
++++ b/controller/controller/mpc/integrated_mpc.py
+@@ -68,6 +68,14 @@ def _gradient(f, x):
+ 
+ class IntegratedMPC:
+     WARM_START_DUAL = True   # warm start OSQP duals from the last accepted solve
++    # Compute-budget misses only (CPU preemption / iteration budget). Path, envelope,
++    # profile, infeasibility and input failures are never continued: they STOP.
++    CONTINUATION_REASONS = ('deadline_exceeded', 'osqp:run time limit reached',
++                            'osqp:maximum iterations reached', 'osqp:solved inaccurate')
++    MAX_CONTINUATION_TICKS = 2          # at most 2 consecutive ticks (40 ms at 50 Hz)
++    CONTINUATION_TOL = (.10, .15, .30)  # measured vs planned: position m, heading rad, speed m/s
++    PROFILE_REFINEMENTS = 2             # re-solves with tightened stage caps on a profile miss
++
+     def __init__(self, config):
+         import osqp
+         from scipy import sparse
+@@ -82,6 +90,8 @@ class IntegratedMPC:
+         # Everything below depends only on the configuration and is built once.
+         self.periods = np.concatenate(([config.dt], np.full(n-1, config.preview_dt)))
+         self.preview_times = np.concatenate(([0.], np.cumsum(self.periods[:-1])))
++        self.end_times = np.cumsum(self.periods)          # time at which v_{k+1} is reached
++        self.node_times = np.concatenate(([0.], self.end_times))
+         d = np.zeros((n, size))
+         for k in range(n):
+             d[k, 2*k+1] = 1.
+@@ -99,6 +109,8 @@ class IntegratedMPC:
+         self.state_weights[-1] *= config.terminal_scale
+         self.box_accel_lo = np.full(n, -config.max_decel)
+         self.box_accel_hi = np.full(n, config.max_accel)
++        self.plan = None          # last accepted, fully verified plan (absolute coordinates)
++        self.continuation = 0     # consecutive ticks served from that plan
+         self.reset()
+ 
+     def reset(self):
+@@ -106,6 +118,12 @@ class IntegratedMPC:
+         self.previous_dual = None
+ 
+     def reject(self, reason, previous_steering=0., started=None):
++        """STOP and drop the last plan (external callers: input/behaviour failures)."""
++        self.plan = None
++        self.continuation = 0
++        return self._fail(reason, previous_steering, started)
++
++    def _fail(self, reason, previous_steering=0., started=None):
+         self.reset()
+         try:
+             steer = float(previous_steering)
+@@ -177,6 +195,69 @@ class IntegratedMPC:
+ 
+     def solve(self, state, waypoints, previous_steering):
+         started = perf_counter()
++        result = self._solve(state, waypoints, previous_steering, started)
++        if result.success:
++            self.continuation = 0
++            return result
++        if result.status in self.CONTINUATION_REASONS:
++            continued = self._continue_plan(state, previous_steering, result.status, started)
++            if continued is not None:
++                return continued
++        self.plan = None
++        self.continuation = 0
++        return result
++
++    def _continue_plan(self, state, previous_steering, reason, started):
++        """Serve the next stage of the last verified plan for a compute-budget miss.
++
++        Bounded (MAX_CONTINUATION_TICKS), and only while the measured state still
++        matches what that plan predicted for this instant. The command is re-limited
++        against the current steering (rate), the plan's steering bound and verified
++        stage speed cap, and the lateral-acceleration limit; any miss -> None (STOP).
++        The status stays visible as 'plan_continuation:<reason>'.
++        """
++        c, plan = self.config, self.plan
++        if plan is None or self.continuation >= self.MAX_CONTINUATION_TICKS:
++            return None
++        try:
++            state = np.asarray(state, float)
++            prev = float(previous_steering)
++            if state.shape != (4,) or not np.isfinite(state).all() or not np.isfinite(prev):
++                return None
++            t = (self.continuation+1)*c.dt
++            stage = int(np.searchsorted(self.node_times, t, 'right'))-1
++            if stage < 1 or stage >= c.horizon:
++                return None
++            w = (t-self.node_times[stage])/self.periods[stage]
++            p = plan['predicted']
++            expect = (1-w)*p[stage]+w*p[stage+1]
++            pos_tol, yaw_tol, v_tol = self.CONTINUATION_TOL
++            dyaw = (state[2]-expect[2]+np.pi) % (2*np.pi)-np.pi
++            if (np.hypot(state[0]-expect[0], state[1]-expect[1]) > pos_tol or abs(dyaw) > yaw_tol
++                    or abs(state[3]-expect[3]) > v_tol):
++                return None
++            accel, steer = (float(x) for x in plan['controls'][stage])
++            bound, step = float(plan['steer_bounds'][stage]), c.max_steer_rate*c.dt
++            lo_s, hi_s = max(-bound, prev-step), min(bound, prev+step)
++            if lo_s > hi_s+1e-9:
++                return None
++            steer = min(max(steer, lo_s), hi_s)
++            v0 = float(state[3])
++            accel = min(accel, c.max_accel, (float(plan['caps'][stage])-v0)/c.dt)
++            if accel < -c.max_decel-1e-4:
++                return None
++            accel = max(accel, -c.max_decel)
++            v1 = max(0., v0+accel*c.dt)
++            if max(v0, v1)**2*abs(np.tan(steer))/c.wheelbase > c.max_lateral_accel+1e-3:
++                return None
++        except (ValueError, TypeError, IndexError, KeyError):
++            return None
++        self.continuation += 1
++        return IntegratedResult(steer, v1, accel, SafetyRequest.NONE, 'plan_continuation:'+reason,
++                                perf_counter()-started, 0., 0, plan['reference'],
++                                plan['predicted'][stage:], plan['controls'][stage:])
++
++    def _solve(self, state, waypoints, previous_steering, started):
+         c, n = self.config, self.config.horizon
+         try:
+             state, path = np.asarray(state, float), np.asarray(waypoints, float)
+@@ -187,14 +268,24 @@ class IntegratedMPC:
+                 raise ValueError('invalid_state_path_or_steering')
+             periods = self.periods
+             ref, delta_ref, caps = self._reference(state, path, periods)
+-            # A measured speed can be above a sharp profile cap when entering
+-            # a corner.  Enforcing that cap immediately would make the QP
+-            # mathematically infeasible even though the vehicle can brake
+-            # into it.  Use the physically reachable envelope for this solve;
+-            # the original cap remains the target and the next stages continue
+-            # braking toward it.
+-            reachable = state[3] - c.max_decel * self.preview_times
+-            caps = np.maximum(caps, np.maximum(0., reachable))
++            # Steering-rate-consistent speed caps (tightening only). |delta_k| cannot
++            # fall below |delta_prev| - rate*t_{k+1}, and the lateral check couples
++            # delta_k with v_k and v_{k+1}. A cap above sqrt(a_lat*L/tan|delta|_min)
++            # made the coupled steering box empty while the wheels were still
++            # unwinding out of a corner (OSQP primal infeasible -> STOP).
++            min_abs = abs(float(previous_steering))-c.max_steer_rate*self.end_times
++            steer_speed = np.full(n+1, np.inf)
++            turning = min_abs > 1e-6
++            steer_speed[:n][turning] = (np.sqrt(c.max_lateral_accel*c.wheelbase
++                                                / np.tan(np.minimum(min_abs[turning], c.max_steer)))*(1-1e-6))
++            caps = np.minimum(caps, np.minimum(steer_speed[:n], steer_speed[1:]))
++            # A measured speed can be above a sharp profile cap when entering a
++            # corner; the cap cannot be met before the vehicle can brake into it.
++            # Allow only the full-braking envelope at the END of each stage (the
++            # time v_{k+1} is reached), so such a plan brakes at max_decel from the
++            # first stage. The nonlinear profile check below stays strict.
++            reachable = np.maximum(0., state[3]-c.max_decel*self.end_times)
++            caps = np.maximum(caps, reachable)
+             m = np.zeros((4, 2*n))
+             b = np.array([0., 0., state[2], state[3]])
+             h = self.h_base.copy()
+@@ -230,104 +321,127 @@ class IntegratedMPC:
+             h += stacked.T@(weights.reshape(-1, 1)*stacked)
+             g += stacked.T@(weights*(all_b-ref[1:])).ravel()
+             g[1::2] -= c.r_steer*delta
+-            lower, upper = -all_b[:, 3], caps-all_b[:, 3]
+-            # Conservative coupled envelope: speed is bounded above by caps;
+-            # steering bound guarantees v^2*tan(delta)/L <= lateral limit.
+-            vmax = np.maximum(np.concatenate(([state[3]], caps[:-1])), caps)
+-            steer_bounds = np.minimum(c.max_steer, np.arctan(c.max_lateral_accel*c.wheelbase/np.maximum(vmax**2, 1e-6)))
+-            # Preserve a feasible first slew step if the measured steering is
+-            # just outside the new lateral-acceleration envelope.  The rate
+-            # limit then brings it back inside over subsequent samples.
+-            steer_bounds[0] = max(steer_bounds[0],
+-                                  min(c.max_steer, abs(previous_steering)-c.max_steer_rate*periods[0]))
+-            box_lo = np.column_stack((self.box_accel_lo, -steer_bounds)).ravel()
+-            box_hi = np.column_stack((self.box_accel_hi, steer_bounds)).ravel()
++            lower = -all_b[:, 3]
+             matrix = self.matrix      # constant (see __init__)
+             rate = c.max_steer_rate*periods
+-            lo = np.concatenate((box_lo, prev-rate, lower))
+-            hi = np.concatenate((box_hi, prev+rate, upper))
+-            # Reuse the OSQP factorization; A is constant, so only P, q and the
+-            # bounds change between solves.
+             p_values = 2*h[self.p_rows, self.p_cols]
+-            if self.solver is None:
+-                self.solver = self.osqp.OSQP()
+-                p = self.sparse.csc_matrix((p_values, self.p_rows, self.p_indptr), shape=(2*n, 2*n))
+-                self.solver.setup(P=p, q=2*g, A=matrix, l=lo, u=hi,
+-                    verbose=False, polishing=False, eps_abs=1e-5, eps_rel=1e-5,
+-                    max_iter=c.max_iter, time_limit=c.solver_time_limit,
+-                    adaptive_rho_interval=25, check_termination=10)
+-            else:
+-                self.solver.update(Px=p_values, q=2*g, l=lo, u=hi)
+-            if self.previous is None:
+-                self.solver.warm_start(x=np.zeros(2*n), y=np.zeros(len(lo)))
+-            elif self.previous_dual is None or not self.WARM_START_DUAL:
+-                self.solver.warm_start(x=self.previous, y=np.zeros(len(lo)))
+-            else:
+-                self.solver.warm_start(x=self.previous, y=self.previous_dual)
+-            sol = self.solver.solve(raise_error=False)
+-            if sol.info.status_val != 1:
+-                result = self.reject('osqp:'+sol.info.status, previous_steering, started)
+-                # Still STOP this tick, but continue from OSQP's last iterate next tick
+-                # instead of from zero: an iteration/time budget miss then converges
+-                # over a few ticks rather than repeating the same cold solve forever.
+-                if (sol.info.status in ('maximum iterations reached', 'run time limit reached', 'solved inaccurate')
+-                        and sol.x is not None and sol.y is not None
+-                        and np.isfinite(sol.x).all() and np.isfinite(sol.y).all()):
+-                    self.previous, self.previous_dual = np.array(sol.x), np.array(sol.y)
+-                return result
+-            u = sol.x
+-            au = matrix@u
+-            if not np.isfinite(u).all() or np.any(au < lo-1e-4) or np.any(au > hi+1e-4):
+-                return self.reject('constraint_violation', previous_steering, started)
+-            controls = u.reshape(n, 2).copy()
+-            controls[:, 0] = np.clip(controls[:, 0], -c.max_decel, c.max_accel)
+-            previous_delta = float(previous_steering)
+-            steer_plan = controls[:, 1].tolist()
+-            for k, (dt, bound) in enumerate(zip(periods.tolist(), steer_bounds.tolist())):
+-                previous_delta = min(max(steer_plan[k], max(-bound, previous_delta-c.max_steer_rate*dt)),
+-                                     min(bound, previous_delta+c.max_steer_rate*dt))
+-                steer_plan[k] = previous_delta
+-            controls[:, 1] = steer_plan
+-            # Remove numerical tolerance from the commanded speed upper bound.
+-            controls[0, 0] = min(controls[0, 0], (caps[0]-state[3])/c.dt)
+-            if controls[0, 0] < -c.max_decel-1e-4:
+-                return self.reject('first_speed_bound_infeasible', previous_steering, started)
+-            predicted = np.zeros((n+1, 4))
+-            predicted[0, 3] = state[3]
+-            predicted[1:, 3] = state[3]+np.cumsum(periods*controls[:, 0])
+-            predicted[0, 2] = state[2]
+-            predicted[1:, 2] = state[2]+np.cumsum(periods*predicted[:-1, 3]*np.tan(controls[:, 1])/c.wheelbase)
+-            predicted[1:, 0] = np.cumsum(periods*predicted[:-1, 3]*np.cos(predicted[:-1, 2]))
+-            predicted[1:, 1] = np.cumsum(periods*predicted[:-1, 3]*np.sin(predicted[:-1, 2]))
+-            lat = np.maximum(predicted[:-1, 3]**2, predicted[1:, 3]**2)*abs(np.tan(controls[:, 1]))/c.wheelbase
+-            if (np.max(lat) > c.max_lateral_accel+1e-3
+-                    or np.max(np.linalg.norm(predicted[:, :2]-ref[:, :2], axis=1)) > c.max_tracking_error
+-                    or np.max(abs(predicted[:, 2]-ref[:, 2])) > c.max_heading_error):
+-                return self.reject('nonlinear_prediction_outside_envelope', previous_steering, started)
+-            # Verify the nonlinear trajectory against the profile at its actual
+-            # projected locations, not only the nominal reference samples.
++            # Profile check geometry (path only; independent of the solution).
+             segments = np.diff(path[:, :2], axis=0)
+             lengths2 = np.sum(segments**2, axis=1)
+             valid = lengths2 > 1e-12
+             segments, lengths2 = segments[valid], lengths2[valid]
+             origins = path[:-1, :2][valid]
+-            offsets = predicted[1:, None, :2] + state[:2] - origins
+-            fractions = np.clip(np.sum(offsets*segments, axis=2)/lengths2, 0., 1.)
+-            distances = np.sum((offsets-fractions[:, :, None]*segments)**2, axis=2)
+-            indices = np.argmin(distances, axis=1)
+-            alpha = fractions[np.arange(n), indices]
+-            actual_caps = ((1-alpha)*path[:-1, 2][valid][indices]
+-                           + alpha*path[1:, 2][valid][indices])
+-            if np.any(predicted[1:, 3] > np.minimum(actual_caps, c.max_speed)+1e-4):
+-                return self.reject('nonlinear_speed_profile_violation', previous_steering, started)
++            seg_v0, seg_v1 = path[:-1, 2][valid], path[1:, 2][valid]
++            for attempt in range(self.PROFILE_REFINEMENTS+1):
++                upper = caps-all_b[:, 3]
++                # Conservative coupled envelope: speed is bounded above by caps;
++                # steering bound guarantees v^2*tan(delta)/L <= lateral limit.
++                vmax = np.maximum(np.concatenate(([state[3]], caps[:-1])), caps)
++                steer_bounds = np.minimum(c.max_steer, np.arctan(c.max_lateral_accel*c.wheelbase/np.maximum(vmax**2, 1e-6)))
++                # Preserve a feasible first slew step if the measured steering is
++                # just outside the new lateral-acceleration envelope.  The rate
++                # limit then brings it back inside over subsequent samples.
++                steer_bounds[0] = max(steer_bounds[0],
++                                      min(c.max_steer, abs(previous_steering)-c.max_steer_rate*periods[0]))
++                box_lo = np.column_stack((self.box_accel_lo, -steer_bounds)).ravel()
++                box_hi = np.column_stack((self.box_accel_hi, steer_bounds)).ravel()
++                lo = np.concatenate((box_lo, prev-rate, lower))
++                hi = np.concatenate((box_hi, prev+rate, upper))
++                # Reuse the OSQP factorization; A is constant, so only P, q and the
++                # bounds change between solves.
++                if self.solver is None:
++                    self.solver = self.osqp.OSQP()
++                    p = self.sparse.csc_matrix((p_values, self.p_rows, self.p_indptr), shape=(2*n, 2*n))
++                    self.solver.setup(P=p, q=2*g, A=matrix, l=lo, u=hi,
++                        verbose=False, polishing=False, eps_abs=1e-5, eps_rel=1e-5,
++                        max_iter=c.max_iter, time_limit=c.solver_time_limit,
++                        adaptive_rho_interval=25, check_termination=10)
++                elif attempt == 0:
++                    self.solver.update(Px=p_values, q=2*g, l=lo, u=hi)
++                else:
++                    self.solver.update(l=lo, u=hi)
++                if self.previous is None:
++                    self.solver.warm_start(x=np.zeros(2*n), y=np.zeros(len(lo)))
++                elif self.previous_dual is None or not self.WARM_START_DUAL:
++                    self.solver.warm_start(x=self.previous, y=np.zeros(len(lo)))
++                else:
++                    self.solver.warm_start(x=self.previous, y=self.previous_dual)
++                sol = self.solver.solve(raise_error=False)
++                if sol.info.status_val != 1:
++                    result = self._fail('osqp:'+sol.info.status, previous_steering, started)
++                    # Still not accepted this tick, but continue from OSQP's last iterate next
++                    # tick instead of from zero: an iteration/time budget miss then converges
++                    # over a few ticks rather than repeating the same cold solve forever.
++                    if (sol.info.status in ('maximum iterations reached', 'run time limit reached', 'solved inaccurate')
++                            and sol.x is not None and sol.y is not None
++                            and np.isfinite(sol.x).all() and np.isfinite(sol.y).all()):
++                        self.previous, self.previous_dual = np.array(sol.x), np.array(sol.y)
++                    return result
++                u = sol.x
++                au = matrix@u
++                if not np.isfinite(u).all() or np.any(au < lo-1e-4) or np.any(au > hi+1e-4):
++                    return self._fail('constraint_violation', previous_steering, started)
++                controls = u.reshape(n, 2).copy()
++                controls[:, 0] = np.clip(controls[:, 0], -c.max_decel, c.max_accel)
++                previous_delta = float(previous_steering)
++                steer_plan = controls[:, 1].tolist()
++                for k, (dt, bound) in enumerate(zip(periods.tolist(), steer_bounds.tolist())):
++                    previous_delta = min(max(steer_plan[k], max(-bound, previous_delta-c.max_steer_rate*dt)),
++                                         min(bound, previous_delta+c.max_steer_rate*dt))
++                    steer_plan[k] = previous_delta
++                controls[:, 1] = steer_plan
++                # Remove numerical tolerance from the commanded speed upper bound.
++                controls[0, 0] = min(controls[0, 0], (caps[0]-state[3])/c.dt)
++                if controls[0, 0] < -c.max_decel-1e-4:
++                    return self._fail('first_speed_bound_infeasible', previous_steering, started)
++                controls[0, 0] = max(controls[0, 0], -c.max_decel)
++                predicted = np.zeros((n+1, 4))
++                predicted[0, 3] = state[3]
++                predicted[1:, 3] = state[3]+np.cumsum(periods*controls[:, 0])
++                predicted[0, 2] = state[2]
++                predicted[1:, 2] = state[2]+np.cumsum(periods*predicted[:-1, 3]*np.tan(controls[:, 1])/c.wheelbase)
++                predicted[1:, 0] = np.cumsum(periods*predicted[:-1, 3]*np.cos(predicted[:-1, 2]))
++                predicted[1:, 1] = np.cumsum(periods*predicted[:-1, 3]*np.sin(predicted[:-1, 2]))
++                lat = np.maximum(predicted[:-1, 3]**2, predicted[1:, 3]**2)*abs(np.tan(controls[:, 1]))/c.wheelbase
++                if (np.max(lat) > c.max_lateral_accel+1e-3
++                        or np.max(np.linalg.norm(predicted[:, :2]-ref[:, :2], axis=1)) > c.max_tracking_error
++                        or np.max(abs(predicted[:, 2]-ref[:, 2])) > c.max_heading_error):
++                    return self._fail('nonlinear_prediction_outside_envelope', previous_steering, started)
++                # Verify the nonlinear trajectory against the profile at its actual
++                # projected locations, not only the nominal reference samples.
++                offsets = predicted[1:, None, :2] + state[:2] - origins
++                fractions = np.clip(np.sum(offsets*segments, axis=2)/lengths2, 0., 1.)
++                distances = np.sum((offsets-fractions[:, :, None]*segments)**2, axis=2)
++                indices = np.argmin(distances, axis=1)
++                alpha = fractions[np.arange(n), indices]
++                actual_caps = np.minimum((1-alpha)*seg_v0[indices] + alpha*seg_v1[indices], c.max_speed)
++                violation = predicted[1:, 3] > actual_caps+1e-4
++                if not np.any(violation):
++                    break
++                # The QP caps are sampled at the reference positions; the solution can
++                # run slightly ahead of them into a lower part of the profile. Tighten
++                # only the violating stages to the profile at the reached positions
++                # (never below the full-braking envelope) and re-solve; the check above
++                # is unchanged, so an unresolved violation still STOPs.
++                tightened = np.where(violation, np.maximum(np.minimum(caps, actual_caps-1e-3), reachable), caps)
++                if attempt == self.PROFILE_REFINEMENTS or np.all(tightened >= caps):
++                    return self._fail('nonlinear_speed_profile_violation', previous_steering, started)
++                caps = tightened
++                self.previous, self.previous_dual = np.array(u), np.array(sol.y)
+             elapsed = perf_counter()-started
+-            if elapsed > c.deadline: return self.reject('deadline_exceeded', previous_steering, started)
++            if elapsed > c.deadline:
++                result = self._fail('deadline_exceeded', previous_steering, started)
++                # The late solution is valid, only late: keep it as the next warm start.
++                self.previous, self.previous_dual = u.copy(), np.array(sol.y, copy=True)
++                return result
+             self.previous = u.copy()
+             self.previous_dual = np.array(sol.y, copy=True)
+             predicted[:, :2] += state[:2]; ref[:, :2] += state[:2]
++            self.plan = {'controls': controls, 'predicted': predicted, 'reference': ref,
++                         'caps': caps.copy(), 'steer_bounds': steer_bounds.copy()}
+             return IntegratedResult(float(controls[0, 1]), max(0., float(predicted[1, 3])),
+                                     float(controls[0, 0]), SafetyRequest.NONE, 'solved', elapsed,
+                                     sol.info.run_time, sol.info.iter, ref, predicted, controls)
+         except Exception as exc:
+             self.solver = None
+-            return self.reject(type(exc).__name__+':'+str(exc), previous_steering, started)
++            return self._fail(type(exc).__name__+':'+str(exc), previous_steering, started)
+-- 
+2.43.0
+
