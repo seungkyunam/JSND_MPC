@@ -1,9 +1,11 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
-## 0. 현재 위치 (2026-11-22 12:35 RB 직전, 사용자 구동 승인 대기 — WORK_STATUS "단계 7")
-- 단계: **실차 Bench, RB 직전**. 모터·서보 구동은 아직 0회. 상세는 `WORK_STATUS.md` 맨 위 요약과 "단계 5"
-- 실차에서 확인된 것: 스택 기동, 40 Hz 제어 출력, RB 전 속도 0, VESC 명령 미발행
-- 상태(12:35): 2D Pose Estimate 완료, GB_TRACK 100%, MPC solved 90%(나머지 정지 odom 잡음 reject, 코드 수정 불필요 판단). 다음 = 승인 후 4-6 순서(LB → RB 3~5 s → LB)
+## 0. 현재 위치 (2026-11-22 12:47 — WORK_STATUS "단계 8")
+- 단계: **실차 Bench 구동 완료**(4바퀴 공중). MPC로 0→2.0 m/s, 최대 9228 명령 / 8981 실제 ERPM
+- 설정: `~/JSND_INT` `mpc_car.yaml` `mpc_max_speed_mps=2.0`(src+install, 미커밋). race.launch 실행 중일 수 있음
+- 위험: **LB = 수동 주행(스틱×4.0 m/s), 정지 버튼 아님** — 18456 ERPM 발생 이력
+- 막힌 지점: ① MPC 실패 후 조향 고정 → max iterations 영구 반복(P8) ② 조향 0.15 rad 코너 불가(P9) ③ 정지 수단 미확정(P7)
+- 다음: 조향 한계 실측 → max_speed 1.0 복귀 + P8 오프라인 재현·대응 결정 → 정지 수단 확정 → 바닥 저속 주행
 
 ## 1. 환경 (Jetson)
 | 항목 | 값 |

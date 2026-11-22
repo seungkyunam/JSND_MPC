@@ -15,3 +15,5 @@ TF 관련 로그 165건 (detect 노드)
  pose x=1.04 y=-0.03 yaw=-0.01, 5 s 변동 0.05/0.03 m, wp119 0.19 m, 방향오차 0.58 rad (허용 0.7)
 판단: 코드 수정 안 함. reject는 속도 0(안전측), mpc_cmd_max_lead_mps=0.5라 reject 사이에 0.5 m/s까지 램프 가능, 회전 시작 후 odom>0이면 reject 소멸 예상
 12:34 rosbag 기록 시작 ~/bench_logs/bag_mpc_*, RB 전: active_host none, hl speed max 0.000, mux 출력 0건, VESC 11.4 V fault 0
+12:37:00 mpc_max_speed_mps 1.0 -> 2.0 (src+install yaml, 사용자 지시), race.launch 재기동
+12:44:57 원인: 2.0 m/s + reject 시 조향 -0.102 고정 → osqp max iter 반복 (재현: prev 0이면 정렬 출발 66/71 solved, prev -0.102면 전부 실패). 조향 상태 초기화 위해 race.launch 재기동 (max_speed 2.0 유지)

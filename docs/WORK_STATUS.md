@@ -1,11 +1,11 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 12:35, Bench RB 직전 — 사용자 구동 승인 대기)**
-> - 목표: 기존 JSND 구조 유지 + controller_manager에 Integrated MPC(속도+조향) → 실차 저속 자율주행
-> - 코드: Jetson `~/JSND_INT` `integrated-mpc` `82a1fd5` (변경·재빌드 없음)
-> - 실차: race.launch(mpc) 12:17부터 실행 중, 12:29 2D Pose Estimate 지정, rosbag 기록 중. **모터·서보 구동 0회**
-> - 통과: GB_TRACK 100%, MPC solved 90%(나머지 정지 odom 잡음 reject, 안전측), RB 전 명령 0·VESC 명령 미발행, VESC 11.4 V fault 0
-> - 다음: 사용자 승인 → LB → RB 3~5 s → LB (상세 아래 "단계 7")
+> **현재 상태 요약 (2026-11-22 12:47, Bench 실제 구동 완료 — 랩 주행 불가 판단)**
+> - 실차 Bench(4바퀴 공중)에서 **Integrated MPC로 모터·서보 실제 구동 확인**: MPC 명령 0→2.0 m/s, VESC 명령 최대 9228 ERPM, 실제 최대 8981 ERPM, 역회전·fault 없음
+> - 설정 변경: `mpc_max_speed_mps` 1.0→**2.0** (사용자 지시, src+install yaml, 재빌드 없음). 그 외 안전 제한 그대로(조향 0.15 rad 등)
+> - ⚠ LB(humandrive) 중 **18456 ERPM**(joy_max_speed 4.0 × 스틱 1.0), 실제 13781 ERPM 발생 — LB는 정지가 아니라 수동 주행
+> - ⚠ 2.0 m/s에서 osqp 실패 후 조향 고정 → **max iterations 영구 반복**(재기동 전까지 RB 무반응)
+> - 랩 주행 보류: 조향 0.15 rad로 코너 불가, 2.0 m/s solver 불안정, 정지 수단 미검증 (상세 "단계 8")
 
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
@@ -224,3 +224,38 @@
 - P6 원인 = **정지 odom 잡음 확정**. 코드 수정 안 함: reject는 속도 0(안전측)이고, `mpc_cmd_max_lead_mps=0.5`로 reject 사이 0.5 m/s까지 램프 가능. 바퀴 회전 후 odom>0이면 reject 소멸 예상(실차 확인 필요). 출발 시 단속 가능성 있음
 - 방향오차 0.58 rad: bench에서 바퀴 회전 시 추정 자세가 전진해 envelope 이탈 → STOP 가능(안전측)
 - 배터리 11.4 V로 저하 중
+
+## 2026-11-22 단계 8: 실차 Bench MPC 실제 구동 (4바퀴 공중, max_speed 2.0)
+로그: `docs/logs/bench_20261122_drive_monitor.log`(0.5 s 샘플), `docs/logs/bench_20261122_resume_notes.txt`. rosbag `~/bench_logs/bag_mpc_1230`(402 MB, 미업로드), launch 로그 `~/bench_logs/race_mpc_20261122_123708.log`, `race_mpc_20261122_124530.log`
+
+### 설정 변경 (코드 변경·재빌드 없음)
+- `stack_master/config/mpc_car.yaml` `mpc_max_speed_mps: 1.0 → 2.0` (사용자 지시, `~/JSND_INT` src와 install 둘 다). JSND_INT git에는 미커밋
+- race.launch 재기동 2회(설정 반영, 조향 고착 해소). 로그에서 `IntegratedConfig(... max_speed=2.0 ...)` 확인
+
+### 구동 구간
+| 시각 | 모드 | VESC 명령 ERPM 최대 | 실제 ERPM 최대 | 비고 |
+|---|---|---|---|---|
+| 12:37:50~12:37:58 | autodrive (MPC) | 9228 (=2.0 m/s) | 7924 | 0부터 램프, solved 위주, 조향 0.15 한계 고착(servo 0.338). 12:37:59부터 `invalid_local_control_input`→`osqp:maximum iterations` → 속도 0 |
+| 12:38:17~12:38:19 | **humandrive (LB)** | **18456** | **13781** | MPC 아님. simple_mux `joy_max_speed` 4.0 × 스틱 축 1.0. RB(autodrive, MPC STOP)로 0 |
+| 12:40:33~12:41:03 | autodrive | 0 | 0 | MPC `osqp:maximum iterations` 100% (858+253회) |
+| 12:43:37~12:43:54 | autodrive (MPC) | 9228 | 8945 | 12:43:02 2D Pose Estimate 후 구동(약 17 s, 실시간 보고 누락) |
+| 12:46:00~12:46:12 | autodrive (MPC) | 9217 | 8687 | 재기동 후. solved 위주 + `deadline_exceeded`·`nonlinear_speed_profile_violation` 혼재로 명령 단속 |
+| 12:46:13~ | autodrive | 0 | 0 | 다시 `osqp:maximum iterations`, 조향 −0.040 고정 |
+- 전 구간 VESC fault 0, 입력 11.4 V, 역회전 없음, 중단 기준(10000 ERPM)은 humandrive 구간만 초과
+
+### 확인된 것
+- JSND race.launch + controller:=mpc로 **MPC 속도+조향 명령이 VESC까지 전달되어 실제 회전**: high_level speed → mux → ackermann_to_vesc(×4614) → 명령 ERPM 일치(2.0 m/s → 9228)
+- 실제 ERPM은 명령의 약 86~97% 추종(무부하)
+- RB 전 0, mux autodrive 전환 시 0부터 램프
+
+### 문제
+| # | 현상 | 원인 (진단) | 상태 |
+|---|---|---|---|
+| P7 | LB 수동 모드에서 18456 ERPM | `simple_mux` humandrive = `axes[1] × joy_max_speed(4.0)`. LB 누른 채 왼쪽 스틱 전진. 현재 /joy 중립값 정상(axes 0, 트리거 1.0) | **LB는 정지 수단이 아님**. 정지 수단 재정의 필요(controller 종료, 배터리 차단, joy_max_speed 제한 검토) |
+| P8 | MPC 실패 후 영구 `osqp:maximum iterations` | 오프라인 재현(실차 입력 그대로): 2.0 m/s·이전 조향 −0.102 → 400 iter 실패, 1000 iter solved 12.6 ms(한도 12 ms 경계). 1.0 m/s·조향 0 → 400 iter solved 8.8 ms. 전역 경로 정렬·정지 출발: 2.0 m/s 조향 0 → 66/71 solved, 조향 −0.102 → 전부 실패. reject 시 조향을 직전 값으로 유지 → 같은 실패 반복 | 미해결. 재기동으로만 해소. solver 예산(`mpc_max_iter`)·reject 시 조향 처리 검토 필요 (ChatGPT 검토) |
+| P9 | 조향 0.15 rad 한계 고착 | bench에서 바퀴만 돌아 추정 자세가 경로에서 벗어남 + 0.15 rad 보수 한계 | 랩 주행 불가 (오프라인에서도 0.15로 코너 STOP) |
+| P6 | `invalid_local_control_input` | 정지 odom 잡음 (단계 6·7) | 회전 중에는 미발생 |
+
+### 판단: 랩 주행 보류
+- 사용자 랩 완주 요청에 대해 보류: ① 조향 0.15 rad로 코너 불가 ② 2.0 m/s solver 불안정·고착 ③ 정지 수단(LB) 위험 확인, 2.0 m/s 제동거리 미검증
+- 제안 순서: 조향 기계 한계·servo 실측 → `mpc_max_steer_rad` 결정 → 1.0 m/s 복귀 및 solver 안정 조건 오프라인 확인 → 정지 수단 확정 → 바닥 1.0 m/s 직선 일부 → 1랩
