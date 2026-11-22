@@ -1,11 +1,10 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 단계 10 — 버튼 재배치·조향 조사, 실차 모터 구동 없음)**
-> - **버튼(MPC 모드 safety_mode)**: RB = MPC 자율(누르고 있는 동안), **LB = 기존 수동조작 복구**(누르고 있는 동안, 기존 매핑 그대로), **A = 비상정지 래치**. 래치 중에는 자율·수동 모두 차단, 재시작은 `/simple_mux/reset_estop` 승인 + 버튼 재입력. JSND_INT `701b49a` = `jsnd_int/0004-*.patch`
-> - 검증: 오프라인 gate 시험 9 passed, ROS 모의(VESC 없음) LB 수동 1.0 m/s(스틱 0.25×4.0) 통과, LB 중 A → 0.052 s 래치·출력 0, 100.1 Hz 유지. **실차 미검증**
-> - **조향 조사**: PP ±0.53 rad, FTG·수동 ±0.4 rad 모두 소프트웨어 제한. 하드웨어(서보 기계 한계) 실측 기록 없음. MPC ±0.15 rad / 0.3 rad/s는 11-20 bench 보수값 → **사용자 승인 필요**(아래 단계 10)
-> - **수동 최고속도**: 기존 `joy_max_speed` 4.0 m/s 그대로(18456 ERPM의 원인). 변경안만 보고 → **사용자 결정 필요**
-> - MPC 설정(100 Hz, Horizon 10, OSQP 안정화)은 GitHub `0003`과 Jetson 동일. JSND 원본·PP·FTG·MPC 코드 무변경
+> **현재 상태 요약 (2026-11-22 단계 11 — 실차 점검 준비, 차량 전원 꺼짐, 모터 구동 없음)**
+> - 코드·빌드: GitHub `fd4bf56` = JSND_INT `701b49a` = install (미커밋 없음). 버튼 RB 자율 / LB 기존 수동 / A 비상정지 래치 유지
+> - 실차 100 Hz·OSQP·E-stop 점검: **미실시** — VESC `/dev/ttyACM0`·LiDAR 미응답(전원 꺼짐 추정). 읽기 전용 점검 스크립트 `jsnd_int/tests_ros/bench_check.py` 준비
+> - **사용자 결정 대기**: ① MPC 조향 한계(0.15 유지 / 0.4 후보) ② LB 수동 최고속도(A 4.0 유지 / B 1.0 / C 2.0) ③ 전원 투입·launch 승인
+> - 1랩 완주는 ① 결정 필요 (0.15 rad로 코너 불가)
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
 
@@ -392,3 +391,32 @@ JSND_INT `c8727bb → 701b49a` (`safety_gate.py`, `simple_mux_node.py`만 변경
   | 주기 | mux 100.1 Hz, controller 100.1 Hz, MPC p99 3.0 ms |
 - 이미 통과한 MPC 안정화 시험(단계 9)은 반복하지 않음
 - 종료 시 rclpy 이중 shutdown Traceback은 SIGINT 종료 시 기존 코드에서도 나는 것(동작 무관)
+
+## 2026-11-22 단계 11: 실차 점검 준비 (코드·파라미터 변경 없음, 모터 구동 없음)
+### 환경 확인
+- GitHub `fd4bf56`, JSND_INT `701b49a`, install = src (`safety_gate.py`, `simple_mux_node.py`, `integrated_mpc.py`, `mpc_car.yaml` 비교), 미커밋 없음
+- DOMAIN 173, `/dev/input/js0` 있음, **`/dev/ttyACM0` 없음, Hokuyo 192.168.0.10 무응답** → 실차 점검 보류
+- ROS 모의 100 Hz·MPC 시간(단계 9·10)은 통과 항목이라 반복 안 함
+
+### 조향 검토 보강 (단계 10 표에 추가)
+- 서보 캘리브 이력: `steering_angle_to_servo_gain -0.99` = JSND 커밋 `7bb5f0e`(2026-08-20, "아직 yaw값 수정중"), `offset 0.4870` = `247b4ed`(2026-08-06, "Fixed Steering agnle"). 서보 끝점·바퀴 각도 실측 기록 없음
+- 판단: 실차에서 사용 이력이 있는 0.4 rad(FTG·수동)가 1랩용 근거 있는 후보. 변화율은 PP가 사실상 무제한이라 기준 없음 → 서보만 움직여 실측 필요. **변경은 사용자 승인 후**
+
+### LB 수동 최고속도
+- 스틱 끝까지 = 4.0 m/s = 18456 ERPM. MPC 저속(1.0 m/s)의 4배, 스틱 실수 시 그대로 급가속. 변경 안 함 (안 A/B/C 결정 대기)
+
+### 다음 실차 점검 (최소 명령어) — 전원 투입·스탠드 고정·4바퀴 공중·배터리 차단 담당 확인 후
+```bash
+source /opt/ros/jazzy/setup.bash && source ~/JSND_INT/install/setup.bash
+ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=mpc use_estop:=true > ~/bench_logs/race_$(date +%H%M).log 2>&1 &
+# 노트북 RViz 2D Pose Estimate
+python3 ~/JSND_INT/tests_ros/bench_check.py 10      # 읽기 전용
+# 사용자 승인 후: ros2 service call /simple_mux/reset_estop std_srvs/srv/Trigger → RB 유지 → A
+```
+| 항목 | 기준 |
+|---|---|
+| controller / mux 주기 | ≈100 Hz, p99 < 15 ms |
+| MPC 계산 | p99 < 4 ms (시간 한도) |
+| mpc_status | solved 대부분 |
+| controller 속도 (RB 전) | 0.000 |
+| estop_state | 시작 `latched: startup…`, A 후 `latched: button [0]` |

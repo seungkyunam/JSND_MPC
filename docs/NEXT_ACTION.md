@@ -1,10 +1,10 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
-## 0. 현재 위치 (2026-11-22 단계 10 — WORK_STATUS 참고)
-- 코드: JSND_INT `701b49a` (= `jsnd_int/0004-*.patch`), `~/JSND_INT/install` 재빌드 완료. 실차 모터 구동 없음
-- 버튼(MPC 모드): **RB = MPC 자율(유지), LB = 기존 수동조작(유지, 최대 joy_max_speed 4.0 m/s), A = 비상정지 래치**(자율·수동 모두 차단, 승인 후 재시작)
-- **사용자 승인 필요**: ① MPC 조향 한계(0.15 rad / 0.3 rad/s) 변경 여부와 실측 방법 ② 수동 최고속도 변경안 A/B/C (WORK_STATUS 단계 10-3)
-- 남은 위험: 조향 하드웨어 한계 미측정, 정지 odom 잡음(P6), 실차 100 Hz 여유, 버튼 동작 실차 미확인, 물리 전원 차단은 계속 필요
+## 0. 현재 위치 (2026-11-22 단계 11 — WORK_STATUS 참고)
+- 코드: GitHub `fd4bf56` = JSND_INT `701b49a` = install. 버튼 RB 자율(유지) / LB 기존 수동(유지, 최대 4.0 m/s) / A 비상정지 래치
+- 실차 점검 보류: VESC·LiDAR 전원 꺼짐. 점검 스크립트 `~/JSND_INT/tests_ros/bench_check.py` (= `jsnd_int/tests_ros/bench_check.py`) 준비
+- **사용자 결정 대기**: ① MPC 조향 한계 0.15 유지 / 0.4 후보 (1랩 필수) ② LB 수동 최고속도 A 4.0 / B 1.0 / C 2.0 ③ 전원 투입·launch 승인
+- 다음: 전원 투입 → launch → 2D Pose Estimate → `bench_check.py 10` → (승인) reset → RB → A. 최소 명령어는 WORK_STATUS 단계 11
 
 ## 1. 환경 (Jetson)
 | 항목 | 값 |
