@@ -26,7 +26,7 @@ WB, GAIN, MIN_ERPM, TAU, DT = 0.324, 4614.0, 900.0, 0.15, 0.01
 IN = lambda t, iv: any(a <= t < b for a, b in iv)
 SCENARIOS = {
     # safety ordering while MPC drives; controller killed at the end
-    'safety': dict(duration=27.0, rb=[(3.0, 3.2), (11.2, 11.4)], lb=[(10.0, 11.0)], odom_loss=[(13.0, 13.6)],
+    'safety': dict(lifted=True, duration=27.0, rb=[(3.0, 3.2), (11.2, 11.4)], lb=[(10.0, 11.0)], odom_loss=[(13.0, 13.6)],
                    obstacle=[(15.0, 16.0)], beh_loss=[(17.0, 18.0)], trailing=[(19.5, 20.5)], ftg=[], kill=23.0,
                    phases=[(0.0, 3.0, 'no_host', 'mux publishes nothing'),
                            (3.0, 10.0, 'auto_mpc', 'MPC speed+steer, car moves'),
@@ -40,7 +40,7 @@ SCENARIOS = {
                            (18.0, 19.5, 'behavior_back', 'MPC'),
                            (19.5, 20.5, 'TRAILING', 'controller 0 (unsupported)'),
                            (20.5, 23.0, 'GB_TRACK', 'MPC resumes'),
-                           (23.0, 27.0, 'controller_killed', 'mux 0 after freshness timeout')]),
+                           (23.0, 27.0, 'controller_killed', 'mux 0 after freshness 0.25 s')]),
     # FTGONLY runs the existing FTG in MPC mode
     'ftg': dict(duration=12.0, rb=[(3.0, 3.2)], lb=[], odom_loss=[], obstacle=[], beh_loss=[], trailing=[],
                 ftg=[(6.0, 7.0)], kill=None,
@@ -100,9 +100,11 @@ class World(Node):
         steer = self.cmd.drive.steering_angle if self.cmd else 0.0
         target = speed if abs(speed * GAIN) >= MIN_ERPM else 0.0
         self.v += (target - self.v) * DT / TAU
-        self.x += self.v * np.cos(self.yaw) * DT
-        self.y += self.v * np.sin(self.yaw) * DT
-        self.yaw += self.v * np.tan(steer) / WB * DT
+        self.rec('steer_cmd', steer)
+        if not SC.get('lifted'):  # lifted: wheels spin, chassis pose fixed
+            self.x += self.v * np.cos(self.yaw) * DT
+            self.y += self.v * np.sin(self.yaw) * DT
+            self.yaw += self.v * np.tan(steer) / WB * DT
         self.rec('v', self.v)
 
     def pub_odoms(self):
@@ -206,6 +208,20 @@ def summarize(log):
     el = np.array([v for _, v in log['elapsed']])
     print(f"controller rate {len(ct) / (ct[-1] - ct[0]):.1f} Hz; period p99 {1e3*np.percentile(np.diff(ct), 99):.1f} ms "
           f"max {1e3*np.max(np.diff(ct)):.1f} ms; mpc elapsed ms p50 {np.median(el):.2f} p99 {np.percentile(el, 99):.2f} max {el.max():.2f}")
+    # engage: controller speed before RB, first commands after RB
+    rb = SC['rb'][0][0]
+    pre = [v[0] for t, v in log['ctrl'] if t < rb]
+    post = [(t, v[0]) for t, v in log['mux'] if t >= rb][:8]
+    print(f"ctrl speed before RB: max {max(pre) if pre else 0:.3f} m/s; first mux after RB: "
+          + ', '.join(f'{v:.3f}' for _, v in post))
+    if SC['kill'] is not None:
+        k = SC['kill']
+        last_move = [t for t, v in log['mux'] if t < k and v[0] > 0]
+        zero = [t for t, v in log['mux'] if t >= k and v[0] == 0.0]
+        nz_after = [t for t, v in log['mux'] if t >= k and v[0] > 0]
+        print(f"kill at {k:.2f}s: mux speed before kill {'>0' if last_move and k - last_move[-1] < 0.1 else 'NOT moving'}; "
+              f"last nonzero mux {max(nz_after) - k if nz_after else 0:.3f}s after kill; "
+              f"first zero {zero[0] - k if zero else float('nan'):.3f}s after kill")
     start = [t for t, v in log['mux'] if v[0] * GAIN >= MIN_ERPM]
     print(f"first mux speed >= {MIN_ERPM:.0f} ERPM at t={start[0]:.2f}s" if start else 'never reached min ERPM')
 

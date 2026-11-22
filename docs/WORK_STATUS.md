@@ -80,3 +80,29 @@
 ## 2026-11-22 단계 2b: 통합 코드 GitHub 반영
 - 이 브랜치 `jsnd_int/`에 JSND_INT 수정 파일 4개 + 패치 2개 + 시험 코드 추가 (루트 `controller/`, `stack_master/` 및 Jetson 미커밋 변경은 건드리지 않음)
 - push 직전 재시험: 오프라인 8 passed (solver p99 3.5 ms), ROS safety 시나리오 전 항목 기대대로 (제어 40.1 Hz, 주기 p99 28 ms, MPC p99 6.3 ms)
+
+## 2026-11-22 단계 3: bench 전 최소 수정 (JSND_INT `82a1fd5`, 모터 구동 없음)
+
+### 변경 (+28/-4)
+| 파일 | 내용 |
+|---|---|
+| `stack_master/scripts/simple_mux_node.py` | `/simple_mux/active_host`(none/autodrive/humandrive) 상태 발행만 추가. 선택·estop 로직 무변경 |
+| `controller/controller/controller_manager.py` | MPC 모드: autodrive가 아니거나 host 상태가 0.25 s 이상 끊기면 속도 0 + setpoint 초기화 → RB 시 0부터 출발 |
+| `stack_master/launch/low_level.launch.xml` | `cmd_freshness` 인자(기본 0.25 s) → simple_mux `joy_freshness_threshold` (PP/MPC 공통) |
+| `stack_master/config/mpc_car.yaml` | 조향 0.4→**0.15 rad**, 3.2→**0.3 rad/s** (2026-11-20 bench 검증값, servo 0.339~0.636) |
+
+### 시험
+- 오프라인 **9 passed**: bench(바퀴 공중, 조향 0.15) 10 s 모두 solved, 0부터 출발, 틱당 증가 ≤ 1.0 m/s²×0.025 s, 조향 ≤ 0.15 rad·변화율 ≤ 0.3 rad/s.
+  트랙 폐루프는 미확인 0.4 rad로만 통과 (0.15 rad로는 11_18_6 코너 추종 불가 → STOP)
+- ROS bench 시나리오 (domain 219, VESC 없음):
+  - RB 전 controller 속도 **0.000** / RB 후 mux 0, 0, 0.025, 0.050, 0.075 … (램프)
+  - LB 수동: controller·mux 모두 0
+  - controller 강제 종료 → mux **0.311 s** 후 0 (마지막 비0 0.291 s)
+  - odom 유실·behavior 유실·TRAILING → 0, TTC estop 동작(비래치, 기존 동작)
+  - 제어 40.1 Hz, 주기 p99 27.6 ms, MPC p99 6.3 ms
+- PP 회귀: 주행, LB 0, 종료 시 0 ✓
+
+### 확인되지 않은 값 (실차 시험 전 명시)
+- **VESC 최소 ERPM 미확인**: 11-20 기록상 923 ERPM 명령 → 실제 ~460~530 ERPM 회전(무부하). 그 이하 미시험
+- **실제 조향 한계·변화율 미측정**: 0.15 rad / 0.3 rad/s는 보수값. servo gain −0.99 / offset 0.487도 검증 기록 없음
+- JSND에는 Gate의 A 버튼 E-stop이 **없음**. 정지 수단 = LB(스틱 중립=0), controller/mux 명령 끊김(0.25 s + VESC watchdog 0.2 s), 배터리 스위치

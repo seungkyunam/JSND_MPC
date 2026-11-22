@@ -1,0 +1,141 @@
+From 82a1fd56c451d697cae2ba8a0d1b5ba24787bfe7 Mon Sep 17 00:00:00 2001
+From: jsnd <ros2kil105@gmail.com>
+Date: Sun, 22 Nov 2026 11:53:08 +0900
+Subject: [PATCH 2/2] Hold MPC speed at 0 until autodrive, 0.25 s mux
+ freshness, bench steer limits
+
+- simple_mux publishes /simple_mux/active_host (status only)
+- controller_manager (MPC mode): speed 0 and setpoint reset unless
+  autodrive is selected; engaging ramps from 0 at <= max accel
+- low_level.launch.xml: cmd_freshness arg (default 0.25 s)
+- mpc_car.yaml: steer 0.15 rad / 0.3 rad/s (2026-11-20 bench values)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ controller/controller/controller_manager.py | 16 ++++++++++++++++
+ stack_master/config/mpc_car.yaml            |  8 +++++---
+ stack_master/launch/low_level.launch.xml    |  2 ++
+ stack_master/scripts/simple_mux_node.py     |  6 +++++-
+ 4 files changed, 28 insertions(+), 4 deletions(-)
+
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 00dbc67..267ad5d 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -108,6 +108,10 @@ class ControllerManager(Node):
+         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
+         self.mpc_odom_timeout_s = float(self._get_param('mpc_odom_timeout_s', 0.2))
+         self.last_odom_time = None
++        # MPC holds 0 speed unless simple_mux has autodrive selected (fresh status).
++        self.mux_host = None
++        self.mux_host_time = None
++        self.mpc_mux_host_timeout_s = float(self._get_param('mpc_mux_host_timeout_s', 0.25))
+         self.lateral_mpc = None
+         if self.lateral_controller == 'MPC':
+             from controller.mpc.integrated_mpc import IntegratedMPC  # imports OSQP
+@@ -152,6 +156,8 @@ class ControllerManager(Node):
+         if self.measuring:
+             self.measure_pub = self.create_publisher(Float32, '/controller/latency', 10)
+         if self.lateral_controller == 'MPC':
++            self.create_subscription(String, self._get_param('mpc_mux_host_topic', '/simple_mux/active_host'),
++                                     self.mux_host_cb, 10)
+             self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
+             self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
+ 
+@@ -323,6 +329,10 @@ class ControllerManager(Node):
+         except Exception as e:
+             self.get_logger().error(f"failed to save controller params: {e}")
+ 
++    def mux_host_cb(self, msg):
++        self.mux_host = msg.data
++        self.mux_host_time = self.get_clock().now()
++
+     def odom_cb(self, data: Odometry):
+         self.last_odom_time = self.get_clock().now()
+         self.speed_now = data.twist.twist.linear.x
+@@ -462,6 +472,12 @@ class ControllerManager(Node):
+             self.get_logger().error(f"[{self.name}] [MPC] odom stale ({odom_age:.2f}s). STOPPING!!",
+                                     throttle_duration_sec=0.5)
+             speed, acceleration = 0.0, 0.0
++        host_age = (float('inf') if self.mux_host_time is None
++                    else (self.get_clock().now() - self.mux_host_time).nanoseconds / 1e9)
++        if self.mux_host != 'autodrive' or host_age > self.mpc_mux_host_timeout_s:
++            # Not engaged (RB not selected / LB human / mux status lost): keep the
++            # setpoint at 0 so engaging starts from standstill with limited accel.
++            speed, acceleration = 0.0, 0.0
+         result = self.controller.mpc_result
+         if self.state == "FTGONLY" or speed <= 0.0:
+             self.controller.reset_mpc_speed_command()
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 78f1ff5..3860796 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -10,9 +10,11 @@ controller_manager:
+     wheelbase: 0.324
+     mpc_pose_to_rear_axle_m: 0.0      # /car_state/odom pose is the rear axle
+     mpc_geometry_confirmed: true
+-    # --- actuator limits: CONFIRM ON THE CAR before driving ---
+-    mpc_max_steer_rad: 0.4            # = ftg_max_steer; servo range allows ~0.49 rad
+-    mpc_max_steer_rate_radps: 3.2     # sim value; bench profile used 0.3 (commissioning only)
++    # --- actuator limits: UNMEASURED. Conservative values verified on 2026-11-20 bench
++    #     (mpc-build.vehicle-assets/vehicle.json). Servo 0.487 -/+ 0.99*0.15 = 0.339..0.636,
++    #     inside servo_min/max 0..1 and FTG's 0.4 rad. Raise only after measuring the car. ---
++    mpc_max_steer_rad: 0.15
++    mpc_max_steer_rate_radps: 0.3
+     # --- speed envelope (first low-speed run) ---
+     mpc_max_speed_mps: 1.0
+     mpc_max_accel_mps2: 1.0
+diff --git a/stack_master/launch/low_level.launch.xml b/stack_master/launch/low_level.launch.xml
+index f030d74..a7d5205 100644
+--- a/stack_master/launch/low_level.launch.xml
++++ b/stack_master/launch/low_level.launch.xml
+@@ -7,6 +7,7 @@
+   <let name="config_dir" value="$(find-pkg-share stack_master)/config/CAR" unless="$(var sim)"/>
+   <arg name="vehicle_config" default="$(var config_dir)/vehicle_config.yaml"/>
+   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
++  <arg name="cmd_freshness"  default="0.25"                description="simple_mux: autodrive/humandrive command older than this [s] -> zero output (node default 1.0)"/>
+   <!-- virtual_perception (scan_overlay + virtual opponent + static obstacles).
+        Defaults ON in sim (preserves prior behavior), OFF on the real car; toggle
+        with virtual:=true (e.g. to overlay a virtual opponent onto the real LiDAR). -->
+@@ -119,6 +120,7 @@
+     <param name="joy_topic"     value="$(var joy_topic)"/>
+     <param name="joy_max_speed" value="$(var joy_max_speed)" type="float"/>
+     <param name="use_estop" value="$(var use_estop)"/>
++    <param name="joy_freshness_threshold" value="$(var cmd_freshness)" type="float"/>
+     <param name="sim" value="$(var sim)"/>
+     <!-- use_keyboard defaults False (joy); the pitwall panel flips it at runtime via
+          /ego/use_keyboard. keyboard_joy still publishes /joy_keyboard in sim regardless. -->
+diff --git a/stack_master/scripts/simple_mux_node.py b/stack_master/scripts/simple_mux_node.py
+index 5bf8032..06e76b8 100755
+--- a/stack_master/scripts/simple_mux_node.py
++++ b/stack_master/scripts/simple_mux_node.py
+@@ -5,7 +5,7 @@ from rclpy.node import Node
+ from rclpy.qos import qos_profile_sensor_data
+ from sensor_msgs.msg import Joy, LaserScan
+ from nav_msgs.msg import Odometry
+-from std_msgs.msg import Bool
++from std_msgs.msg import Bool, String
+ from ackermann_msgs.msg import AckermannDriveStamped
+ from copy import deepcopy
+ 
+@@ -83,6 +83,9 @@ class SimpleMuxNode(Node):
+             self.create_subscription(Odometry,  odom_topic, self._odom_cb, 10)
+ 
+         self.drive_pub = self.create_publisher(AckermannDriveStamped, out_topic, 10)
++        # Selected source (none/autodrive/humandrive) for the MPC controller: it holds
++        # its speed command at 0 unless autodrive is selected. Pure status, no control.
++        self.host_pub = self.create_publisher(String, '/simple_mux/active_host', 10)
+         self.create_timer(1.0 / p('rate_hz'), self._loop)
+ 
+     def _scan_cb(self, msg): self.scan = msg
+@@ -103,6 +106,7 @@ class SimpleMuxNode(Node):
+     def _loop(self):
+         zero = AckermannDriveStamped()
+         zero.header.stamp = self.get_clock().now().to_msg()
++        self.host_pub.publish(String(data=self.current_host or 'none'))
+ 
+         if self.current_host is None:
+             return
+-- 
+2.43.0
+

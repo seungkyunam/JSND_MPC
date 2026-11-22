@@ -38,8 +38,13 @@ def local_window(i, n=60):
     return RACELINE[idx]
 
 
-def make_controller():
+# Unverified track geometry (sim value) - only to exercise the algorithm around real corners.
+TRACK_STEER = {'mpc_max_steer_rad': 0.4, 'mpc_max_steer_rate_radps': 3.2}
+
+
+def make_controller(overrides=None):
     values = {k: CAR.get(k, v) for k, v in MPC_DEFAULTS.items()}
+    values.update(overrides or {})
     mpc = IntegratedMPC(make_config(values, CAR['wheelbase'], True, CAR['control_loop_rate_hz']))
     sig = inspect.signature(Controller.__init__)
     kwargs = {name: 0.0 for name, p in sig.parameters.items()
@@ -64,7 +69,7 @@ def nearest(pose):
     return int(np.argmin(np.linalg.norm(RACELINE[:, :2] - pose[0, :2], axis=1)))
 
 
-def closed_loop(ctrl, ticks, legacy_setpoint=False, wheels_blocked=False):
+def closed_loop(ctrl, ticks, legacy_setpoint=False, wheels_blocked=False, lifted=False):
     """Kinematic car + VESC model: wheel speed follows setpoint (tau 0.15 s) only above min ERPM."""
     pose = pose_on_line(0).astype(float)
     v, steer = 0.0, 0.0
@@ -77,10 +82,11 @@ def closed_loop(ctrl, ticks, legacy_setpoint=False, wheels_blocked=False):
         driven = (not wheels_blocked) and abs(cmd * ERPM_GAIN) >= VESC_MIN_ERPM
         target = cmd if driven else 0.0
         v += (target - v) * DT / 0.15
-        yaw = pose[0, 2]
-        pose[0, 0] += v * np.cos(yaw) * DT
-        pose[0, 1] += v * np.sin(yaw) * DT
-        pose[0, 2] += v * np.tan(steer) / CAR['wheelbase'] * DT
+        if not lifted:   # wheels lifted: wheels spin, chassis (localized pose) stays put
+            yaw = pose[0, 2]
+            pose[0, 0] += v * np.cos(yaw) * DT
+            pose[0, 1] += v * np.sin(yaw) * DT
+            pose[0, 2] += v * np.tan(steer) / CAR['wheelbase'] * DT
         log.append((cmd, v, steer, ctrl.mpc_result.status, ctrl.mpc_result.elapsed_s))
     return np.array([r[:3] for r in log]), [r[3] for r in log], np.array([r[4] for r in log])
 
@@ -91,15 +97,28 @@ def test_legacy_setpoint_never_leaves_standstill():
     assert np.max(log[:, 1]) < 1e-6
 
 
+def test_bench_lifted_conservative_steer():
+    """Next real test: wheels lifted, mpc_car.yaml as is (steer 0.15 rad / 0.3 rad/s)."""
+    log, status, _ = closed_loop(make_controller(), 400, lifted=True)
+    cmd, v, steer = log[:, 0], log[:, 1], log[:, 2]
+    assert all(s == 'solved' for s in status), set(status)
+    assert cmd[0] <= CAR['mpc_max_accel_mps2'] * DT + 1e-9          # starts from 0
+    assert np.all(np.diff(cmd) <= CAR['mpc_max_accel_mps2'] * DT + 1e-9)  # limited accel
+    assert v.max() > 0.5 and cmd.max() <= CAR['mpc_max_speed_mps'] + 1e-9
+    assert np.abs(steer).max() <= 0.15 + 1e-9
+    assert np.all(np.abs(np.diff(steer)) <= 0.3 * DT + 1e-9)
+
+
 def test_integrated_setpoint_starts_and_respects_limits():
-    log, status, elapsed = closed_loop(make_controller(), 400)   # 10 s
+    """Driving around 11_18_6 corners needs > 0.15 rad: uses the UNVERIFIED 0.4 rad / 3.2 rad/s."""
+    log, status, elapsed = closed_loop(make_controller(TRACK_STEER), 400)   # 10 s
     cmd, v = log[:, 0], log[:, 1]
     assert all(s == 'solved' for s in status), set(status)
     assert np.max(v) > 0.5                                       # car actually moves
     assert np.max(cmd) <= CAR['mpc_max_speed_mps'] + 1e-9        # speed limit
     assert np.all(cmd >= 0)
     assert np.all(cmd - v <= CAR['mpc_cmd_max_lead_mps'] + 1e-9)  # anti-windup lead
-    assert np.max(np.abs(log[:, 2])) <= CAR['mpc_max_steer_rad'] + 1e-9
+    assert np.max(np.abs(log[:, 2])) <= TRACK_STEER['mpc_max_steer_rad'] + 1e-9
     # speed and steering are both produced by the MPC
     assert np.ptp(cmd) > 0.3 and np.ptp(log[:, 2]) > 0.05
     print(f'\nsolver ms p50={1e3*np.median(elapsed):.2f} p99={1e3*np.percentile(elapsed, 99):.2f} '

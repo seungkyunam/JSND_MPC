@@ -51,6 +51,7 @@
     <param name="joy_topic"     value="/joy"/>
     <param name="joy_max_speed" value="4.0" type="float"/>
     <param name="use_estop" value="true"/>
+    <param name="joy_freshness_threshold" value="0.25" type="float"/>  <!-- = low_level cmd_freshness default -->
     <param name="sim" value="false"/>
   </node>
 </launch>

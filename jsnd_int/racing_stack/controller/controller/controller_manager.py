@@ -108,6 +108,10 @@ class ControllerManager(Node):
         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
         self.mpc_odom_timeout_s = float(self._get_param('mpc_odom_timeout_s', 0.2))
         self.last_odom_time = None
+        # MPC holds 0 speed unless simple_mux has autodrive selected (fresh status).
+        self.mux_host = None
+        self.mux_host_time = None
+        self.mpc_mux_host_timeout_s = float(self._get_param('mpc_mux_host_timeout_s', 0.25))
         self.lateral_mpc = None
         if self.lateral_controller == 'MPC':
             from controller.mpc.integrated_mpc import IntegratedMPC  # imports OSQP
@@ -152,6 +156,8 @@ class ControllerManager(Node):
         if self.measuring:
             self.measure_pub = self.create_publisher(Float32, '/controller/latency', 10)
         if self.lateral_controller == 'MPC':
+            self.create_subscription(String, self._get_param('mpc_mux_host_topic', '/simple_mux/active_host'),
+                                     self.mux_host_cb, 10)
             self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
             self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
 
@@ -323,6 +329,10 @@ class ControllerManager(Node):
         except Exception as e:
             self.get_logger().error(f"failed to save controller params: {e}")
 
+    def mux_host_cb(self, msg):
+        self.mux_host = msg.data
+        self.mux_host_time = self.get_clock().now()
+
     def odom_cb(self, data: Odometry):
         self.last_odom_time = self.get_clock().now()
         self.speed_now = data.twist.twist.linear.x
@@ -461,6 +471,12 @@ class ControllerManager(Node):
         if odom_age > self.mpc_odom_timeout_s:
             self.get_logger().error(f"[{self.name}] [MPC] odom stale ({odom_age:.2f}s). STOPPING!!",
                                     throttle_duration_sec=0.5)
+            speed, acceleration = 0.0, 0.0
+        host_age = (float('inf') if self.mux_host_time is None
+                    else (self.get_clock().now() - self.mux_host_time).nanoseconds / 1e9)
+        if self.mux_host != 'autodrive' or host_age > self.mpc_mux_host_timeout_s:
+            # Not engaged (RB not selected / LB human / mux status lost): keep the
+            # setpoint at 0 so engaging starts from standstill with limited accel.
             speed, acceleration = 0.0, 0.0
         result = self.controller.mpc_result
         if self.state == "FTGONLY" or speed <= 0.0:

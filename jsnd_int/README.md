@@ -5,9 +5,9 @@
 
 | 경로 | 내용 |
 |---|---|
-| `racing_stack/...` | JSND_INT에서 수정/추가한 파일 4개 (JSND racing_stack 경로 그대로) |
+| `racing_stack/...` | JSND_INT에서 수정/추가한 파일 6개 (JSND racing_stack 경로 그대로) |
 | `0000-jetson-uncommitted-launch-edits.patch` | Jetson JSND의 미커밋 launch 수정(joy_node 등) — 통합의 기준 상태 |
-| `0001-integrate-mpc-into-controller_manager.patch` | 통합 커밋 전체 (`git am` 가능) |
+| `0001-*.patch`, `0002-*.patch` | 통합 커밋 2개 (`git am` 순서대로) |
 | `tests_offline/` | pytest: 속도 setpoint, 제한, STOP 처리 |
 | `tests_ros/` | 격리 domain 219, VESC 없이 controller_manager + simple_mux 시나리오 |
 
@@ -16,7 +16,7 @@ MPC 모듈(`controller/controller/mpc/*.py` 5개)은 저장소 루트의 `contro
 ## Jetson 적용
 ```bash
 cd ~/JSND_INT/src/racing_stack     # JSND clone (원본 ~/JSND 미수정)
-git am /path/to/0001-integrate-mpc-into-controller_manager.patch
+git am /path/to/jsnd_int/0001-*.patch /path/to/jsnd_int/0002-*.patch
 cd ~/JSND_INT && source ~/JSND/install/setup.bash
 colcon build --base-paths src --packages-select controller stack_master
 # osqp 1.1.3만 ~/JSND_INT/pydeps 에 둔다 (시스템 numpy/scipy 유지)

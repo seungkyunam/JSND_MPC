@@ -1,7 +1,7 @@
 From 040635226fe83f02fffd1640561652562c9bfa00 Mon Sep 17 00:00:00 2001
 From: jsnd <ros2kil105@gmail.com>
 Date: Sun, 22 Nov 2026 11:43:41 +0900
-Subject: [PATCH] Integrate speed+steering MPC into controller_manager
+Subject: [PATCH 1/2] Integrate speed+steering MPC into controller_manager
  (controller:=mpc)
 
 - controller/mpc: integrated MPC copied unchanged from JSND_MPC
