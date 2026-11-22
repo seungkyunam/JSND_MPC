@@ -39,12 +39,14 @@ class SimpleMuxNode(Node):
         # initial human-drive source; the pitwall panel can flip it at runtime
         # via ego_control_topic. False = joy, True = keyboard (/joy_keyboard).
         self.declare_parameter('use_keyboard', False)
-        # safety_mode (default False = legacy behaviour, unchanged): latched E-stop,
-        # LB/A = E-stop instead of manual drive, explicit restart approval
-        # (/simple_mux/reset_estop), zero command whenever not engaged.
+        # safety_mode (default False = legacy behaviour, unchanged): latched E-stop (A),
+        # LB = legacy manual drive (hold), RB = autodrive (hold), explicit restart
+        # approval (/simple_mux/reset_estop), zero command whenever not engaged.
+        # A latch blocks both autodrive and manual drive.
         self.declare_parameter('safety_mode', False)
-        self.declare_parameter('safety_estop_buttons', [0, 4])
+        self.declare_parameter('safety_estop_buttons', [0])
         self.declare_parameter('safety_engage_button', 5)
+        self.declare_parameter('safety_manual_button', 4)      # -1 disables manual drive
         self.declare_parameter('safety_require_engage_hold', True)
         self.declare_parameter('safety_joy_timeout_s', 0.5)
         self.declare_parameter('safety_min_latch_s', 2.0)
@@ -101,6 +103,7 @@ class SimpleMuxNode(Node):
         if self.safety_mode:
             self.gate = SafetyGate(
                 estop_buttons=p('safety_estop_buttons'), engage_button=p('safety_engage_button'),
+                manual_button=p('safety_manual_button'),
                 joy_timeout_s=p('safety_joy_timeout_s'), min_latch_s=p('safety_min_latch_s'),
                 standstill_mps=p('safety_standstill_mps'), standstill_hold_s=p('safety_standstill_hold_s'),
                 require_hold=p('safety_require_engage_hold'), start_latched=p('safety_start_latched'))
@@ -111,7 +114,8 @@ class SimpleMuxNode(Node):
             self.create_service(Trigger, '/simple_mux/reset_estop', self._reset_estop_cb)
             self.get_logger().warn(
                 f'safety_mode ON: estop buttons {list(p("safety_estop_buttons"))}, engage button '
-                f'{p("safety_engage_button")} (hold={p("safety_require_engage_hold")}), manual drive DISABLED. '
+                f'{p("safety_engage_button")} (hold={p("safety_require_engage_hold")}), manual button '
+                f'{p("safety_manual_button")} (hold, joy_max_speed={self.max_speed} m/s). '
                 'Software stop only - keep the physical power cut within reach.')
             self._flush_gate_events()
 
@@ -158,6 +162,8 @@ class SimpleMuxNode(Node):
         out.header.stamp = self.get_clock().now().to_msg()
         if host == 'autodrive' and self._is_fresh(self.autodrive):
             out = deepcopy(self.autodrive)
+        elif host == 'humandrive' and self._is_fresh(self.human_drive):
+            out = deepcopy(self.human_drive)
         if self.use_estop:
             out = self.estop.should_stop(self.scan, self.odom, out)
         self.drive_pub.publish(out)
@@ -210,20 +216,26 @@ class SimpleMuxNode(Node):
         if self.use_keyboard:
             self._handle_joy(msg)
 
+    def _joy_to_drive(self, msg):
+        # legacy manual mapping, unchanged: left stick Y x joy_max_speed, right stick X x joy_max_steer
+        drive = AckermannDriveStamped()
+        drive.header.stamp = self.get_clock().now().to_msg()
+        drive.drive.steering_angle = msg.axes[3] * self.max_steer if len(msg.axes) > 3 else 0.0
+        drive.drive.speed          = msg.axes[1] * self.max_speed  if len(msg.axes) > 1 else 0.0
+        return drive
+
     def _handle_joy(self, msg):
-        if self.safety_mode:     # no manual drive; LB/A latch the E-stop
+        if self.safety_mode:     # A latches the E-stop; LB manual / RB autodrive via the gate
             self.gate.on_joy(msg.buttons, self._now_s())
             self._flush_gate_events()
+            if self.gate.host == 'humandrive':
+                self.human_drive = self._joy_to_drive(msg)
             return
         use_human = msg.buttons[4] if len(msg.buttons) > 4 else False
         use_auto  = msg.buttons[5] if len(msg.buttons) > 5 else False
 
         if use_human:
-            drive = AckermannDriveStamped()
-            drive.header.stamp = self.get_clock().now().to_msg()
-            drive.drive.steering_angle = msg.axes[3] * self.max_steer if len(msg.axes) > 3 else 0.0
-            drive.drive.speed          = msg.axes[1] * self.max_speed  if len(msg.axes) > 1 else 0.0
-            self.human_drive   = drive
+            self.human_drive   = self._joy_to_drive(msg)
             self.current_host  = 'humandrive'
         elif use_auto:
             self.current_host = 'autodrive'

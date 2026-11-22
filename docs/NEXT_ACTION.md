@@ -1,11 +1,10 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
-## 0. 현재 위치 (2026-11-22 단계 9 — WORK_STATUS 참고)
-- 코드: JSND_INT `c8727bb` (= 이 브랜치 `jsnd_int/0003-*.patch`), `~/JSND_INT/install` 빌드 완료. 실차 모터 구동 없음
-- 해결(오프라인·ROS 모의): P8 OSQP 고착, STOP 시 조향 고착, 100 Hz(모의 100.1 Hz, MPC p99 2.5 ms), 설정 분리(기본 1.0 m/s)
-- 구현·모의 통과, **실차 미검증**: E-stop 래치 + 재시작 승인 (MPC 모드 기본 on). LB는 이제 정지 버튼(수동주행 없음)
-- 남은 위험: 조향 0.15 rad(P9), 정지 odom 잡음(P6), 실차 100 Hz 여유, 물리 차단은 계속 필요
-- 다음: 아래 "4. 다음 실차 시험 절차" (bench, 4바퀴 공중, 1.0 m/s)
+## 0. 현재 위치 (2026-11-22 단계 10 — WORK_STATUS 참고)
+- 코드: JSND_INT `701b49a` (= `jsnd_int/0004-*.patch`), `~/JSND_INT/install` 재빌드 완료. 실차 모터 구동 없음
+- 버튼(MPC 모드): **RB = MPC 자율(유지), LB = 기존 수동조작(유지, 최대 joy_max_speed 4.0 m/s), A = 비상정지 래치**(자율·수동 모두 차단, 승인 후 재시작)
+- **사용자 승인 필요**: ① MPC 조향 한계(0.15 rad / 0.3 rad/s) 변경 여부와 실측 방법 ② 수동 최고속도 변경안 A/B/C (WORK_STATUS 단계 10-3)
+- 남은 위험: 조향 하드웨어 한계 미측정, 정지 odom 잡음(P6), 실차 100 Hz 여유, 버튼 동작 실차 미확인, 물리 전원 차단은 계속 필요
 
 ## 1. 환경 (Jetson)
 | 항목 | 값 |
@@ -26,7 +25,7 @@ JSND_INT를 처음부터 재구성해야 할 때: `git clone ~/JSND/src/racing_s
 
 ## 2. 데이터 흐름 (통합 후)
 JSND 센서·PF/EKF → `/global_waypoints`(iqp) → state_machine `/behavior_strategy` → controller_manager(MPC: 속도+조향, FTGONLY는 FTG)
-→ `/vesc/high_level/ackermann_cmd` → simple_mux(MPC 모드 safety_mode: RB 유지=autodrive, LB·A=E-stop 래치, 승인 후 재시작; PP 모드: 기존 RB/LB 수동. TTC estop, 명령 0.25 s 끊기면 0, `/simple_mux/active_host` 발행, MPC 100 Hz / PP 50 Hz)
+→ `/vesc/high_level/ackermann_cmd` → simple_mux(MPC 모드 safety_mode: RB 유지=autodrive, LB 유지=기존 수동, A=E-stop 래치(자율·수동 차단), 승인 후 재시작; PP 모드: 기존 RB/LB 수동. TTC estop, 명령 0.25 s 끊기면 0, `/simple_mux/active_host` 발행, MPC 100 Hz / PP 50 Hz)
 → `/vesc/ackermann_cmd` → ackermann_to_vesc(speed→ERPM ×4614, servo = −0.99·δ + 0.487) → VESC
 
 MPC 모드 정지 조건: solver 실패/시간초과/경로이탈 → 0, odom 0.2 s 끊김 → 0, behavior 유실 → 0(기존), TRAILING 등 미지원 상태 → 0, `active_host`≠autodrive → 0(RB 시 0부터 1.0 m/s² 램프)
@@ -38,7 +37,7 @@ MPC 모드 정지 조건: solver 실패/시간초과/경로이탈 → 0, odom 0.
 | MPC 조향 한계/변화율 | 0.15 rad / 0.3 rad/s (11-20 bench 값) | 실측 아님. 트랙 코너 추종엔 부족 |
 | servo 변환 | gain −0.99, offset 0.487 | 기계 한계 미측정 |
 | MPC 최고속도 | lowspeed 1.0 m/s (≈4614 ERPM) / exp2mps 2.0 m/s(bench 전용) | 설정값 |
-| 비상정지 | MPC 모드: safety_mode 래치(A/LB/joy 끊김/토픽) + 재시작 승인, 명령 끊김(mux 0.25 s, VESC watchdog 0.2 s), **배터리 차단(필수 유지)** | ROS 모의만 통과, 실차 미확인 |
+| 비상정지 | MPC 모드: safety_mode 래치(A/joy 끊김/토픽, LB는 수동) + 재시작 승인, 명령 끊김(mux 0.25 s, VESC watchdog 0.2 s), **배터리 차단(필수 유지)** | ROS 모의만 통과, 실차 미확인 |
 
 ## 4. 다음 실차 시험 절차 (Bench, 4바퀴 공중, lowspeed 1.0 m/s) — 모터 구동 단계마다 사용자 승인
 ### 4-0. 물리 (사용자 확인)
@@ -88,9 +87,9 @@ ros2 bag record -o ~/bench_logs/bag_mpc_$(date +%H%M) /vesc/high_level/ackermann
 ### 4-6. 순서 (각 단계 사용자 승인 후)
 1. **재시작 승인**: 모든 버튼 놓고 `ros2 service call /simple_mux/reset_estop std_srvs/srv/Trigger` → `success: true`, host `none`
 2. **RB 누르고 유지** 3 s → ERPM 0부터 증가(≤ ~4614 = 1.0 m/s), servo 0.339–0.636 → **RB 놓기** → host `none`, 0 (soft stop)
-3. 재승인 불필요: RB 다시 유지 → 회전 중 **LB** → host `estop`, ERPM 0, servo 중앙. (LB+스틱을 움직여도 0이어야 함 — 스틱은 건드리지 말 것)
+3. 재승인 불필요: RB 다시 유지 → 회전 중 **A** → host `estop`, ERPM 0, servo 중앙. 래치 중 LB·RB·스틱을 움직여도 0이어야 함. (단계 10부터 LB는 정지가 아니라 **수동 주행** — 정지 목적으로 LB 사용 금지)
 4. 회전 중 리셋 요청 → **거부**되는지 확인. 정지 1 s 후 리셋 → 성공
-5. RB 유지 → **A** → 래치 확인 → 리셋
+5. LB 수동(스틱 중립) 유지 → **A** → 래치 확인 → 리셋
 6. RB 유지 → 패드 USB 분리 또는 전원 OFF → 0.5 s 내 `joy lost` 래치 (선택, 패드 담당 동의 시)
 7. RB 유지 → `ros2 topic pub --once /simple_mux/estop std_msgs/msg/Bool "{data: true}"` → 래치
 8. 회전 중 `pkill -INT -f lib/controller/controller_manager` → mux freshness 0.25 s 후 0
@@ -109,3 +108,9 @@ ros2 bag record -o ~/bench_logs/bag_mpc_$(date +%H%M) /vesc/high_level/ackermann
 - P3(자세 정합 후에도 osqp inaccurate/max iter/deadline 발생 시) 대응: solver 예산(`mpc_max_iter`, `mpc_solver_time_limit_s`) 조정 vs 입력 안정화
 - P4 TRAILING 빈발 시 bench 환경 정리로 충분한지
 - TTC estop 비래치 동작을 첫 트랙 주행에서 허용할지
+
+## 단계 10 이후 다음 실차 시험 추가 항목 (Bench, 4바퀴 공중, 각 단계 사용자 승인)
+1. 모터 전에 버튼만: 시작 래치 확인 → reset 승인 → **A** 래치 확인(`/simple_mux/estop_state`) → 재승인
+2. **LB 수동**: 스틱 중립에서 LB 유지 → `active_host`=humandrive, 속도 0 → 스틱 아주 조금 → 낮은 ERPM → 놓기 → 0. (수동 최고속도 결정 전에는 스틱을 크게 밀지 않기)
+3. **RB 자율** 3~5 s → **A**로 정지 → 래치 중 LB·RB 무반응 확인
+4. 조향 실측(모터 없이 서보만): 서보 끝점에서 기계적 걸림 여부, 바퀴 각도 측정 → MPC 조향 한계 결정 자료

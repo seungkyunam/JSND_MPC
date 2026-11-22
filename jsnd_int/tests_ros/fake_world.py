@@ -50,12 +50,14 @@ SCENARIOS = {
                         (7.0, 12.0, 'GB_TRACK', 'MPC resumes or STOP if off path')]),
     # simple_mux safety_mode (latched E-stop + restart approval), car on the ground (not lifted)
     'estop': dict(duration=25.0, rb=[(3.0, 3.3), (5.0, 7.0), (7.5, 9.5), (12.0, 14.0), (16.0, 18.0), (20.5, 23.0)],
-                  lb=[(9.0, 9.3)], a=[(13.0, 13.2)], stick_forward=[(9.0, 9.3)], joy_silent=[(16.8, 17.6)],
+                  lb=[(9.0, 9.6), (12.8, 13.6)], a=[(13.0, 13.2)], stick_forward=[(9.0, 9.6), (12.8, 13.6)],
+                  stick_value=0.25, joy_silent=[(16.8, 17.6)],
                   soft_estop=[21.5], resets=[4.0, 9.6, 11.6, 15.5, 19.8],
                   odom_loss=[], obstacle=[], beh_loss=[], trailing=[], ftg=[], kill=None,
                   events=[('startup latched', 0.0, 'none'), ('RB while latched', 3.0, 'none'),
                           ('RB hold', 5.0, 'drive'), ('RB released', 7.0, 'release'), ('RB hold again', 7.5, 'drive'),
-                          ('LB + stick fwd (incident)', 9.0, 'latch'), ('A button', 13.0, 'latch'),
+                          ('LB + stick 0.25 (manual)', 9.0, 'drive'), ('LB released', 9.6, 'release'),
+                          ('LB manual then A', 12.8, 'drive'), ('A button (LB held)', 13.0, 'latch'),
                           ('joy lost', 16.8, 'latch'), ('soft estop topic', 21.5, 'latch')],
                   phases=[]),
 }
@@ -204,7 +206,7 @@ class World(Node):
         if IN(t, SC.get('a', [])):
             j.buttons[0] = 1  # A
         if IN(t, SC.get('stick_forward', [])):
-            j.axes[1] = 1.0   # full forward stick (2026-11-22 18456 ERPM incident in legacy mux)
+            j.axes[1] = SC.get('stick_value', 1.0)   # forward stick (1.0 = 2026-11-22 18456 ERPM incident)
         if self.pending and t >= self.pending[0]:
             at = self.pending.pop(0)
             fut = self.reset_cli.call_async(Trigger.Request())

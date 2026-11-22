@@ -1,12 +1,11 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 단계 9, 오프라인/ROS 모의 안정화 — 실차 모터 구동 없음)**
-> - **P8 OSQP 고착 원인 확정·수정**: 정지 상태 QP가 cold start에서 500~3300회 ADMM 반복 필요 → `mpc_max_iter=400` 초과 → STOP → 계속 정지 → 같은 실패 반복(자기강화). 직전 조향 유지가 악화 요인(기존 예산에서 solved 0.4% vs 조향 0이면 40%). 실차 bag 입력으로 재현·해소 확인
-> - 수정: 반복 상한 4000(시간 한도 4 ms가 실제 예산), 쌍대 warm start, 예산 초과 시 OSQP 중간 해로 다음 주기 이어쓰기, STOP 시 조향을 변화율 한계로 0 복귀
-> - **100 Hz**: 제어 출력 100.1 Hz(ROS 모의), MPC 계산 p50 2.1 / p99 2.5 ms, 제어 루프 전체 p99 3.6~4.1 ms. 실차 Jetson 부하 상태는 **미검증**
-> - **안전 정지**: simple_mux `safety_mode`(MPC 기본 on): LB/A/joy 끊김/토픽 → 래치, 속도·조향 0 지속 발행, 수동주행 없음, `/simple_mux/reset_estop` 승인 + RB 재입력. ROS 모의 통과, **실차 미검증** → 완료 표시 안 함. 물리 전원 차단을 대체하지 않음
-> - 설정 분리: `mpc_car.yaml` 기본 1.0 m/s, `mpc_profile:=lowspeed`(1.0, 기본) / `exp2mps`(2.0, bench 전용). Jetson의 미커밋 2.0 m/s 수정은 백업 후 되돌림
-> - JSND_INT `c8727bb`(로컬), 이 브랜치 `jsnd_int/0003-*.patch` + 사본. 원본 JSND·PP·FTG 코드 무변경
+> **현재 상태 요약 (2026-11-22 단계 10 — 버튼 재배치·조향 조사, 실차 모터 구동 없음)**
+> - **버튼(MPC 모드 safety_mode)**: RB = MPC 자율(누르고 있는 동안), **LB = 기존 수동조작 복구**(누르고 있는 동안, 기존 매핑 그대로), **A = 비상정지 래치**. 래치 중에는 자율·수동 모두 차단, 재시작은 `/simple_mux/reset_estop` 승인 + 버튼 재입력. JSND_INT `701b49a` = `jsnd_int/0004-*.patch`
+> - 검증: 오프라인 gate 시험 9 passed, ROS 모의(VESC 없음) LB 수동 1.0 m/s(스틱 0.25×4.0) 통과, LB 중 A → 0.052 s 래치·출력 0, 100.1 Hz 유지. **실차 미검증**
+> - **조향 조사**: PP ±0.53 rad, FTG·수동 ±0.4 rad 모두 소프트웨어 제한. 하드웨어(서보 기계 한계) 실측 기록 없음. MPC ±0.15 rad / 0.3 rad/s는 11-20 bench 보수값 → **사용자 승인 필요**(아래 단계 10)
+> - **수동 최고속도**: 기존 `joy_max_speed` 4.0 m/s 그대로(18456 ERPM의 원인). 변경안만 보고 → **사용자 결정 필요**
+> - MPC 설정(100 Hz, Horizon 10, OSQP 안정화)은 GitHub `0003`과 Jetson 동일. JSND 원본·PP·FTG·MPC 코드 무변경
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
 
@@ -332,3 +331,64 @@ ROS 모의 결과(estop 시나리오, 지면 주행 모델): 래치까지 +0.05 
 | P9 | 조향 0.15 rad로 코너 추종 불가 (ROS 모의 지면 주행에서도 `nonlinear_prediction_outside_envelope` 반복) → 실측 필요 |
 | U3 | 단발 `solved inaccurate`/`deadline_exceeded` 1틱 STOP 시 속도 setpoint가 0으로 리셋되어 명령 단속 가능 |
 | U4 | FTGONLY 구간 제어 루프 최대 ~100 ms (분석 범위 밖) |
+
+## 2026-11-22 단계 10: 조향각 조사 · LB 수동 복구 · A 비상정지 (실차 모터 구동 없음)
+JSND_INT `c8727bb → 701b49a` (`safety_gate.py`, `simple_mux_node.py`만 변경), 이 브랜치 `jsnd_int/0004-*.patch` + 사본. 재빌드: `controller`, `stack_master`만.
+
+### 1. 조향각 비교 (조사만, 파라미터 변경 없음)
+| 경로 | 최대 조향 | 변화율 | 위치 | 성격 |
+|---|---|---|---|---|
+| PP (L1) | ±0.53 rad | 틱당 ≤0.4 rad (50 Hz → 20 rad/s, 사실상 무제한) | `controller/combined/src/Controller.py` 355–359 (하드코딩) | 소프트웨어 |
+| FTG | ±0.4 rad | 없음(`ftg_steer_ema` 0) | `config/controller.yaml` `ftg_max_steer` | 소프트웨어 |
+| 수동(LB) | ±0.4 rad × 오른쪽 스틱 X | 없음 | `simple_mux` `joy_max_steer` 기본값 | 소프트웨어 |
+| **MPC** | **±0.15 rad** | **0.3 rad/s** | `config/mpc_car.yaml` | 11-20 bench 보수값 (주석: "실측 후 상향") |
+| 서보 변환 | servo = −0.99·δ + 0.487 | – | `config/CAR/vehicle_config.yaml` (주석상 캘리브 결과) | 캘리브값 |
+| VESC 서보 명령 범위 | 0.0 ~ 1.0 | – | `CAR/vehicle_config.yaml` `servo_min/max` (low_level이 vesc 설정으로 사용) | 소프트웨어(사실상 무제한) |
+
+- 서보 범위 0~1을 각도로 바꾸면 **왼쪽 +0.492 / 오른쪽 −0.518 rad**. PP의 0.53 rad는 이 범위를 넘으므로 실제로는 서보 명령이 0/1에서 잘림 → PP 실효 한계 ≈ 0.49 rad
+- `sensor/vesc/vesc_driver/params/vesc_config.yaml`(0.15~0.85)은 race 실행 경로에서 사용되지 않음
+- **하드웨어 한계 실측 기록 없음** (`odom_calib` 도구는 주행 데이터로 max_steer를 추정하지만 보고서 없음). 서보 기계 끝점·실제 바퀴 각도·변화율 모두 미측정
+- 차이 원인: MPC 값은 11-20 첫 bench(4바퀴 공중)에서 서보 범위·FTG 0.4 안쪽으로 **의도적으로 낮게 잡은 값**이며 하드웨어 근거 없음. 변화율 0.3 rad/s는 PP 실효값의 약 1/67
+- 결과: 단계 8에서 조향이 0.15에 계속 고착, 오프라인 폐루프는 0.4 rad에서만 11_18_6 코너 통과(0.15는 STOP)
+
+### 2. LB 수동 복구 · A 비상정지 (safety_mode = MPC 모드 기본)
+| 버튼 | 이전(0003) | 지금(0004) |
+|---|---|---|
+| RB | 자율(새로 누름 + 유지) | 동일 |
+| LB | E-stop 래치 | **기존 수동조작**(유지하는 동안, 기존 매핑: 왼쪽 스틱 Y × `joy_max_speed`, 오른쪽 스틱 X × `joy_max_steer`), RB보다 우선(기존과 동일). 놓으면 none(속도 0), RB 자율 재진입은 새로 눌러야 함 |
+| A | E-stop 래치 | 동일 (유일한 정지 버튼) |
+| joy 끊김 | 자율 중 래치 | 자율 **또는 수동** 중 래치 |
+- 래치 중: 자율·수동 모두 차단(출력 속도·조향 0 지속), 재시작 = 버튼 모두 놓음 + 바퀴 정지 1 s + 래치 2 s 경과 후 `/simple_mux/reset_estop` 승인 → RB/LB 새로 입력
+- `safety_mode=false`(PP 기본) 경로는 기존 코드 그대로(수동 매핑만 함수로 묶음, 동작 동일)
+- 수동 모드 출력에도 TTC estop(`use_estop`) 적용 — 기존과 동일
+
+### 3. 18456 ERPM 급가속 분석 (단계 8 P7)
+- 계산: `speed = axes[1] × joy_max_speed = 1.0 × 4.0 m/s` → ×4614 = **18456 ERPM**. 버그가 아니라 기존 수동 설계값(`low_level.launch.xml` `joy_max_speed` 기본 4.0, race.launch에서 바꾸는 인자 없음)
+- 당시 LB를 정지 버튼으로 생각하고 누른 상태에서 왼쪽 스틱이 끝까지 전진 → 무부하(바퀴 공중)라 약 2 s 만에 실제 13781 ERPM
+- 지금 구조에서도 LB 수동은 같은 속도(4.0 m/s)까지 낼 수 있음. 정지는 **A**
+- **변경안 (사용자 결정 필요, 적용 안 함)**:
+  | 안 | 내용 | 영향 |
+  |---|---|---|
+  | A | 유지 4.0 m/s | 기존과 동일. bench에서 스틱 실수 시 18456 ERPM |
+  | B | MPC 모드만 `joy_max_speed` 1.0 (= MPC lowspeed) | 수동 최대 4614 ERPM. race.launch에 인자 전달 1줄 추가 필요 |
+  | C | MPC 모드만 2.0 | 최대 9228 ERPM |
+
+### 4. MPC 설정 확인 (변경 없음)
+- `control_loop_rate_hz` 100, `mpc_horizon` 10, `mpc_max_iter` 4000, `mpc_solver_time_limit_s` 0.004, `mpc_profile` lowspeed 1.0 m/s
+- GitHub `jsnd_int/` 사본 ↔ Jetson 소스: `controller_manager.py`, `Controller.py`, `integrated_mpc.py`, `race/low_level.launch.xml`, `mpc_car.yaml`, `mpc_profile_*.yaml` 동일. 차이는 이번 수정 2파일뿐
+- JSND 원본 `~/JSND/src/racing_stack` `2091417` + 기존 미커밋 launch 2건 그대로
+
+### 5. 검증 (실차 모터 구동 없음)
+- 오프라인 `tests_offline/test_stabilization.py -k gate`: **9 passed** (A로 자율·수동 래치, LB 유지=수동·RB보다 우선·놓으면 0, 래치 중 LB 차단·LB 누른 채 재시작 거부, 수동 중 joy 끊김 래치, 버튼 중복 거부)
+- ROS 모의 `tests_ros/run.sh mpc estop` (domain 219, VESC 없음, 요약 `docs/logs/ros_mock_estop_20261122_step10.txt`):
+  | 이벤트 | 결과 |
+  |---|---|
+  | 시작 래치 / 래치 중 RB | 0.000 m/s |
+  | RB 유지 / 놓음 | 자율 0.98 m/s / none |
+  | LB + 스틱 0.25 | humandrive, mux **1.000 m/s** (0.25×4.0) |
+  | LB 놓음 | none, 0 |
+  | LB 수동 중 A | **0.052 s** 후 estop, 래치 동안 속도·조향 0.000 |
+  | joy 끊김 / 소프트 estop | 0.50 s / 0.052 s 래치 |
+  | 주기 | mux 100.1 Hz, controller 100.1 Hz, MPC p99 3.0 ms |
+- 이미 통과한 MPC 안정화 시험(단계 9)은 반복하지 않음
+- 종료 시 rclpy 이중 shutdown Traceback은 SIGINT 종료 시 기존 코드에서도 나는 것(동작 무관)

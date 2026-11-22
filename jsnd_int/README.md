@@ -7,7 +7,7 @@
 |---|---|
 | `racing_stack/...` | JSND_INT에서 수정/추가한 파일 (JSND racing_stack 경로 그대로). 2026-11-22 `0003`부터 `mpc/integrated_mpc.py`, `safety_gate.py`, `mpc_profile_*.yaml` 포함 |
 | `0000-jetson-uncommitted-launch-edits.patch` | Jetson JSND의 미커밋 launch 수정(joy_node 등) — 통합의 기준 상태 |
-| `0001-*.patch`, `0002-*.patch`, `0003-*.patch` | 통합 커밋 3개 (`git am` 순서대로). 0003 = OSQP 안정화·100 Hz·E-stop 래치·속도 프로파일 |
+| `0001-*.patch` … `0004-*.patch` | 통합 커밋 4개 (`git am` 순서대로). 0003 = OSQP 안정화·100 Hz·E-stop 래치·속도 프로파일, 0004 = A 비상정지 / LB 기존 수동 / RB 자율 |
 | `tests_offline/` | pytest: 속도 setpoint, 제한, STOP 처리 + `test_stabilization.py`(실차 bag 입력 `bench_20261122_mpc_inputs.npz` 재현) |
 | `tests_ros/` | 격리 domain 219, VESC 없이 controller_manager + simple_mux 시나리오 |
 

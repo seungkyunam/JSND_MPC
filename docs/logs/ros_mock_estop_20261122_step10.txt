@@ -1,0 +1,53 @@
+reset requests:
+  t=  4.0s  success=True  estop cleared -> none. Release and press the engage button to start from 0.  [host after: none]
+  t=  9.6s  success=False  not latched  [host after: none]
+  t= 11.6s  success=False  not latched  [host after: none]
+  t= 15.5s  success=True  estop cleared -> none. Release and press the engage button to start from 0.  [host after: none]
+  t= 19.8s  success=True  estop cleared -> none. Release and press the engage button to start from 0.  [host after: none]
+event                          t  result
+startup latched              0.0  mux n=291 speed max 0.000, hosts ['estop']
+RB while latched             3.0  mux n=200 speed max 0.000, hosts ['estop', 'none']
+RB hold                      5.0  mux n=200 speed max 0.982, hosts ['autodrive', 'none']
+RB released                  7.0  mux n=50 speed max 0.984, hosts ['autodrive', 'none']
+RB hold again                7.5  mux n=150 speed max 0.956, hosts ['autodrive', 'none']
+LB + stick 0.25 (manual)     9.0  mux n=60 speed max 1.000, hosts ['autodrive', 'humandrive']
+LB released                  9.6  mux n=320 speed max 1.000, hosts ['autodrive', 'humandrive', 'none']
+LB manual then A            12.8  mux n=20 speed max 1.000, hosts ['autodrive', 'humandrive']
+A button (LB held)          13.0  host->estop +0.052s; until next reset (15.5s) mux n=243 speed max 0.000 |steer| max 0.000; car 0.75 m/s -> <0.05 in 0.40s (model tau 0.15s)
+joy lost                    16.8  host->estop +0.503s; until next reset (19.8s) mux n=247 speed max 0.000 |steer| max 0.000; car 0.00 m/s -> <0.05 in 0.01s (model tau 0.15s)
+soft estop topic            21.5  host->estop +0.052s; until next reset (25.0s) mux n=343 speed max 0.000 |steer| max 0.000; car 0.00 m/s -> <0.05 in 0.00s (model tau 0.15s)
+estop_state changes: ['latched: startup: restart approval required', 'clear: none', 'clear: autodrive', 'clear: none', 'clear: autodrive', 'clear: humandrive', 'clear: none', 'clear: autodrive', 'clear: humandrive', 'latched: button [0]', 'clear: none', 'clear: autodrive', 'latched: joy lost (0.50 s)', 'clear: none', 'clear: autodrive', 'latched: software /simple_mux/estop']
+mux output rate 100.1 Hz, period p50 9.9 p99 14.0 ms; max mux speed overall 1.000 m/s; humandrive host seen: True
+OUTPUT  controller publish 100.1 Hz (receive-side period p50 10.0 p99 13.1 max 47.8 ms); timer period (node) p50 10.00 p99 10.82 max 13.54 ms
+COMPUTE control cycle ms p50 3.32 p99 3.91 max 11.84; MPC solve ms p50 2.52 p99 2.99 max 8.94; solved solves/s 35.0 (838/2398 ticks)
+      1 [simple_mux]: safety_mode ON: estop buttons [0], engage button 5 (hold=True), manual button 4 (hold, joy_max_speed=4.0 m/s). Software stop only - keep the physical power cut within reach.
+      1 [simple_mux]: [safety] ESTOP LATCHED: startup: restart approval required
+      1 [controller_manager]: [controller_manager] Integrated MPC selected: IntegratedConfig(...)
+      1 [controller_manager]: [MPC] STOP requested: deadline_exceeded
+      1 [controller_manager]: [MPC] tracking local path
+      1 [simple_mux]: [safety] reset request: estop cleared -> none. Release and press the engage button to start from 0.
+      1 [simple_mux]: [safety] ESTOP RESET approved (was: startup: restart approval required) -> none; press engage to start
+      1 [simple_mux]: [safety] autodrive engaged (engage button pressed)
+      1 [simple_mux]: [safety] engage button released -> none (speed 0)
+      1 [simple_mux]: [safety] autodrive engaged (engage button pressed)
+      1 [simple_mux]: [safety] manual drive (manual button held)
+      1 [controller_manager]: [MPC] STOP requested: nonlinear_prediction_outside_envelope
+      1 [simple_mux]: [safety] manual button released -> none (speed 0)
+      2 [simple_mux]: [safety] reset request: not latched
+      1 [simple_mux]: [safety] autodrive engaged (engage button pressed)
+      1 [simple_mux]: [safety] manual drive (manual button held)
+      1 [simple_mux]: [safety] ESTOP LATCHED: button [0]
+      1 [simple_mux]: [safety] reset request: estop cleared -> none. Release and press the engage button to start from 0.
+      1 [simple_mux]: [safety] ESTOP RESET approved (was: button [0]) -> none; press engage to start
+      1 [simple_mux]: [safety] autodrive engaged (engage button pressed)
+      1 [simple_mux]: [safety] ESTOP LATCHED: joy lost (0.50 s)
+      1 [simple_mux]: [safety] reset request: estop cleared -> none. Release and press the engage button to start from 0.
+      1 [simple_mux]: [safety] ESTOP RESET approved (was: joy lost (0.50 s)) -> none; press engage to start
+      1 [simple_mux]: [safety] autodrive engaged (engage button pressed)
+      1 [simple_mux]: [safety] ESTOP LATCHED: software /simple_mux/estop
+      1 [controller_manager]: [controller_manager] Received no local wpnts. STOPPING!!
+      1 [controller_manager]: [controller_manager] [MPC] odom stale (0.21s). STOPPING!!
+      1 [controller_manager-1] Traceback (most recent call last):
+      1 [ERROR] [controller_manager-1]: process has died [pid 8397, exit code 1, cmd '/home/jsnd/JSND_INT/install/controller/lib/controller/controller_manager --ros-args -r __node:=controller_manager --params-file /home/jsnd/JSND_INT/install/stack_master/share/stack_master/config/controller.yaml --params-file /home/jsnd/JSND_INT/install/stack_master/share/stack_master/config/dynamic_controller.yaml --params-file /tmp/launch_params_ga12nspc --params-file /tmp/launch_params_59d2jbkr --params-file /home/jsnd/JSND_INT/install/stack_master/share/stack_master/config/mpc_car.yaml --params-file /home/jsnd/JSND_INT/install/stack_master/share/stack_master/config/mpc_profile_lowspeed.yaml --params-file /tmp/launch_params_hxowakqy --params-file /tmp/launch_params_xutenz6i'].
+      2 [simple_mux_node.py-2] Traceback (most recent call last):
+      1 [ERROR] [simple_mux_node.py-2]: process has died [pid 8398, exit code 1, cmd '/home/jsnd/JSND_INT/install/stack_master/lib/stack_master/simple_mux_node.py --ros-args -r __node:=simple_mux --params-file /home/jsnd/JSND_INT/install/stack_master/share/stack_master/config/CAR/vehicle_config.yaml --params-file /tmp/launch_params_ydq5cv3y --params-file /tmp/launch_params_9ma2anpo --params-file /tmp/launch_params_d925__t_ --params-file /tmp/launch_params_j2dbwxbn --params-file /tmp/launch_params_qqvvg8g_ --params-file /tmp/launch_params_70b53nvp --params-file /tmp/launch_params_4ez9ut6e --params-file /tmp/launch_params_gzbwz92q --params-file /tmp/launch_params_b_x8vi1y'].

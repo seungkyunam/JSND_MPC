@@ -11,10 +11,15 @@ Hosts:
   'estop'     latched stop. simple_mux publishes speed 0 / steering 0 every tick.
   'none'      not engaged. simple_mux publishes speed 0 / steering 0 every tick.
   'autodrive' the controller command may pass (fresh, then the TTC estop).
-There is no manual (humandrive) host: in safety_mode LB is an E-stop button.
+  'humandrive' legacy manual drive while the manual button (LB=4) is held;
+              simple_mux passes the pad command (fresh, then the TTC estop).
 
-Latch triggers: any estop button (default A=0, LB=4), the software estop topic,
-and loss of /joy while engaged. Only request_reset() clears a latch, and only
+Buttons: A=0 E-stop (latched), LB=4 manual drive (hold, legacy JSND), RB=5
+autodrive (new press, hold). LB has priority over RB as in legacy JSND.
+A latch blocks BOTH autodrive and manual drive until approved.
+
+Latch triggers: any estop button (default A=0), the software estop topic,
+and loss of /joy while engaged (autodrive or humandrive). Only request_reset() clears a latch, and only
 when every button is released on a fresh /joy, the wheels have been still for
 standstill_hold_s on fresh odom, and the latch is at least min_latch_s old.
 Clearing returns to 'none'; engaging again needs a NEW press of the engage
@@ -23,13 +28,17 @@ button (default RB=5). With require_hold, releasing RB returns to 'none'.
 
 
 class SafetyGate:
-    def __init__(self, estop_buttons=(0, 4), engage_button=5, joy_timeout_s=0.5,
+    def __init__(self, estop_buttons=(0,), engage_button=5, manual_button=4, joy_timeout_s=0.5,
                  min_latch_s=2.0, standstill_mps=0.05, standstill_hold_s=1.0,
                  odom_timeout_s=0.5, require_hold=True, start_latched=True):
         self.estop_buttons = tuple(int(b) for b in estop_buttons)
         self.engage_button = int(engage_button)
+        self.manual_button = None if manual_button is None or int(manual_button) < 0 else int(manual_button)
         if self.engage_button in self.estop_buttons:
             raise ValueError('engage button cannot also be an estop button')
+        if self.manual_button is not None and (self.manual_button in self.estop_buttons
+                                               or self.manual_button == self.engage_button):
+            raise ValueError('manual button cannot also be an estop or engage button')
         self.joy_timeout_s = float(joy_timeout_s)
         self.min_latch_s = float(min_latch_s)
         self.standstill_mps = float(standstill_mps)
@@ -69,10 +78,18 @@ class SafetyGate:
         self.joy_time, self.joy_buttons = now, buttons
         pressed = [b for b in self.estop_buttons if self._pressed(buttons, b)]
         engage = self._pressed(buttons, self.engage_button)
+        manual = self.manual_button is not None and self._pressed(buttons, self.manual_button)
         if pressed:
             self.trigger(f'button {pressed}', now)
         elif not self.latched:
-            if engage and not self.engage_was_pressed:
+            if manual:                   # legacy: LB held = manual drive, overrides RB
+                if self.host != 'humandrive':
+                    self._event(now, 'manual drive (manual button held)')
+                self.host = 'humandrive'
+            elif self.host == 'humandrive':
+                self._event(now, 'manual button released -> none (speed 0)')
+                self.host = 'none'       # RB still held does not engage: needs a new press
+            elif engage and not self.engage_was_pressed:
                 if self.host != 'autodrive':
                     self._event(now, 'autodrive engaged (engage button pressed)')
                 self.host = 'autodrive'
@@ -91,7 +108,7 @@ class SafetyGate:
 
     def update(self, now):
         joy_age = None if self.joy_time is None else now - self.joy_time
-        if self.host == 'autodrive' and (joy_age is None or joy_age > self.joy_timeout_s):
+        if self.host in ('autodrive', 'humandrive') and (joy_age is None or joy_age > self.joy_timeout_s):
             self.trigger(f'joy lost ({"never" if joy_age is None else f"{joy_age:.2f} s"})', now)
         return self.host
 

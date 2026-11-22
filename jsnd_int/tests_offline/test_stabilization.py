@@ -290,7 +290,7 @@ def test_gate_starts_latched_and_needs_approval():
 
 def test_gate_reset_conditions():
     g, t = ready_gate()
-    g.on_joy(pad(LB), t)                              # latch again now
+    g.on_joy(pad(A), t)                               # latch again now
     g.on_joy(pad(), t + 0.1)
     assert not g.request_reset(t + 0.5)[0]            # < min_latch_s
     g.on_odom(0.4, t + 2.5)                            # wheels turning
@@ -315,18 +315,51 @@ def approved_gate():
     return g, t + 0.01
 
 
-@pytest.mark.parametrize('button', [A, LB])
-def test_gate_estop_buttons_latch(button):
+def test_gate_a_latches_from_auto_and_manual():
+    for drive in (RB, LB):
+        g, t = approved_gate()
+        g.on_joy(pad(), t + 0.05)
+        g.on_joy(pad(drive), t + 0.1)
+        assert g.update(t + 0.1) == ('autodrive' if drive == RB else 'humandrive')
+        g.on_joy(pad(drive, A), t + 0.15)
+        assert g.update(t + 0.15) == 'estop'
+        g.on_joy(pad(drive), t + 0.2)                 # releasing A does not clear it
+        g.on_joy(pad(), t + 0.25)
+        g.on_joy(pad(drive), t + 0.3)
+        assert g.update(t + 0.3) == 'estop'           # both auto and manual blocked
+
+
+def test_gate_lb_is_manual_hold_and_overrides_rb():
     g, t = approved_gate()
-    g.on_joy(pad(), t + 0.05)
-    g.on_joy(pad(RB), t + 0.1)
-    assert g.update(t + 0.1) == 'autodrive'
-    g.on_joy(pad(RB, button), t + 0.15)               # LB never becomes manual drive
-    assert g.update(t + 0.15) == 'estop'
-    g.on_joy(pad(RB), t + 0.2)                        # releasing the stop button does not clear it
-    g.on_joy(pad(), t + 0.25)
-    g.on_joy(pad(RB), t + 0.3)
-    assert g.update(t + 0.3) == 'estop'
+    g.on_joy(pad(LB), t + 0.05)
+    assert g.update(t + 0.05) == 'humandrive' and not g.latched
+    g.on_joy(pad(), t + 0.1)
+    assert g.update(t + 0.1) == 'none'                # dead-man: release -> 0
+    g.on_joy(pad(RB), t + 0.15)
+    assert g.update(t + 0.15) == 'autodrive'
+    g.on_joy(pad(RB, LB), t + 0.2)
+    assert g.update(t + 0.2) == 'humandrive'          # LB takes over (legacy priority)
+    g.on_joy(pad(RB), t + 0.25)
+    assert g.update(t + 0.25) == 'none'               # RB still held: needs a new press
+    g.on_joy(pad(), t + 0.3)
+    g.on_joy(pad(RB), t + 0.35)
+    assert g.update(t + 0.35) == 'autodrive'
+
+
+def test_gate_lb_blocked_while_latched_and_startup():
+    g, t = ready_gate()                               # starts latched
+    g.on_joy(pad(LB), t + 0.01)
+    assert g.update(t + 0.01) == 'estop'
+    g.on_joy(pad(), t + 0.02)
+    g.on_joy(pad(LB), t + 0.03)
+    assert not g.request_reset(t + 0.03)[0]           # LB held -> refused
+
+
+def test_gate_joy_loss_latches_in_manual():
+    g, t = approved_gate()
+    g.on_joy(pad(LB), t + 0.05)
+    assert g.update(t + 0.3) == 'humandrive'
+    assert g.update(t + 0.6) == 'estop' and 'joy lost' in g.reason
 
 
 def test_gate_engage_requires_new_press_and_hold():
@@ -356,3 +389,5 @@ def test_gate_joy_loss_latches_only_when_engaged():
 def test_gate_rejects_overlapping_buttons():
     with pytest.raises(ValueError):
         SafetyGate(estop_buttons=(0, 5), engage_button=5)
+    with pytest.raises(ValueError):
+        SafetyGate(estop_buttons=(0, 4), engage_button=5, manual_button=4)

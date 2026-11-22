@@ -1,0 +1,173 @@
+From 701b49aaae710d647dd7bfef0df127e6460f5e0b Mon Sep 17 00:00:00 2001
+From: jsnd <ros2kil105@gmail.com>
+Date: Sun, 22 Nov 2026 13:59:56 +0900
+Subject: [PATCH] simple_mux safety_mode: A = latched E-stop, LB = legacy
+ manual drive (hold), RB = autodrive
+
+A latch blocks both autodrive and manual drive until restart approval.
+Joy loss while in manual drive also latches. Manual mapping and joy_max_speed
+unchanged (legacy). safety_mode=false path unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ controller/controller/safety_gate.py    | 29 ++++++++++++++++-----
+ stack_master/scripts/simple_mux_node.py | 34 +++++++++++++++++--------
+ 2 files changed, 46 insertions(+), 17 deletions(-)
+
+diff --git a/controller/controller/safety_gate.py b/controller/controller/safety_gate.py
+index dd06e91..fafbdbb 100644
+--- a/controller/controller/safety_gate.py
++++ b/controller/controller/safety_gate.py
+@@ -11,10 +11,15 @@ Hosts:
+   'estop'     latched stop. simple_mux publishes speed 0 / steering 0 every tick.
+   'none'      not engaged. simple_mux publishes speed 0 / steering 0 every tick.
+   'autodrive' the controller command may pass (fresh, then the TTC estop).
+-There is no manual (humandrive) host: in safety_mode LB is an E-stop button.
++  'humandrive' legacy manual drive while the manual button (LB=4) is held;
++              simple_mux passes the pad command (fresh, then the TTC estop).
+ 
+-Latch triggers: any estop button (default A=0, LB=4), the software estop topic,
+-and loss of /joy while engaged. Only request_reset() clears a latch, and only
++Buttons: A=0 E-stop (latched), LB=4 manual drive (hold, legacy JSND), RB=5
++autodrive (new press, hold). LB has priority over RB as in legacy JSND.
++A latch blocks BOTH autodrive and manual drive until approved.
++
++Latch triggers: any estop button (default A=0), the software estop topic,
++and loss of /joy while engaged (autodrive or humandrive). Only request_reset() clears a latch, and only
+ when every button is released on a fresh /joy, the wheels have been still for
+ standstill_hold_s on fresh odom, and the latch is at least min_latch_s old.
+ Clearing returns to 'none'; engaging again needs a NEW press of the engage
+@@ -23,13 +28,17 @@ button (default RB=5). With require_hold, releasing RB returns to 'none'.
+ 
+ 
+ class SafetyGate:
+-    def __init__(self, estop_buttons=(0, 4), engage_button=5, joy_timeout_s=0.5,
++    def __init__(self, estop_buttons=(0,), engage_button=5, manual_button=4, joy_timeout_s=0.5,
+                  min_latch_s=2.0, standstill_mps=0.05, standstill_hold_s=1.0,
+                  odom_timeout_s=0.5, require_hold=True, start_latched=True):
+         self.estop_buttons = tuple(int(b) for b in estop_buttons)
+         self.engage_button = int(engage_button)
++        self.manual_button = None if manual_button is None or int(manual_button) < 0 else int(manual_button)
+         if self.engage_button in self.estop_buttons:
+             raise ValueError('engage button cannot also be an estop button')
++        if self.manual_button is not None and (self.manual_button in self.estop_buttons
++                                               or self.manual_button == self.engage_button):
++            raise ValueError('manual button cannot also be an estop or engage button')
+         self.joy_timeout_s = float(joy_timeout_s)
+         self.min_latch_s = float(min_latch_s)
+         self.standstill_mps = float(standstill_mps)
+@@ -69,10 +78,18 @@ class SafetyGate:
+         self.joy_time, self.joy_buttons = now, buttons
+         pressed = [b for b in self.estop_buttons if self._pressed(buttons, b)]
+         engage = self._pressed(buttons, self.engage_button)
++        manual = self.manual_button is not None and self._pressed(buttons, self.manual_button)
+         if pressed:
+             self.trigger(f'button {pressed}', now)
+         elif not self.latched:
+-            if engage and not self.engage_was_pressed:
++            if manual:                   # legacy: LB held = manual drive, overrides RB
++                if self.host != 'humandrive':
++                    self._event(now, 'manual drive (manual button held)')
++                self.host = 'humandrive'
++            elif self.host == 'humandrive':
++                self._event(now, 'manual button released -> none (speed 0)')
++                self.host = 'none'       # RB still held does not engage: needs a new press
++            elif engage and not self.engage_was_pressed:
+                 if self.host != 'autodrive':
+                     self._event(now, 'autodrive engaged (engage button pressed)')
+                 self.host = 'autodrive'
+@@ -91,7 +108,7 @@ class SafetyGate:
+ 
+     def update(self, now):
+         joy_age = None if self.joy_time is None else now - self.joy_time
+-        if self.host == 'autodrive' and (joy_age is None or joy_age > self.joy_timeout_s):
++        if self.host in ('autodrive', 'humandrive') and (joy_age is None or joy_age > self.joy_timeout_s):
+             self.trigger(f'joy lost ({"never" if joy_age is None else f"{joy_age:.2f} s"})', now)
+         return self.host
+ 
+diff --git a/stack_master/scripts/simple_mux_node.py b/stack_master/scripts/simple_mux_node.py
+index 8be5019..77fc3c9 100755
+--- a/stack_master/scripts/simple_mux_node.py
++++ b/stack_master/scripts/simple_mux_node.py
+@@ -39,12 +39,14 @@ class SimpleMuxNode(Node):
+         # initial human-drive source; the pitwall panel can flip it at runtime
+         # via ego_control_topic. False = joy, True = keyboard (/joy_keyboard).
+         self.declare_parameter('use_keyboard', False)
+-        # safety_mode (default False = legacy behaviour, unchanged): latched E-stop,
+-        # LB/A = E-stop instead of manual drive, explicit restart approval
+-        # (/simple_mux/reset_estop), zero command whenever not engaged.
++        # safety_mode (default False = legacy behaviour, unchanged): latched E-stop (A),
++        # LB = legacy manual drive (hold), RB = autodrive (hold), explicit restart
++        # approval (/simple_mux/reset_estop), zero command whenever not engaged.
++        # A latch blocks both autodrive and manual drive.
+         self.declare_parameter('safety_mode', False)
+-        self.declare_parameter('safety_estop_buttons', [0, 4])
++        self.declare_parameter('safety_estop_buttons', [0])
+         self.declare_parameter('safety_engage_button', 5)
++        self.declare_parameter('safety_manual_button', 4)      # -1 disables manual drive
+         self.declare_parameter('safety_require_engage_hold', True)
+         self.declare_parameter('safety_joy_timeout_s', 0.5)
+         self.declare_parameter('safety_min_latch_s', 2.0)
+@@ -101,6 +103,7 @@ class SimpleMuxNode(Node):
+         if self.safety_mode:
+             self.gate = SafetyGate(
+                 estop_buttons=p('safety_estop_buttons'), engage_button=p('safety_engage_button'),
++                manual_button=p('safety_manual_button'),
+                 joy_timeout_s=p('safety_joy_timeout_s'), min_latch_s=p('safety_min_latch_s'),
+                 standstill_mps=p('safety_standstill_mps'), standstill_hold_s=p('safety_standstill_hold_s'),
+                 require_hold=p('safety_require_engage_hold'), start_latched=p('safety_start_latched'))
+@@ -111,7 +114,8 @@ class SimpleMuxNode(Node):
+             self.create_service(Trigger, '/simple_mux/reset_estop', self._reset_estop_cb)
+             self.get_logger().warn(
+                 f'safety_mode ON: estop buttons {list(p("safety_estop_buttons"))}, engage button '
+-                f'{p("safety_engage_button")} (hold={p("safety_require_engage_hold")}), manual drive DISABLED. '
++                f'{p("safety_engage_button")} (hold={p("safety_require_engage_hold")}), manual button '
++                f'{p("safety_manual_button")} (hold, joy_max_speed={self.max_speed} m/s). '
+                 'Software stop only - keep the physical power cut within reach.')
+             self._flush_gate_events()
+ 
+@@ -158,6 +162,8 @@ class SimpleMuxNode(Node):
+         out.header.stamp = self.get_clock().now().to_msg()
+         if host == 'autodrive' and self._is_fresh(self.autodrive):
+             out = deepcopy(self.autodrive)
++        elif host == 'humandrive' and self._is_fresh(self.human_drive):
++            out = deepcopy(self.human_drive)
+         if self.use_estop:
+             out = self.estop.should_stop(self.scan, self.odom, out)
+         self.drive_pub.publish(out)
+@@ -210,20 +216,26 @@ class SimpleMuxNode(Node):
+         if self.use_keyboard:
+             self._handle_joy(msg)
+ 
++    def _joy_to_drive(self, msg):
++        # legacy manual mapping, unchanged: left stick Y x joy_max_speed, right stick X x joy_max_steer
++        drive = AckermannDriveStamped()
++        drive.header.stamp = self.get_clock().now().to_msg()
++        drive.drive.steering_angle = msg.axes[3] * self.max_steer if len(msg.axes) > 3 else 0.0
++        drive.drive.speed          = msg.axes[1] * self.max_speed  if len(msg.axes) > 1 else 0.0
++        return drive
++
+     def _handle_joy(self, msg):
+-        if self.safety_mode:     # no manual drive; LB/A latch the E-stop
++        if self.safety_mode:     # A latches the E-stop; LB manual / RB autodrive via the gate
+             self.gate.on_joy(msg.buttons, self._now_s())
+             self._flush_gate_events()
++            if self.gate.host == 'humandrive':
++                self.human_drive = self._joy_to_drive(msg)
+             return
+         use_human = msg.buttons[4] if len(msg.buttons) > 4 else False
+         use_auto  = msg.buttons[5] if len(msg.buttons) > 5 else False
+ 
+         if use_human:
+-            drive = AckermannDriveStamped()
+-            drive.header.stamp = self.get_clock().now().to_msg()
+-            drive.drive.steering_angle = msg.axes[3] * self.max_steer if len(msg.axes) > 3 else 0.0
+-            drive.drive.speed          = msg.axes[1] * self.max_speed  if len(msg.axes) > 1 else 0.0
+-            self.human_drive   = drive
++            self.human_drive   = self._joy_to_drive(msg)
+             self.current_host  = 'humandrive'
+         elif use_auto:
+             self.current_host = 'autodrive'
+-- 
+2.43.0
+
