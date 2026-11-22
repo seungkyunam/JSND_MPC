@@ -214,4 +214,10 @@
     <param name="lateral_controller" value="MPC" type="str"/>
     <env name="PYTHONPATH" value="$(var mpc_pydeps):$(env PYTHONPATH '')"/>
   </node>
+  <!-- controller:=mpc: low-rate (2 Hz) performance summary for the pitwall panel, separate process,
+       subscribe-only on the controller's existing timing/status topics -> /pitwall/mpc_monitor -->
+  <node pkg="stack_master" exec="mpc_monitor_node.py" name="mpc_monitor" output="log"
+        if="$(eval &quot;'$(var controller)' == 'mpc'&quot;)">
+    <param name="target_hz" value="$(var mpc_rate_hz)" type="float"/>
+  </node>
 </launch>

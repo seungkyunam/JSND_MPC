@@ -438,3 +438,20 @@ JSND_INT `701b49a → 91d0e26` (`stack_master/config/mpc_car.yaml`, `stack_maste
 ### 3. 시험
 - 오프라인 `test_mpc_integration.py -k "step12 or bench_lifted"`: 4 passed
 - 참고: `test_stabilization.py` 2건(`held_steering_worsens…`, `drive_windows_no_osqp…`)은 0.15 조건에서 기록된 bench 입력 재생 진단이라 CAR 설정 0.4를 읽으면 실패. lowspeed+0.4 재생은 OSQP 실패 0건, exp2mps(2.0, bench 전용)+0.4는 368틱 중 1틱 4 ms 시간한도(해당 틱 정지). 시험 고정은 사용자 지시로 중단(미수정)
+
+## 2026-11-22 단계 13: Pitwall MPC 실시간 성능 모니터 (모터 구동 없음)
+JSND_INT `91d0e26 → 8c35270`, 이 브랜치 `jsnd_int/0006-*.patch` + 사본. controller_manager·simple_mux·PP·FTG 변경 없음.
+- `stack_master/scripts/mpc_monitor_node.py`: 별도 프로세스, controller가 이미 발행하는 토픽만 구독 → `/pitwall/mpc_monitor`(String, **2 Hz**). race.launch `controller:=mpc`에서만 기동(`target_hz` = `mpc_rate_hz`)
+  | 항목 | 출처(실측) |
+  |---|---|
+  | 설정 주기/Hz | `mpc_rate_hz` (controller와 같은 값) |
+  | 실제 주기/Hz | `/controller/mpc_loop_period_ms` 평균, p99, 최대 (최근 10 s) |
+  | 제어 사이클 계산 | `/controller/mpc_cycle_ms` (MPC 포함 전체) |
+  | MPC 계산 | `/controller/mpc_elapsed_ms` 최근값, p99, 최대 (10 s) |
+  | OSQP 상태 | `/controller/mpc_status`: Solved / Failed(사유), 10 s·누적 개수 |
+  | 주기 초과 | 누적: 계산 > 설정주기, 실제 주기 > 1.5×설정주기 |
+  | 목표/실제 속도 | `/vesc/high_level/ackermann_cmd` speed / `/car_state/odom` |
+  - 1 s 이상 데이터 없으면 해당 항목 N/A
+- pitwall 패널(`race_utils/pitwall`): Telemetry 아래 "MPC monitor" 고정폭 텍스트. 수신 시에만 갱신(~2 Hz), 3 s 끊기면 N/A. 기존 기능 변경 없음
+- 검증: `stack_master`·`pitwall` 빌드 성공(JSND_INT 오버레이). 모니터 노드 단독(domain 219): 데이터 없음 → 모두 N/A, 주입값 → 주기·p99·초과·실패 개수 정상
+- 노트북 반영: 노트북 작업본에 이 사본(pitwall 2파일)을 넣고 READMEforlaptop 146행의 `colcon build --packages-select stack_master pitwall` 재빌드 필요. 노트북이 relay(domain 174) 경유면 `/pitwall/mpc_monitor`를 relay 화이트리스트에 추가해야 함(173 직접 접속이면 불필요)

@@ -1,0 +1,322 @@
+From 8c35270f30b74aff3b304edd75fc89e3e6d89341 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Sun, 22 Nov 2026 14:34:43 +0900
+Subject: [PATCH] Pitwall MPC real-time monitor: mpc_monitor_node (2 Hz
+ summary, controller:=mpc) + panel section
+
+---
+ .../pitwall/include/pitwall/pitwall_panel.hpp |   8 +
+ race_utils/pitwall/src/pitwall_panel.cpp      |  38 +++++
+ stack_master/CMakeLists.txt                   |   1 +
+ stack_master/launch/race.launch.xml           |   6 +
+ stack_master/scripts/mpc_monitor_node.py      | 157 ++++++++++++++++++
+ 5 files changed, 210 insertions(+)
+ create mode 100755 stack_master/scripts/mpc_monitor_node.py
+
+diff --git a/race_utils/pitwall/include/pitwall/pitwall_panel.hpp b/race_utils/pitwall/include/pitwall/pitwall_panel.hpp
+index 852962e..450f0ba 100644
+--- a/race_utils/pitwall/include/pitwall/pitwall_panel.hpp
++++ b/race_utils/pitwall/include/pitwall/pitwall_panel.hpp
+@@ -11,6 +11,7 @@
+ class QPushButton;
+ class QLabel;
+ class QPlainTextEdit;
++class QTimer;
+ 
+ namespace pitwall
+ {
+@@ -34,10 +35,13 @@ Q_SIGNALS:
+   // marshals it onto the Qt GUI thread — touching widgets off-thread is unsafe.
+   void stateReceived(const QString & state);
+   void telemetryReceived(const QString & line);
++  void mpcMonitorReceived(const QString & text);
+ 
+ private Q_SLOTS:
+   void onStateUpdate(const QString & state);
+   void onTelemetry(const QString & line);
++  void onMpcMonitor(const QString & text);
++  void onMpcMonitorStale();
+   void onRemoveOpponent();
+   void onClearObstacles();
+   void onSpeedUp();
+@@ -72,6 +76,8 @@ private:
+   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr state_sub_;
+   // pitwall important-events feed -> telemetry box
+   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr events_sub_;
++  // MPC performance summary (/pitwall/mpc_monitor, ~2 Hz, from mpc_monitor_node on the car)
++  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mpc_monitor_sub_;
+   QPushButton * ego_lidar_btn_ {nullptr};
+   QPushButton * opp_lidar_btn_ {nullptr};
+   QPushButton * scan_overlay_btn_ {nullptr};
+@@ -81,6 +87,8 @@ private:
+ 
+   QLabel * state_banner_ {nullptr};          // top: current state, coloured per state
+   QPlainTextEdit * telemetry_log_ {nullptr}; // terminal-like live telemetry feed
++  QLabel * mpc_monitor_label_ {nullptr};     // MPC monitor text (N/A until data arrives)
++  QTimer * mpc_monitor_stale_timer_ {nullptr};
+   QString last_state_;
+   QLabel * status_label_ {nullptr};
+   double speed_step_ {0.5};
+diff --git a/race_utils/pitwall/src/pitwall_panel.cpp b/race_utils/pitwall/src/pitwall_panel.cpp
+index ae66bff..b7dad20 100644
+--- a/race_utils/pitwall/src/pitwall_panel.cpp
++++ b/race_utils/pitwall/src/pitwall_panel.cpp
+@@ -8,6 +8,7 @@
+ #include <QPlainTextEdit>
+ #include <QFont>
+ #include <QTime>
++#include <QTimer>
+ 
+ #include <rviz_common/display_context.hpp>
+ #include <rviz_common/ros_integration/ros_node_abstraction_iface.hpp>
+@@ -43,6 +44,21 @@ PitwallPanel::PitwallPanel(QWidget * parent)
+   }
+   layout->addWidget(telemetry_log_, /*stretch=*/1);
+ 
++  // ===== MPC monitor (controller:=mpc): text summary from mpc_monitor_node, ~2 Hz =====
++  layout->addWidget(new QLabel("MPC monitor:"));
++  mpc_monitor_label_ = new QLabel("MPC monitor: N/A (no /pitwall/mpc_monitor)");
++  {
++    QFont mono("monospace");
++    mono.setStyleHint(QFont::TypeWriter);
++    mpc_monitor_label_->setFont(mono);
++  }
++  mpc_monitor_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
++  layout->addWidget(mpc_monitor_label_);
++  // No message for 3 s -> show N/A (monitor or car link down); never keep stale numbers.
++  mpc_monitor_stale_timer_ = new QTimer(this);
++  mpc_monitor_stale_timer_->setSingleShot(true);
++  mpc_monitor_stale_timer_->setInterval(3000);
++
+   status_label_ = new QLabel("");
+   status_label_->setWordWrap(true);
+   layout->addWidget(status_label_);
+@@ -134,6 +150,8 @@ PitwallPanel::PitwallPanel(QWidget * parent)
+   // ROS callbacks (subscription thread) -> GUI thread via queued connection.
+   connect(this, &PitwallPanel::stateReceived, this, &PitwallPanel::onStateUpdate);
+   connect(this, &PitwallPanel::telemetryReceived, this, &PitwallPanel::onTelemetry);
++  connect(this, &PitwallPanel::mpcMonitorReceived, this, &PitwallPanel::onMpcMonitor);
++  connect(mpc_monitor_stale_timer_, &QTimer::timeout, this, &PitwallPanel::onMpcMonitorStale);
+ 
+   connect(remove_btn, &QPushButton::clicked, this, &PitwallPanel::onRemoveOpponent);
+   connect(clear_obs_btn, &QPushButton::clicked, this, &PitwallPanel::onClearObstacles);
+@@ -178,6 +196,26 @@ void PitwallPanel::onInitialize()
+     [this](const std_msgs::msg::String::SharedPtr msg) {
+       Q_EMIT telemetryReceived(QString::fromStdString(msg->data));
+     });
++
++  // MPC monitor summary (already rate-limited to ~2 Hz on the car side).
++  mpc_monitor_sub_ = node_->create_subscription<std_msgs::msg::String>(
++    "/pitwall/mpc_monitor", rclcpp::QoS(1),
++    [this](const std_msgs::msg::String::SharedPtr msg) {
++      Q_EMIT mpcMonitorReceived(QString::fromStdString(msg->data));
++    });
++}
++
++void PitwallPanel::onMpcMonitor(const QString & text)
++{
++  if (mpc_monitor_label_) {mpc_monitor_label_->setText(text);}
++  if (mpc_monitor_stale_timer_) {mpc_monitor_stale_timer_->start();}
++}
++
++void PitwallPanel::onMpcMonitorStale()
++{
++  if (mpc_monitor_label_) {
++    mpc_monitor_label_->setText("MPC monitor: N/A (no /pitwall/mpc_monitor for 3 s)");
++  }
+ }
+ 
+ void PitwallPanel::onStateUpdate(const QString & state)
+diff --git a/stack_master/CMakeLists.txt b/stack_master/CMakeLists.txt
+index 5058b23..a9be62f 100644
+--- a/stack_master/CMakeLists.txt
++++ b/stack_master/CMakeLists.txt
+@@ -33,6 +33,7 @@ install(DIRECTORY
+ # Install Python scripts
+ install(PROGRAMS
+   scripts/simple_mux_node.py
++  scripts/mpc_monitor_node.py
+   scripts/set_initial_pose_node.py
+   scripts/finish_map.py
+   scripts/pose_to_odom_node.py
+diff --git a/stack_master/launch/race.launch.xml b/stack_master/launch/race.launch.xml
+index eb384aa..17ced42 100644
+--- a/stack_master/launch/race.launch.xml
++++ b/stack_master/launch/race.launch.xml
+@@ -214,4 +214,10 @@
+     <param name="lateral_controller" value="MPC" type="str"/>
+     <env name="PYTHONPATH" value="$(var mpc_pydeps):$(env PYTHONPATH '')"/>
+   </node>
++  <!-- controller:=mpc: low-rate (2 Hz) performance summary for the pitwall panel, separate process,
++       subscribe-only on the controller's existing timing/status topics -> /pitwall/mpc_monitor -->
++  <node pkg="stack_master" exec="mpc_monitor_node.py" name="mpc_monitor" output="log"
++        if="$(eval &quot;'$(var controller)' == 'mpc'&quot;)">
++    <param name="target_hz" value="$(var mpc_rate_hz)" type="float"/>
++  </node>
+ </launch>
+diff --git a/stack_master/scripts/mpc_monitor_node.py b/stack_master/scripts/mpc_monitor_node.py
+new file mode 100755
+index 0000000..3bc53a4
+--- /dev/null
++++ b/stack_master/scripts/mpc_monitor_node.py
+@@ -0,0 +1,157 @@
++#!/usr/bin/env python3
++"""MPC real-time performance monitor (JSND_INT, controller:=mpc only).
++
++Separate process: subscribes to the topics controller_manager already publishes and
++publishes ONE low-rate text summary (/pitwall/mpc_monitor, std_msgs/String, default 2 Hz)
++for the RViz pitwall panel. It never publishes to the control path and does not touch
++controller_manager, so the 100 Hz loop is unaffected (cost: a few cheap callbacks).
++
++Measured inputs (no estimates; missing/stale data -> N/A):
++  /controller/mpc_loop_period_ms  actual control period (timer tick to tick)
++  /controller/mpc_cycle_ms        whole control cycle compute time (incl. MPC)
++  /controller/mpc_elapsed_ms      MPC solve time only
++  /controller/mpc_status          'solved' or failure reason
++  /vesc/high_level/ackermann_cmd  controller target speed
++  /car_state/odom                 measured speed
++Set value: target_hz (= race.launch mpc_rate_hz, same value given to controller_manager).
++"""
++import collections
++import time
++
++import numpy as np
++import rclpy
++from ackermann_msgs.msg import AckermannDriveStamped
++from nav_msgs.msg import Odometry
++from rclpy.node import Node
++from rclpy.qos import qos_profile_sensor_data
++from std_msgs.msg import Float32, String
++
++NA = 'N/A'
++
++
++class MpcMonitor(Node):
++    def __init__(self):
++        super().__init__('mpc_monitor')
++        self.target_hz = float(self.declare_parameter('target_hz', 100.0).value)
++        self.window_s = float(self.declare_parameter('window_s', 10.0).value)
++        self.stale_s = float(self.declare_parameter('stale_s', 1.0).value)
++        rate = float(self.declare_parameter('publish_hz', 2.0).value)
++        self.target_ms = 1000.0 / self.target_hz if self.target_hz > 0 else None
++        n = int(self.window_s * max(self.target_hz, 1.0) * 1.5) + 10
++        self.period = collections.deque(maxlen=n)    # (t, ms)
++        self.cycle = collections.deque(maxlen=n)
++        self.solve = collections.deque(maxlen=n)
++        self.status = collections.deque(maxlen=n)    # (t, ok)
++        self.last = {}                               # key -> (t, value)
++        self.overrun_cycle = 0                       # cycle compute > set period (cumulative)
++        self.overrun_period = 0                      # actual period > 1.5 x set period (cumulative)
++        self.solved_total = self.failed_total = 0
++        self.last_fail = None
++        f = self.create_subscription
++        f(Float32, '/controller/mpc_loop_period_ms', self._period, 50)
++        f(Float32, '/controller/mpc_cycle_ms', self._cycle, 50)
++        f(Float32, '/controller/mpc_elapsed_ms', self._solve, 50)
++        f(String, '/controller/mpc_status', self._status, 50)
++        f(AckermannDriveStamped, '/vesc/high_level/ackermann_cmd',
++          lambda m: self._set('v_cmd', m.drive.speed), 10)
++        f(Odometry, '/car_state/odom', lambda m: self._set('v_meas', m.twist.twist.linear.x),
++          qos_profile_sensor_data)
++        self.pub = self.create_publisher(String, '/pitwall/mpc_monitor', 1)
++        self.create_timer(1.0 / rate, self._publish)
++
++    def _set(self, key, value):
++        self.last[key] = (time.monotonic(), value)
++
++    def _period(self, m):
++        t = time.monotonic()
++        self.period.append((t, m.data))
++        if self.target_ms and m.data > 1.5 * self.target_ms:
++            self.overrun_period += 1
++
++    def _cycle(self, m):
++        t = time.monotonic()
++        self.cycle.append((t, m.data))
++        if self.target_ms and m.data > self.target_ms:
++            self.overrun_cycle += 1
++
++    def _solve(self, m):
++        self.solve.append((time.monotonic(), m.data))
++
++    def _status(self, m):
++        ok = m.data == 'solved'
++        self.status.append((time.monotonic(), ok))
++        self._set('status', m.data)
++        if ok:
++            self.solved_total += 1
++        else:
++            self.failed_total += 1
++            self.last_fail = m.data
++
++    def _recent(self, buf, now):
++        lo = now - self.window_s
++        vals = [v for t, v in buf if t >= lo]
++        if not buf or now - buf[-1][0] > self.stale_s or not vals:
++            return None
++        return np.asarray(vals, float)
++
++    def _fresh(self, key, now):
++        item = self.last.get(key)
++        return None if item is None or now - item[0] > self.stale_s else item[1]
++
++    def _publish(self):
++        now = time.monotonic()
++        w = f'{self.window_s:.0f}s'
++        lines = []
++        tgt = (f'{self.target_ms:.2f} ms / {self.target_hz:.0f} Hz' if self.target_ms else NA)
++        lines.append(f'Set period    : {tgt}')
++        p = self._recent(self.period, now)
++        if p is None:
++            lines.append('Actual period : N/A')
++        else:
++            mean = float(np.mean(p))
++            lines.append(f'Actual period : {mean:.2f} ms / {1000.0 / mean:.1f} Hz '
++                         f'(p99 {np.percentile(p, 99):.2f}, max {p.max():.2f} ms, {w})')
++        c = self._recent(self.cycle, now)
++        lines.append('Cycle compute : N/A' if c is None else
++                     f'Cycle compute : {c[-1]:.2f} ms (p99 {np.percentile(c, 99):.2f}, '
++                     f'max {c.max():.2f} ms, {w})')
++        s = self._recent(self.solve, now)
++        lines.append('MPC solve     : N/A' if s is None else
++                     f'MPC solve     : {s[-1]:.2f} ms (p99 {np.percentile(s, 99):.2f}, '
++                     f'max {s.max():.2f} ms, {w})')
++        st = self._fresh('status', now)
++        recent = [ok for t, ok in self.status if t >= now - self.window_s]
++        if st is None:
++            lines.append('OSQP status   : N/A')
++        else:
++            word = 'Solved' if st == 'solved' else f'Failed ({st})'
++            lines.append(f'OSQP status   : {word}  [{w}: {sum(recent)} solved / '
++                         f'{len(recent) - sum(recent)} failed]')
++        lines.append(f'Totals        : solved {self.solved_total}, failed {self.failed_total}'
++                     + (f', last fail: {self.last_fail}' if self.last_fail else ''))
++        if self.target_ms:
++            lines.append(f'Overruns      : compute>{self.target_ms:.0f}ms {self.overrun_cycle}, '
++                         f'period>{1.5 * self.target_ms:.0f}ms {self.overrun_period} (since start)')
++        else:
++            lines.append('Overruns      : N/A')
++        vc, vm = self._fresh('v_cmd', now), self._fresh('v_meas', now)
++        fmt = lambda v: NA if v is None else f'{v:.2f}'
++        lines.append(f'Speed m/s     : target {fmt(vc)} | actual {fmt(vm)}')
++        self.pub.publish(String(data='\n'.join(lines)))
++
++
++def main():
++    rclpy.init()
++    node = MpcMonitor()
++    try:
++        rclpy.spin(node)
++    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
++        pass
++    finally:
++        node.destroy_node()
++        if rclpy.ok():
++            rclpy.shutdown()
++
++
++if __name__ == '__main__':
++    main()
+-- 
+2.43.0
+

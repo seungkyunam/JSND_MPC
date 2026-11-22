@@ -4,7 +4,8 @@
 - 코드: JSND_INT `91d0e26` = install. MPC 조향 ±0.4 rad / 0.3 rad/s, MPC 모드 LB 수동 최고 1.0 m/s(PP 4.0 불변). RB 자율 / LB 수동 / A 비상정지 래치
 - 실차 모터 구동 없음. VESC·LiDAR 전원 상태 미확인
 - 다음: 전원 투입 → launch → 2D Pose Estimate → `bench_check.py 10` → (승인) reset → RB → A (4바퀴 공중). 이후 서보만으로 조향 끝점·바퀴 각도 측정, 0.3 rad/s 추종 확인
-- 4-1의 `git log` 기대값은 `91d0e26`, 4-6-2의 servo 범위는 0.091–0.883
+- 단계 13: Pitwall MPC 모니터(`/pitwall/mpc_monitor` 2 Hz, 패널 "MPC monitor"). 노트북 pitwall 재빌드 필요
+- 4-1의 `git log` 기대값은 `8c35270`, 4-6-2의 servo 범위는 0.091–0.883
 
 ## 1. 환경 (Jetson)
 | 항목 | 값 |
