@@ -1,9 +1,9 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
-## 0. 현재 위치 (2026-11-22 중단 시점)
+## 0. 현재 위치 (2026-11-22 12:25 재개 후 RB 전 점검 중 — WORK_STATUS "단계 6")
 - 단계: **실차 Bench, RB 직전**. 모터·서보 구동은 아직 0회. 상세는 `WORK_STATUS.md` 맨 위 요약과 "단계 5"
 - 실차에서 확인된 것: 스택 기동, 40 Hz 제어 출력, RB 전 속도 0, VESC 명령 미발행
-- 막힌 지점: MPC가 안정적으로 `solved`가 되지 않음 → 원인: PF 초기 자세 미지정(P1). 자세 정합 후 P3·P4 재관찰
+- 막힌 지점(12:25): ① 노트북 RViz 미접속 → 2D Pose Estimate 미지정 ② MPC `invalid_local_control_input` 15~21% — 정지 odom 속도 잡음(±0.047 m/s)이 `STANDSTILL_NOISE_MPS=0.02` 초과. behavior GB_TRACK·RB 전 명령 0은 통과. 자세 정합 후 ② 재측정
 
 ## 1. 환경 (Jetson)
 | 항목 | 값 |

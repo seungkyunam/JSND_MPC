@@ -1,0 +1,11 @@
+=== 2026-11-22 재개 세션 (race_mpc_20261122_121742.log) ===
+12:17 launch: race.launch map:=11_18_6 controller:=mpc use_estop:=true, JSND_INT 82a1fd5, 물리 안전 사용자 확인
+사전: /dev/ttyACM0, /dev/input/js0 존재, Hokuyo 192.168.0.10 ping OK, 잔여 ROS 프로세스 없음, DOMAIN 173
+12:19 behavior GB_TRACK / active_host none / /vesc/ackermann_cmd 미발행 / motor/speed 0 msgs / high_level 39.98 Hz speed 0.0
+VESC fault 0, duty 0, 11.5 V
+MPC 15 s (2D Pose Estimate 전): solved 508, invalid_local_control_input 93 (15%); elapsed p50 4.73 p99 11.71 max 17.61 ms
+원인: /car_state/odom twist.x 정지 잡음 8 s n=400 min -0.0468 max 0.0404, < -0.02 m/s 72건(18%) -> Controller.py STANDSTILL_NOISE_MPS=0.02 초과 -> invalid_or_reverse_speed -> reject (speed 0, 안전측)
+TF 관련 로그 165건 (detect 노드)
+12:24 점검(10 s): behavior GB_TRACK 501/501; mpc solved 319, invalid_local_control_input 83 (21%)
+ /initialpose 발행자 0, rviz 노드 없음 (노트북 pitwall 미접속), PF는 GLOBAL INITIALIZATION만
+ 추정 자세 x=1.02 y=-0.03 yaw=-0.01 (정지 중 10 s 변동 x 0.09 y 0.03 yaw 0.01), wp119 0.20 m, 경로방향 -0.59, 방향오차 0.57 rad (허용 0.7)

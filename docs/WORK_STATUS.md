@@ -1,11 +1,12 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 12:13, 배선 정리로 실차 작업 중단)**
+> **현재 상태 요약 (2026-11-22 12:25, 배선 정리 후 Bench 재개 — RB 전 점검 중)**
 > - 목표: 기존 JSND 구조 유지 + controller_manager에 Integrated MPC(속도+조향) → 실차 저속 자율주행
-> - 코드: Jetson `~/JSND_INT` 브랜치 `integrated-mpc` `82a1fd5` = GitHub `jsnd_int/` (해시 동일 확인). 빌드·오프라인·ROS(VESC 없음) 시험 통과
-> - 실차: bench launch까지 진행. **RB 미입력, 모터·서보 구동 0회.** MPC는 초기 자세 미정합으로 안정적 solved 미도달
-> - launch는 종료함(12:12, SIGINT). 실행 중인 ROS 프로세스 없음
-> - 다음 시작 지점: `docs/NEXT_ACTION.md` "재개 절차"
+> - 코드: Jetson `~/JSND_INT` `integrated-mpc` `82a1fd5` (변경 없음, 재빌드 없음)
+> - 실차: 12:17 race.launch(mpc) 재기동, **실행 중**. RB 미입력, **모터·서보 구동 0회**
+> - 통과: behavior GB_TRACK(차량 앞 비운 뒤 TRAILING 해소), RB 전 명령 경로 0 / VESC 명령 미발행
+> - 미통과: ① 노트북 RViz 미접속 → 2D Pose Estimate 미지정 ② MPC `invalid_local_control_input` 15~21% (정지 odom 속도 잡음)
+> - 다음: 2D Pose Estimate → mpc_status 재측정 → 사용자 승인 후 RB 3~5 s (상세 아래 "단계 6")
 
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
@@ -180,3 +181,31 @@
 - RB 전 0.5 m/s 누적, freshness, 조향 한계 → 단계 3에서 수정·시험 완료(코드 `82a1fd5`)
 - P1은 원인 진단까지 완료(코드 문제 아님), 사용자 2D Pose Estimate 대기 중 중단
 - 코드 수정 없음
+
+
+## 2026-11-22 단계 6: 배선 정리 후 Bench 재개 — RB 전 점검 (모터 구동 0회, 코드 변경 없음)
+요약 로그: `docs/logs/bench_20261122_resume_notes.txt` (전체 로그 Jetson `~/bench_logs/race_mpc_20261122_121742.log`, 미업로드)
+
+### 사전 확인
+- DOMAIN 173 / cyclonedds, `/dev/ttyACM0`·`/dev/input/js0` 존재, Hokuyo 192.168.0.10 ping OK, 잔여 ROS 프로세스 없음, JSND_INT `82a1fd5`
+- 물리 안전(스탠드 고정, 4바퀴 공중, 배터리 차단 담당, 패드 담당, 주변 무인·LiDAR 시야 정리): 사용자 확인
+- 12:17 `ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=mpc use_estop:=true` 기동, MPC 모드·osqp 정상
+
+### RB 전 상태
+| 항목 | 결과 |
+|---|---|
+| `/behavior_strategy` | **GB_TRACK** 501/501 (10 s) ✓ — 이전 P4(TRAILING)는 사람이 차량 앞을 막은 영향으로 판단 |
+| `/vesc/high_level/ackermann_cmd` | speed 0.0, 39.98 Hz ✓ (steer는 MPC 값, 예 −0.126) |
+| `/simple_mux/active_host` | none ✓ |
+| `/vesc/ackermann_cmd`, `motor/speed` | 미발행 ✓ |
+| VESC | fault 0, duty 0, **11.5 V** |
+| MPC 계산시간 (15 s, n=601) | p50 4.73 / p99 11.71 / max 17.61 ms (deadline 20 ms) |
+| `/controller/mpc_status` | ✗ solved 508 / `invalid_local_control_input` 93 (15 s); solved 319 / 83 (10 s) |
+| 위치추정 | ✗ `/initialpose` 발행자 0, rviz 노드 없음 → PF GLOBAL INITIALIZATION 상태. 추정 x=1.02 y=−0.03 yaw=−0.01, 정지 중 10 s 변동 x 0.09·y 0.03 m, wp119까지 0.20 m, 경로 방향 −0.59 → 방향 오차 0.57 rad(허용 0.7) |
+
+### 문제
+| # | 현상 | 원인(진단) | 상태 |
+|---|---|---|---|
+| P6 | `invalid_local_control_input` 15~21% | 정지 중 `/car_state/odom` twist.x 잡음 8 s n=400: min −0.0468, max +0.0404, **−0.02 미만 72건(18%)** → `Controller.py` `STANDSTILL_NOISE_MPS=0.02` 초과 → `invalid_or_reverse_speed` → reject(속도 0, 안전측) | 미해결. 거부 시 속도 램프가 0으로 리셋되어 정지 출발 시 최소 ERPM 도달 전 반복 리셋 가능(추정). 안전 한계라 임의 완화 안 함 → 자세 정합 후 재측정, 남으면 대응 결정 필요 |
+| P1 | 초기 자세 미지정 (재발) | 노트북 pitwall/RViz 미접속 | 사용자 2D Pose Estimate 대기 |
+| P2 | TF 관련 로그 165건 (`detect` 노드) | 미분석 | 관찰 |
