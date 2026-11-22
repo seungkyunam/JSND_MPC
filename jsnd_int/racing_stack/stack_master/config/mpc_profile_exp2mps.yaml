@@ -1,0 +1,15 @@
+# EXPERIMENT overlay: 2.0 m/s speed cap for the integrated MPC (race.launch.xml
+# controller:=mpc mpc_profile:=exp2mps). Loaded AFTER mpc_car.yaml; only the
+# keys below differ from the low-speed profile.
+#
+# History: on 2026-11-22 12:37 the Jetson ran with mpc_max_speed_mps edited
+# 1.0 -> 2.0 directly in mpc_car.yaml (src + install, never committed) for a
+# bench test with all four wheels lifted (9228 commanded / 8981 measured ERPM).
+# That edit is reverted; this file is the only place 2.0 m/s lives now.
+#
+# NOT validated on the ground: steering is still limited to 0.15 rad (corners
+# of 11_18_6 are not followable), braking distance at 2.0 m/s is unmeasured.
+# Bench (wheels lifted) only until those are measured.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 2.0

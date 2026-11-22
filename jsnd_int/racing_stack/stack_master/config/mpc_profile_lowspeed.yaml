@@ -1,0 +1,6 @@
+# Real-car LOW SPEED profile for the integrated MPC (race.launch.xml controller:=mpc,
+# mpc_profile:=lowspeed = default). Loaded AFTER mpc_car.yaml. Repeats the
+# 1.0 m/s cap explicitly so the active speed limit is always named by the profile.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 1.0

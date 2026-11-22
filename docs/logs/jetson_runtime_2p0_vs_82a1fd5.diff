@@ -1,0 +1,13 @@
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 3860796..3388678 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -16,7 +16,7 @@ controller_manager:
+     mpc_max_steer_rad: 0.15
+     mpc_max_steer_rate_radps: 0.3
+     # --- speed envelope (first low-speed run) ---
+-    mpc_max_speed_mps: 1.0
++    mpc_max_speed_mps: 2.0   # 2026-11-22 12:4x 사용자 지시로 1.0->2.0 (실차 bench)
+     mpc_max_accel_mps2: 1.0
+     mpc_max_decel_mps2: 2.0
+     mpc_max_lateral_accel_mps2: 2.0

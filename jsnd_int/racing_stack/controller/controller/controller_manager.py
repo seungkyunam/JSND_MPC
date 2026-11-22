@@ -160,6 +160,12 @@ class ControllerManager(Node):
                                      self.mux_host_cb, 10)
             self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
             self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
+            # Output period vs computation, reported separately: wall time between
+            # control-loop starts, and the whole loop's compute time (MPC solve
+            # alone is /controller/mpc_elapsed_ms).
+            self.mpc_period_pub = self.create_publisher(Float32, '/controller/mpc_loop_period_ms', 10)
+            self.mpc_cycle_pub = self.create_publisher(Float32, '/controller/mpc_cycle_ms', 10)
+            self._mpc_last_loop_start = None
 
         # FTG controller (params injected from /state_machine/* equivalents)
         self.ftg_controller = FTG(
@@ -441,6 +447,11 @@ class ControllerManager(Node):
 
         if self.measuring:
             start = time.perf_counter()
+        if self.lateral_controller == 'MPC':
+            loop_start = time.perf_counter()
+            if self._mpc_last_loop_start is not None:
+                self.mpc_period_pub.publish(Float32(data=float(1000 * (loop_start - self._mpc_last_loop_start))))
+            self._mpc_last_loop_start = loop_start
         speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
 
         # Logic to select controller
@@ -456,6 +467,7 @@ class ControllerManager(Node):
         self.drive_pub.publish(ack_msg)
         if self.lateral_controller == 'MPC':
             self.controller.record_applied_steering(steering_angle)
+            self.mpc_cycle_pub.publish(Float32(data=float(1000 * (time.perf_counter() - loop_start))))
         if self.measuring:
             end = time.perf_counter()
             msg = Float32()

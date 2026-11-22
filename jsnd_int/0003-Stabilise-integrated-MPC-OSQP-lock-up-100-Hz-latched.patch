@@ -1,0 +1,789 @@
+From c8727bb66f1443e55b8dd4ad2d9fcfd3edd8d951 Mon Sep 17 00:00:00 2001
+From: jsnd <ros2kil105@gmail.com>
+Date: Sun, 22 Nov 2026 13:35:59 +0900
+Subject: [PATCH] Stabilise integrated MPC (OSQP lock-up), 100 Hz, latched
+ E-stop, speed profiles
+
+- integrated_mpc: constant constraint matrix, no per-solve sparse build or np.r_,
+  dual warm start, continue from OSQP's last iterate after a budget miss
+- Controller: on MPC STOP, steering returns to 0 at the rate limit instead of being held
+- mpc_car.yaml: 100 Hz, max_iter 4000 (time limit 4 ms, deadline 8 ms), 1.0 m/s base;
+  profiles mpc_profile_lowspeed.yaml (1.0) / mpc_profile_exp2mps.yaml (2.0)
+- simple_mux safety_mode (default off; on for controller:=mpc): latched E-stop on A/LB/
+  joy loss/topic, no manual drive, restart via /simple_mux/reset_estop, RB hold-to-run
+- race.launch: mpc_profile, mpc_rate_hz, safety_mode, mux_rate_hz args
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../controller/combined/src/Controller.py     |  15 +-
+ controller/controller/controller_manager.py   |  12 ++
+ controller/controller/mpc/integrated_mpc.py   | 171 ++++++++++++------
+ controller/controller/safety_gate.py          | 118 ++++++++++++
+ stack_master/config/mpc_car.yaml              |  24 ++-
+ stack_master/config/mpc_profile_exp2mps.yaml  |  15 ++
+ stack_master/config/mpc_profile_lowspeed.yaml |   6 +
+ stack_master/launch/low_level.launch.xml      |   4 +
+ stack_master/launch/race.launch.xml           |  12 ++
+ stack_master/scripts/simple_mux_node.py       |  80 +++++++-
+ 10 files changed, 389 insertions(+), 68 deletions(-)
+ create mode 100644 controller/controller/safety_gate.py
+ create mode 100644 stack_master/config/mpc_profile_exp2mps.yaml
+ create mode 100644 stack_master/config/mpc_profile_lowspeed.yaml
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index 146afc9..d7ecb9e 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -207,6 +207,16 @@ class Controller:
+         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
+         return self.mpc_speed_cmd
+ 
++    def _mpc_recenter_steering(self):
++        """Steering while the MPC requests STOP: move the last applied steering toward 0
++        at the configured rate limit. Holding it forever (previous behaviour) kept the
++        servo off-centre and fed the same stale steering back into every new solve."""
++        cfg = self.lateral_mpc.config
++        step = cfg.max_steer_rate * cfg.dt
++        current = float(self.curr_steering_angle) if np.isfinite(self.curr_steering_angle) else 0.0
++        current = float(np.clip(current, -cfg.max_steer, cfg.max_steer))
++        return current - min(max(current, -step), step)
++
+     def integrated_loop(self, state, position, waypoints, speed):
+         # Entire PP speed/steering preprocessing is bypassed. Unsupported behavior
+         # states stop rather than silently losing opponent-following safeguards.
+@@ -231,11 +241,12 @@ class Controller:
+             result = self.lateral_mpc.reject('invalid_local_control_input', self.curr_steering_angle)
+         self.mpc_result = result
+         self._report_mpc_result()
+-        self.record_applied_steering(result.steering)
++        steering = result.steering if result.success else self._mpc_recenter_steering()
++        self.record_applied_steering(steering)
+         speed_cmd = self._mpc_speed_command(result, measured)
+         point = result.reference[-1, :2] if result.success else rear[:2]
+         nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
+-        return (speed_cmd, result.acceleration, 0., result.steering,
++        return (speed_cmd, result.acceleration, 0., steering,
+                 point, float(np.linalg.norm(point-rear[:2])), nearest, 0., rear.reshape(1, 3))
+ 
+     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 267ad5d..3c7c4d4 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -160,6 +160,12 @@ class ControllerManager(Node):
+                                      self.mux_host_cb, 10)
+             self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
+             self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
++            # Output period vs computation, reported separately: wall time between
++            # control-loop starts, and the whole loop's compute time (MPC solve
++            # alone is /controller/mpc_elapsed_ms).
++            self.mpc_period_pub = self.create_publisher(Float32, '/controller/mpc_loop_period_ms', 10)
++            self.mpc_cycle_pub = self.create_publisher(Float32, '/controller/mpc_cycle_ms', 10)
++            self._mpc_last_loop_start = None
+ 
+         # FTG controller (params injected from /state_machine/* equivalents)
+         self.ftg_controller = FTG(
+@@ -441,6 +447,11 @@ class ControllerManager(Node):
+ 
+         if self.measuring:
+             start = time.perf_counter()
++        if self.lateral_controller == 'MPC':
++            loop_start = time.perf_counter()
++            if self._mpc_last_loop_start is not None:
++                self.mpc_period_pub.publish(Float32(data=float(1000 * (loop_start - self._mpc_last_loop_start))))
++            self._mpc_last_loop_start = loop_start
+         speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
+ 
+         # Logic to select controller
+@@ -456,6 +467,7 @@ class ControllerManager(Node):
+         self.drive_pub.publish(ack_msg)
+         if self.lateral_controller == 'MPC':
+             self.controller.record_applied_steering(steering_angle)
++            self.mpc_cycle_pub.publish(Float32(data=float(1000 * (time.perf_counter() - loop_start))))
+         if self.measuring:
+             end = time.perf_counter()
+             msg = Float32()
+diff --git a/controller/controller/mpc/integrated_mpc.py b/controller/controller/mpc/integrated_mpc.py
+index ac27013..64e16d2 100644
+--- a/controller/controller/mpc/integrated_mpc.py
++++ b/controller/controller/mpc/integrated_mpc.py
+@@ -49,21 +49,61 @@ class IntegratedResult:
+         return self.safety_request == SafetyRequest.NONE
+ 
+ 
++def _gradient(f, x):
++    """np.gradient(f, x, axis=0) for 1-D increasing x (2nd-order interior, 1st-order
++    edges), without numpy's generic-argument overhead. Same formula as numpy."""
++    out = np.empty_like(f)
++    dx = np.diff(x)
++    dx1, dx2 = dx[:-1], dx[1:]
++    a = -dx2/(dx1*(dx1+dx2))
++    b = (dx2-dx1)/(dx1*dx2)
++    c = dx1/(dx2*(dx1+dx2))
++    if f.ndim == 2:
++        a, b, c = a[:, None], b[:, None], c[:, None]
++    out[1:-1] = a*f[:-2] + b*f[1:-1] + c*f[2:]
++    out[0] = (f[1]-f[0])/dx[0]
++    out[-1] = (f[-1]-f[-2])/dx[-1]
++    return out
++
++
+ class IntegratedMPC:
++    WARM_START_DUAL = True   # warm start OSQP duals from the last accepted solve
+     def __init__(self, config):
+         import osqp
+         from scipy import sparse
+         self.config = config
+         self.osqp, self.sparse = osqp, sparse
+         self.solver = None
+-        size = 2*config.horizon
++        n = config.horizon
++        size = 2*n
+         self.p_rows = np.concatenate([np.arange(j+1) for j in range(size)])
+-        self.p_indptr = np.r_[0, np.cumsum(np.arange(1, size+1))]
++        self.p_indptr = np.concatenate(([0], np.cumsum(np.arange(1, size+1))))
+         self.p_cols = np.repeat(np.arange(size), np.arange(1, size+1))
++        # Everything below depends only on the configuration and is built once.
++        self.periods = np.concatenate(([config.dt], np.full(n-1, config.preview_dt)))
++        self.preview_times = np.concatenate(([0.], np.cumsum(self.periods[:-1])))
++        d = np.zeros((n, size))
++        for k in range(n):
++            d[k, 2*k+1] = 1.
++            if k: d[k, 2*k-1] = -1.
++        self.d = d
++        self.h_base = np.diag(np.tile([config.r_accel, config.r_steer], n)) + config.r_rate*d.T@d
++        # Speed rows of the condensed prediction: v_{k+1} = v_0 + sum_j<=k periods_j*a_j.
++        # Row 3 of every linearised A_k is [0,0,0,1] and B_k[3] = [period_k, 0], so these
++        # rows (hence the whole constraint matrix) never change between solves.
++        speed_rows = np.zeros((n, size))
++        for k in range(n):
++            speed_rows[k, 0:2*k+2:2] = self.periods[:k+1]
++        self.matrix = sparse.csc_matrix(np.vstack((np.eye(size), d, speed_rows)))
++        self.state_weights = np.tile([config.q_position, config.q_position, config.q_heading, config.q_speed], (n, 1))
++        self.state_weights[-1] *= config.terminal_scale
++        self.box_accel_lo = np.full(n, -config.max_decel)
++        self.box_accel_hi = np.full(n, config.max_accel)
+         self.reset()
+ 
+     def reset(self):
+         self.previous = None
++        self.previous_dual = None
+ 
+     def reject(self, reason, previous_steering=0., started=None):
+         self.reset()
+@@ -78,39 +118,40 @@ class IntegratedMPC:
+ 
+     def _reference(self, state, path, periods):
+         c = self.config
+-        keep = np.r_[True, np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1) > 1e-6]
++        keep = np.concatenate(([True], np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1) > 1e-6))
+         path = path[keep]
+         if len(path) < 3:
+             raise ValueError('degenerate_path')
+         xy = path[:, :2] - state[:2]
+         seg = np.diff(xy, axis=0)
+         ds = np.linalg.norm(seg, axis=1)
+-        arc = np.r_[0., np.cumsum(ds)]
++        arc = np.concatenate(([0.], np.cumsum(ds)))
+         fraction = np.clip(-np.sum(xy[:-1]*seg, axis=1)/ds**2, 0., 1.)
+         projected = xy[:-1] + fraction[:, None]*seg
+         idx = np.argmin(np.sum(projected**2, axis=1))
+         if np.linalg.norm(projected[idx]) > c.max_tracking_error:
+             raise ValueError('outside_tracking_envelope')
+         start = arc[idx]+fraction[idx]*ds[idx]
+-        tangent = np.gradient(xy, arc, axis=0)
++        tangent = _gradient(xy, arc)
+         yaw = np.unwrap(np.arctan2(tangent[:, 1], tangent[:, 0]))
+         yaw += 2*np.pi*np.round((state[2]-np.interp(start, arc, yaw))/(2*np.pi))
+         if abs(np.interp(start, arc, yaw)-state[2]) > c.max_heading_error:
+             raise ValueError('outside_heading_envelope')
+-        curvature = np.gradient(yaw, arc)
++        curvature = _gradient(yaw, arc)
+         hard_caps = np.minimum(path[:, 2], c.max_speed)
+         hard_caps = np.minimum(hard_caps, np.sqrt(c.max_lateral_accel/np.maximum(abs(curvature), 1e-6)))
+         caps = np.minimum(hard_caps, np.sqrt(.85*c.max_lateral_accel/np.maximum(abs(curvature), 1e-6)))
+         # Preview braking across the full supplied local path, not just one tick.
+         braking = 2*c.braking_preview_ratio*c.max_decel*arc
+         caps = np.sqrt(np.maximum(0., np.minimum.accumulate((caps**2+braking)[::-1])[::-1]-braking))
+-        samples = [start]
+-        velocities = [state[3]]
+-        for dt in periods:
+-            target = np.interp(samples[-1], arc, caps)
+-            v = np.clip(target, max(0., velocities[-1]-c.max_decel*dt), velocities[-1]+c.max_accel*dt)
+-            samples.append(samples[-1]+max(.05, .5*(velocities[-1]+v))*dt)
+-            velocities.append(v)
++        sample, velocity = float(start), float(state[3])
++        samples = [sample]
++        for dt in periods.tolist():
++            target = float(np.interp(sample, arc, caps))
++            v = min(max(target, max(0., velocity-c.max_decel*dt)), velocity+c.max_accel*dt)
++            sample += max(.05, .5*(velocity+v))*dt
++            velocity = v
++            samples.append(sample)
+         samples = np.asarray(samples)
+         if samples[-1] > arc[-1]:
+             raise ValueError('insufficient_path_horizon')
+@@ -120,13 +161,17 @@ class IntegratedMPC:
+         # velocity-servo lag makes a safe preview target spuriously infeasible.
+         limits = np.interp(samples[1:], arc, hard_caps)
+         # Include minima between sample points so a narrow low-speed sector is not skipped.
+-        for k in range(len(periods)):
+-            inside = (arc >= samples[k]) & (arc <= samples[k+1])
+-            if np.any(inside): limits[k] = min(limits[k], np.min(hard_caps[inside]))
+-        reference = np.column_stack((np.interp(samples, arc, xy[:, 0]),
+-                                     np.interp(samples, arc, xy[:, 1]),
+-                                     np.interp(samples, arc, yaw),
+-                                     np.r_[state[3], targets]))
++        # arc is strictly increasing, so {arc in [s_k, s_k+1]} is one index slice.
++        first = np.searchsorted(arc, samples[:-1], 'left')
++        last = np.searchsorted(arc, samples[1:], 'right')
++        for k in np.flatnonzero(last > first).tolist():
++            limits[k] = min(limits[k], hard_caps[first[k]:last[k]].min())
++        reference = np.empty((len(samples), 4))
++        reference[:, 0] = np.interp(samples, arc, xy[:, 0])
++        reference[:, 1] = np.interp(samples, arc, xy[:, 1])
++        reference[:, 2] = np.interp(samples, arc, yaw)
++        reference[0, 3] = state[3]
++        reference[1:, 3] = targets
+         steering = np.arctan(c.wheelbase*np.interp(samples[:-1], arc, curvature))
+         return reference, steering, limits
+ 
+@@ -140,7 +185,7 @@ class IntegratedMPC:
+                     or not np.isfinite(path[:, :3]).all() or np.any(path[:, 2] < 0)
+                     or not np.isfinite(previous_steering) or abs(previous_steering) > c.max_steer+1e-6):
+                 raise ValueError('invalid_state_path_or_steering')
+-            periods = np.r_[c.dt, np.full(n-1, c.preview_dt)]
++            periods = self.periods
+             ref, delta_ref, caps = self._reference(state, path, periods)
+             # A measured speed can be above a sharp profile cap when entering
+             # a corner.  Enforcing that cap immediately would make the QP
+@@ -148,20 +193,15 @@ class IntegratedMPC:
+             # into it.  Use the physically reachable envelope for this solve;
+             # the original cap remains the target and the next stages continue
+             # braking toward it.
+-            reachable = state[3] - c.max_decel * np.r_[0., np.cumsum(periods[:-1])]
++            reachable = state[3] - c.max_decel * self.preview_times
+             caps = np.maximum(caps, np.maximum(0., reachable))
+             m = np.zeros((4, 2*n))
+             b = np.array([0., 0., state[2], state[3]])
+-            h = np.diag(np.tile([c.r_accel, c.r_steer], n))
+-            g = np.zeros(2*n)
+-            rows, lower, upper = [], [], []
+-            d = np.zeros((n, 2*n))
+-            for k in range(n):
+-                d[k, 2*k+1] = 1.
+-                if k: d[k, 2*k-1] = -1.
+-            prev = np.r_[previous_steering, np.zeros(n-1)]
+-            h += c.r_rate*d.T@d
+-            g -= c.r_rate*d.T@prev
++            h = self.h_base.copy()
++            d = self.d
++            prev = np.zeros(n)
++            prev[0] = previous_steering
++            g = -c.r_rate*(d.T@prev)
+             # Batch linearization and quadratic cost assembly. The small state
+             # recursion is sequential; forming N separate Hessians is unnecessary.
+             v, yaw = ref[:-1, 3], ref[:-1, 2]
+@@ -185,31 +225,29 @@ class IntegratedMPC:
+                 m[:, 2*k:2*k+2] += bb[k]
+                 b = aa[k]@b+affine[k]
+                 all_m[k], all_b[k] = m, b
+-            weights = np.tile([c.q_position, c.q_position, c.q_heading, c.q_speed], (n, 1))
+-            weights[-1] *= c.terminal_scale
++            weights = self.state_weights
+             stacked = all_m.reshape(4*n, 2*n)
+             h += stacked.T@(weights.reshape(-1, 1)*stacked)
+             g += stacked.T@(weights*(all_b-ref[1:])).ravel()
+             g[1::2] -= c.r_steer*delta
+-            rows = all_m[:, 3, :]
+             lower, upper = -all_b[:, 3], caps-all_b[:, 3]
+             # Conservative coupled envelope: speed is bounded above by caps;
+             # steering bound guarantees v^2*tan(delta)/L <= lateral limit.
+-            vmax = np.maximum(np.r_[state[3], caps[:-1]], caps)
++            vmax = np.maximum(np.concatenate(([state[3]], caps[:-1])), caps)
+             steer_bounds = np.minimum(c.max_steer, np.arctan(c.max_lateral_accel*c.wheelbase/np.maximum(vmax**2, 1e-6)))
+             # Preserve a feasible first slew step if the measured steering is
+             # just outside the new lateral-acceleration envelope.  The rate
+             # limit then brings it back inside over subsequent samples.
+             steer_bounds[0] = max(steer_bounds[0],
+                                   min(c.max_steer, abs(previous_steering)-c.max_steer_rate*periods[0]))
+-            box_lo = np.column_stack((np.full(n, -c.max_decel), -steer_bounds)).ravel()
+-            box_hi = np.column_stack((np.full(n, c.max_accel), steer_bounds)).ravel()
+-            matrix = self.sparse.csc_matrix(np.vstack((np.eye(2*n), d, rows)))
+-            lo = np.r_[box_lo, prev-c.max_steer_rate*periods, lower]
+-            hi = np.r_[box_hi, prev+c.max_steer_rate*periods, upper]
+-            # Reuse the OSQP factorization.  The speed-row coefficients change
+-            # with the linearization, so update A's numeric values as well as
+-            # the bounds and cost on every solve.
++            box_lo = np.column_stack((self.box_accel_lo, -steer_bounds)).ravel()
++            box_hi = np.column_stack((self.box_accel_hi, steer_bounds)).ravel()
++            matrix = self.matrix      # constant (see __init__)
++            rate = c.max_steer_rate*periods
++            lo = np.concatenate((box_lo, prev-rate, lower))
++            hi = np.concatenate((box_hi, prev+rate, upper))
++            # Reuse the OSQP factorization; A is constant, so only P, q and the
++            # bounds change between solves.
+             p_values = 2*h[self.p_rows, self.p_cols]
+             if self.solver is None:
+                 self.solver = self.osqp.OSQP()
+@@ -219,30 +257,46 @@ class IntegratedMPC:
+                     max_iter=c.max_iter, time_limit=c.solver_time_limit,
+                     adaptive_rho_interval=25, check_termination=10)
+             else:
+-                self.solver.update(Px=p_values, Ax=matrix.data, q=2*g, l=lo, u=hi)
+-            self.solver.warm_start(x=self.previous if self.previous is not None else np.zeros(2*n),
+-                                   y=np.zeros(len(lo)))
++                self.solver.update(Px=p_values, q=2*g, l=lo, u=hi)
++            if self.previous is None:
++                self.solver.warm_start(x=np.zeros(2*n), y=np.zeros(len(lo)))
++            elif self.previous_dual is None or not self.WARM_START_DUAL:
++                self.solver.warm_start(x=self.previous, y=np.zeros(len(lo)))
++            else:
++                self.solver.warm_start(x=self.previous, y=self.previous_dual)
+             sol = self.solver.solve(raise_error=False)
+-            if sol.info.status_val != 1: return self.reject('osqp:'+sol.info.status, previous_steering, started)
++            if sol.info.status_val != 1:
++                result = self.reject('osqp:'+sol.info.status, previous_steering, started)
++                # Still STOP this tick, but continue from OSQP's last iterate next tick
++                # instead of from zero: an iteration/time budget miss then converges
++                # over a few ticks rather than repeating the same cold solve forever.
++                if (sol.info.status in ('maximum iterations reached', 'run time limit reached', 'solved inaccurate')
++                        and sol.x is not None and sol.y is not None
++                        and np.isfinite(sol.x).all() and np.isfinite(sol.y).all()):
++                    self.previous, self.previous_dual = np.array(sol.x), np.array(sol.y)
++                return result
+             u = sol.x
+-            if not np.isfinite(u).all() or np.any(matrix@u < lo-1e-4) or np.any(matrix@u > hi+1e-4):
++            au = matrix@u
++            if not np.isfinite(u).all() or np.any(au < lo-1e-4) or np.any(au > hi+1e-4):
+                 return self.reject('constraint_violation', previous_steering, started)
+             controls = u.reshape(n, 2).copy()
+             controls[:, 0] = np.clip(controls[:, 0], -c.max_decel, c.max_accel)
+-            previous_delta = previous_steering
+-            for k, dt in enumerate(periods):
+-                controls[k, 1] = np.clip(controls[k, 1],
+-                    max(-steer_bounds[k], previous_delta-c.max_steer_rate*dt),
+-                    min(steer_bounds[k], previous_delta+c.max_steer_rate*dt))
+-                previous_delta = controls[k, 1]
++            previous_delta = float(previous_steering)
++            steer_plan = controls[:, 1].tolist()
++            for k, (dt, bound) in enumerate(zip(periods.tolist(), steer_bounds.tolist())):
++                previous_delta = min(max(steer_plan[k], max(-bound, previous_delta-c.max_steer_rate*dt)),
++                                     min(bound, previous_delta+c.max_steer_rate*dt))
++                steer_plan[k] = previous_delta
++            controls[:, 1] = steer_plan
+             # Remove numerical tolerance from the commanded speed upper bound.
+             controls[0, 0] = min(controls[0, 0], (caps[0]-state[3])/c.dt)
+             if controls[0, 0] < -c.max_decel-1e-4:
+                 return self.reject('first_speed_bound_infeasible', previous_steering, started)
+             predicted = np.zeros((n+1, 4))
+-            predicted[:, 3] = np.r_[state[3], state[3]+np.cumsum(periods*controls[:, 0])]
+-            predicted[:, 2] = np.r_[state[2], state[2]+np.cumsum(
+-                periods*predicted[:-1, 3]*np.tan(controls[:, 1])/c.wheelbase)]
++            predicted[0, 3] = state[3]
++            predicted[1:, 3] = state[3]+np.cumsum(periods*controls[:, 0])
++            predicted[0, 2] = state[2]
++            predicted[1:, 2] = state[2]+np.cumsum(periods*predicted[:-1, 3]*np.tan(controls[:, 1])/c.wheelbase)
+             predicted[1:, 0] = np.cumsum(periods*predicted[:-1, 3]*np.cos(predicted[:-1, 2]))
+             predicted[1:, 1] = np.cumsum(periods*predicted[:-1, 3]*np.sin(predicted[:-1, 2]))
+             lat = np.maximum(predicted[:-1, 3]**2, predicted[1:, 3]**2)*abs(np.tan(controls[:, 1]))/c.wheelbase
+@@ -269,6 +323,7 @@ class IntegratedMPC:
+             elapsed = perf_counter()-started
+             if elapsed > c.deadline: return self.reject('deadline_exceeded', previous_steering, started)
+             self.previous = u.copy()
++            self.previous_dual = np.array(sol.y, copy=True)
+             predicted[:, :2] += state[:2]; ref[:, :2] += state[:2]
+             return IntegratedResult(float(controls[0, 1]), max(0., float(predicted[1, 3])),
+                                     float(controls[0, 0]), SafetyRequest.NONE, 'solved', elapsed,
+diff --git a/controller/controller/safety_gate.py b/controller/controller/safety_gate.py
+new file mode 100644
+index 0000000..dd06e91
+--- /dev/null
++++ b/controller/controller/safety_gate.py
+@@ -0,0 +1,118 @@
++"""Latched software E-stop and restart approval for simple_mux (safety_mode only).
++
++ROS-free so it can be unit tested; simple_mux feeds it joystick buttons, wheel
++odometry and wall time, and asks it which host may drive.
++
++This is a SOFTWARE stop. It depends on the Jetson, simple_mux, ackermann_to_vesc
++and the VESC USB link all being alive. It does not replace the physical battery
++/ power cut, which must stay within reach of a person during every run.
++
++Hosts:
++  'estop'     latched stop. simple_mux publishes speed 0 / steering 0 every tick.
++  'none'      not engaged. simple_mux publishes speed 0 / steering 0 every tick.
++  'autodrive' the controller command may pass (fresh, then the TTC estop).
++There is no manual (humandrive) host: in safety_mode LB is an E-stop button.
++
++Latch triggers: any estop button (default A=0, LB=4), the software estop topic,
++and loss of /joy while engaged. Only request_reset() clears a latch, and only
++when every button is released on a fresh /joy, the wheels have been still for
++standstill_hold_s on fresh odom, and the latch is at least min_latch_s old.
++Clearing returns to 'none'; engaging again needs a NEW press of the engage
++button (default RB=5). With require_hold, releasing RB returns to 'none'.
++"""
++
++
++class SafetyGate:
++    def __init__(self, estop_buttons=(0, 4), engage_button=5, joy_timeout_s=0.5,
++                 min_latch_s=2.0, standstill_mps=0.05, standstill_hold_s=1.0,
++                 odom_timeout_s=0.5, require_hold=True, start_latched=True):
++        self.estop_buttons = tuple(int(b) for b in estop_buttons)
++        self.engage_button = int(engage_button)
++        if self.engage_button in self.estop_buttons:
++            raise ValueError('engage button cannot also be an estop button')
++        self.joy_timeout_s = float(joy_timeout_s)
++        self.min_latch_s = float(min_latch_s)
++        self.standstill_mps = float(standstill_mps)
++        self.standstill_hold_s = float(standstill_hold_s)
++        self.odom_timeout_s = float(odom_timeout_s)
++        self.require_hold = bool(require_hold)
++        self.host = 'none'
++        self.latched = False
++        self.reason = ''
++        self.latched_at = None
++        self.joy_time = None
++        self.joy_buttons = ()
++        self.engage_was_pressed = True   # no engage from a button already held at start
++        self.odom_time = None
++        self.still_since = None
++        self.events = []                 # (time, text) for the node to log
++        if start_latched:
++            self.trigger('startup: restart approval required', 0.0)
++
++    @staticmethod
++    def _pressed(buttons, index):
++        return len(buttons) > index and bool(buttons[index])
++
++    def _event(self, now, text):
++        self.events.append((now, text))
++
++    def trigger(self, reason, now):
++        if not self.latched:
++            self._event(now, f'ESTOP LATCHED: {reason}')
++            self.reason = reason
++        self.latched = True
++        self.latched_at = now
++        self.host = 'estop'
++
++    def on_joy(self, buttons, now):
++        buttons = tuple(buttons)
++        self.joy_time, self.joy_buttons = now, buttons
++        pressed = [b for b in self.estop_buttons if self._pressed(buttons, b)]
++        engage = self._pressed(buttons, self.engage_button)
++        if pressed:
++            self.trigger(f'button {pressed}', now)
++        elif not self.latched:
++            if engage and not self.engage_was_pressed:
++                if self.host != 'autodrive':
++                    self._event(now, 'autodrive engaged (engage button pressed)')
++                self.host = 'autodrive'
++            elif self.require_hold and not engage and self.host == 'autodrive':
++                self._event(now, 'engage button released -> none (speed 0)')
++                self.host = 'none'
++        self.engage_was_pressed = engage
++
++    def on_odom(self, speed, now):
++        self.odom_time = now
++        if abs(speed) < self.standstill_mps:
++            if self.still_since is None:
++                self.still_since = now
++        else:
++            self.still_since = None
++
++    def update(self, now):
++        joy_age = None if self.joy_time is None else now - self.joy_time
++        if self.host == 'autodrive' and (joy_age is None or joy_age > self.joy_timeout_s):
++            self.trigger(f'joy lost ({"never" if joy_age is None else f"{joy_age:.2f} s"})', now)
++        return self.host
++
++    def request_reset(self, now):
++        """Operator restart approval. Returns (accepted, message)."""
++        if not self.latched:
++            return False, 'not latched'
++        problems = []
++        if now - self.latched_at < self.min_latch_s:
++            problems.append(f'latched only {now - self.latched_at:.1f} s (< {self.min_latch_s} s)')
++        if self.joy_time is None or now - self.joy_time > self.joy_timeout_s:
++            problems.append('no fresh /joy (pad connected?)')
++        elif any(self.joy_buttons):
++            problems.append('release every pad button')
++        if self.odom_time is None or now - self.odom_time > self.odom_timeout_s:
++            problems.append('no fresh wheel odometry')
++        elif self.still_since is None or now - self.still_since < self.standstill_hold_s:
++            problems.append(f'wheels not still for {self.standstill_hold_s} s')
++        if problems:
++            return False, 'reset refused: ' + '; '.join(problems)
++        self._event(now, f'ESTOP RESET approved (was: {self.reason}) -> none; press engage to start')
++        self.latched, self.reason, self.host = False, '', 'none'
++        self.engage_was_pressed = True   # needs a new press after release
++        return True, 'estop cleared -> none. Release and press the engage button to start from 0.'
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 3860796..94d5d3d 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -1,10 +1,16 @@
+ # Integrated speed+steering MPC for the real car (race.launch.xml controller:=mpc).
+ # Loaded AFTER controller.yaml / dynamic_controller.yaml; only MPC keys live here.
+-# First low-speed runs: conservative limits. Legacy PP/speed settings stay untouched.
++# Speed profile overlays loaded after this file (race.launch mpc_profile:=<name>):
++#   mpc_profile_lowspeed.yaml  1.0 m/s, real car (default)
++#   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
++# Legacy PP/speed settings stay untouched.
+ controller_manager:
+   ros__parameters:
+     measure: true
+-    control_loop_rate_hz: 40          # sim-validated rate (Jetson CPU margin); PP keeps 50 Hz
++    # 100 Hz target (2026-11-22). race.launch overrides it with mpc_rate_hz (default 100,
++    # mpc_rate_hz:=40 = previous rate). The MPC solves every control tick; first-stage dt = 1/rate.
++    # PP keeps 50 Hz. simple_mux re-publishes at mux_rate_hz (100 in MPC mode).
++    control_loop_rate_hz: 100
+     # --- geometry (source: CAR/vehicle_config.yaml + mpc-build.vehicle-assets/vehicle.json,
+     #     geometry_confirmed=true there) ---
+     wheelbase: 0.324
+@@ -16,17 +22,21 @@ controller_manager:
+     mpc_max_steer_rad: 0.15
+     mpc_max_steer_rate_radps: 0.3
+     # --- speed envelope (first low-speed run) ---
+-    mpc_max_speed_mps: 1.0
++    mpc_max_speed_mps: 1.0            # profile overlay sets the active value (2.0 only in mpc_profile_exp2mps.yaml)
+     mpc_max_accel_mps2: 1.0
+     mpc_max_decel_mps2: 2.0
+     mpc_max_lateral_accel_mps2: 2.0
+     mpc_braking_preview_ratio: 0.3
+-    # --- solver budget (sim-tuned) ---
++    # --- solver budget ---
++    # 2026-11-22 bench: max_iter 400 was the cause of the permanent
++    # "osqp: maximum iterations reached" lock (standstill QPs need 500-3300 ADMM
++    # iterations from a cold start, ~2 us each). The wall-clock time limit is the
++    # real budget now; deadline <= 1/control_loop_rate_hz is enforced at startup.
+     mpc_horizon: 10
+     mpc_preview_dt: 0.1
+-    mpc_max_iter: 400
+-    mpc_solver_time_limit_s: 0.012
+-    mpc_deadline_s: 0.020
++    mpc_max_iter: 4000
++    mpc_solver_time_limit_s: 0.004
++    mpc_deadline_s: 0.008
+     mpc_q_heading: 8.0
+     mpc_r_rate: 2.0
+     # --- acceleration -> VESC speed setpoint ---
+diff --git a/stack_master/config/mpc_profile_exp2mps.yaml b/stack_master/config/mpc_profile_exp2mps.yaml
+new file mode 100644
+index 0000000..472cd52
+--- /dev/null
++++ b/stack_master/config/mpc_profile_exp2mps.yaml
+@@ -0,0 +1,15 @@
++# EXPERIMENT overlay: 2.0 m/s speed cap for the integrated MPC (race.launch.xml
++# controller:=mpc mpc_profile:=exp2mps). Loaded AFTER mpc_car.yaml; only the
++# keys below differ from the low-speed profile.
++#
++# History: on 2026-11-22 12:37 the Jetson ran with mpc_max_speed_mps edited
++# 1.0 -> 2.0 directly in mpc_car.yaml (src + install, never committed) for a
++# bench test with all four wheels lifted (9228 commanded / 8981 measured ERPM).
++# That edit is reverted; this file is the only place 2.0 m/s lives now.
++#
++# NOT validated on the ground: steering is still limited to 0.15 rad (corners
++# of 11_18_6 are not followable), braking distance at 2.0 m/s is unmeasured.
++# Bench (wheels lifted) only until those are measured.
++controller_manager:
++  ros__parameters:
++    mpc_max_speed_mps: 2.0
+diff --git a/stack_master/config/mpc_profile_lowspeed.yaml b/stack_master/config/mpc_profile_lowspeed.yaml
+new file mode 100644
+index 0000000..625d982
+--- /dev/null
++++ b/stack_master/config/mpc_profile_lowspeed.yaml
+@@ -0,0 +1,6 @@
++# Real-car LOW SPEED profile for the integrated MPC (race.launch.xml controller:=mpc,
++# mpc_profile:=lowspeed = default). Loaded AFTER mpc_car.yaml. Repeats the
++# 1.0 m/s cap explicitly so the active speed limit is always named by the profile.
++controller_manager:
++  ros__parameters:
++    mpc_max_speed_mps: 1.0
+diff --git a/stack_master/launch/low_level.launch.xml b/stack_master/launch/low_level.launch.xml
+index a7d5205..7fe4f02 100644
+--- a/stack_master/launch/low_level.launch.xml
++++ b/stack_master/launch/low_level.launch.xml
+@@ -7,6 +7,8 @@
+   <let name="config_dir" value="$(find-pkg-share stack_master)/config/CAR" unless="$(var sim)"/>
+   <arg name="vehicle_config" default="$(var config_dir)/vehicle_config.yaml"/>
+   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
++  <arg name="safety_mode"    default="false"               description="simple_mux latched E-stop / restart approval (race.launch: on for controller:=mpc)"/>
++  <arg name="mux_rate_hz"    default="50"                  description="simple_mux output rate [Hz] (legacy 50)"/>
+   <arg name="cmd_freshness"  default="0.25"                description="simple_mux: autodrive/humandrive command older than this [s] -> zero output (node default 1.0)"/>
+   <!-- virtual_perception (scan_overlay + virtual opponent + static obstacles).
+        Defaults ON in sim (preserves prior behavior), OFF on the real car; toggle
+@@ -121,6 +123,8 @@
+     <param name="joy_max_speed" value="$(var joy_max_speed)" type="float"/>
+     <param name="use_estop" value="$(var use_estop)"/>
+     <param name="joy_freshness_threshold" value="$(var cmd_freshness)" type="float"/>
++    <param name="safety_mode" value="$(var safety_mode)" type="bool"/>
++    <param name="rate_hz" value="$(var mux_rate_hz)" type="float"/>
+     <param name="sim" value="$(var sim)"/>
+     <!-- use_keyboard defaults False (joy); the pitwall panel flips it at runtime via
+          /ego/use_keyboard. keyboard_joy still publishes /joy_keyboard in sim regardless. -->
+diff --git a/stack_master/launch/race.launch.xml b/stack_master/launch/race.launch.xml
+index 5d52b82..69e5810 100644
+--- a/stack_master/launch/race.launch.xml
++++ b/stack_master/launch/race.launch.xml
+@@ -23,6 +23,15 @@
+   <arg name="sim"        default="false" description="Use simulator (true) or real hardware (false)"/>
+   <arg name="controller" default="pp"
+        description="pp: legacy Pure-Pursuit + speed control (default). mpc: integrated speed+steering MPC (config/mpc_car.yaml). Any other value starts no controller."/>
++  <arg name="mpc_profile" default="lowspeed"
++       description="controller:=mpc only: loads config/mpc_profile_&lt;name&gt;.yaml after mpc_car.yaml. lowspeed = 1.0 m/s (real car). exp2mps = 2.0 m/s (wheels-lifted bench experiment only)."/>
++  <arg name="mpc_rate_hz" default="100"
++       description="controller:=mpc only: control loop rate (MPC solved every tick). 40 = previous rate."/>
++  <!-- simple_mux options, forwarded through base_system/localization/low_level -->
++  <arg name="safety_mode" default="$(eval &quot;'$(var controller)' == 'mpc'&quot;)"
++       description="simple_mux latched E-stop: LB/A = stop latch (no manual drive), RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
++  <arg name="mux_rate_hz" default="$(eval &quot;'100' if '$(var controller)' == 'mpc' else '50'&quot;)"
++       description="simple_mux output rate. Default 100 Hz for controller:=mpc, legacy 50 Hz otherwise."/>
+   <arg name="mpc_pydeps" default="$(env HOME)/JSND_INT/pydeps"
+        description="Directory holding only the osqp package; prepended to PYTHONPATH of controller_manager in mpc mode only."/>
+   <arg name="localization" default="pf" description="Real-car localization backend: cartographer | pf | kiss (ignored when sim:=true)"/>
+@@ -197,6 +206,9 @@
+     <!-- Integrated MPC: replaces PP steering AND legacy speed control. FTGONLY still runs FTG;
+          behavior_strategy, simple_mux, estop and VESC paths are unchanged. -->
+     <param from="$(find-pkg-share stack_master)/config/mpc_car.yaml"/>
++    <!-- speed profile overlay: config/mpc_profile_<mpc_profile>.yaml (unknown name -> launch fails) -->
++    <param from="$(find-pkg-share stack_master)/config/mpc_profile_$(var mpc_profile).yaml"/>
++    <param name="control_loop_rate_hz" value="$(var mpc_rate_hz)" type="int"/>
+     <param name="lateral_controller" value="MPC" type="str"/>
+     <env name="PYTHONPATH" value="$(var mpc_pydeps):$(env PYTHONPATH '')"/>
+   </node>
+diff --git a/stack_master/scripts/simple_mux_node.py b/stack_master/scripts/simple_mux_node.py
+index 06e76b8..8be5019 100755
+--- a/stack_master/scripts/simple_mux_node.py
++++ b/stack_master/scripts/simple_mux_node.py
+@@ -6,10 +6,12 @@ from rclpy.qos import qos_profile_sensor_data
+ from sensor_msgs.msg import Joy, LaserScan
+ from nav_msgs.msg import Odometry
+ from std_msgs.msg import Bool, String
++from std_srvs.srv import Trigger
+ from ackermann_msgs.msg import AckermannDriveStamped
+ from copy import deepcopy
+ 
+ from controller.estop import EStop
++from controller.safety_gate import SafetyGate
+ 
+ 
+ class SimpleMuxNode(Node):
+@@ -37,6 +39,18 @@ class SimpleMuxNode(Node):
+         # initial human-drive source; the pitwall panel can flip it at runtime
+         # via ego_control_topic. False = joy, True = keyboard (/joy_keyboard).
+         self.declare_parameter('use_keyboard', False)
++        # safety_mode (default False = legacy behaviour, unchanged): latched E-stop,
++        # LB/A = E-stop instead of manual drive, explicit restart approval
++        # (/simple_mux/reset_estop), zero command whenever not engaged.
++        self.declare_parameter('safety_mode', False)
++        self.declare_parameter('safety_estop_buttons', [0, 4])
++        self.declare_parameter('safety_engage_button', 5)
++        self.declare_parameter('safety_require_engage_hold', True)
++        self.declare_parameter('safety_joy_timeout_s', 0.5)
++        self.declare_parameter('safety_min_latch_s', 2.0)
++        self.declare_parameter('safety_standstill_mps', 0.05)
++        self.declare_parameter('safety_standstill_hold_s', 1.0)
++        self.declare_parameter('safety_start_latched', True)
+         p = lambda name: self.get_parameter(name).value
+ 
+         out_topic          = p('out_topic')
+@@ -82,6 +96,25 @@ class SimpleMuxNode(Node):
+             self.create_subscription(LaserScan, scan_topic, self._scan_cb, qos_profile_sensor_data)
+             self.create_subscription(Odometry,  odom_topic, self._odom_cb, 10)
+ 
++        self.safety_mode = bool(p('safety_mode'))
++        self.gate = None
++        if self.safety_mode:
++            self.gate = SafetyGate(
++                estop_buttons=p('safety_estop_buttons'), engage_button=p('safety_engage_button'),
++                joy_timeout_s=p('safety_joy_timeout_s'), min_latch_s=p('safety_min_latch_s'),
++                standstill_mps=p('safety_standstill_mps'), standstill_hold_s=p('safety_standstill_hold_s'),
++                require_hold=p('safety_require_engage_hold'), start_latched=p('safety_start_latched'))
++            if not self.use_estop:   # wheel odometry is needed for the standstill check
++                self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
++            self.create_subscription(Bool, '/simple_mux/estop', self._soft_estop_cb, 10)
++            self.estop_state_pub = self.create_publisher(String, '/simple_mux/estop_state', 10)
++            self.create_service(Trigger, '/simple_mux/reset_estop', self._reset_estop_cb)
++            self.get_logger().warn(
++                f'safety_mode ON: estop buttons {list(p("safety_estop_buttons"))}, engage button '
++                f'{p("safety_engage_button")} (hold={p("safety_require_engage_hold")}), manual drive DISABLED. '
++                'Software stop only - keep the physical power cut within reach.')
++            self._flush_gate_events()
++
+         self.drive_pub = self.create_publisher(AckermannDriveStamped, out_topic, 10)
+         # Selected source (none/autodrive/humandrive) for the MPC controller: it holds
+         # its speed command at 0 unless autodrive is selected. Pure status, no control.
+@@ -89,7 +122,45 @@ class SimpleMuxNode(Node):
+         self.create_timer(1.0 / p('rate_hz'), self._loop)
+ 
+     def _scan_cb(self, msg): self.scan = msg
+-    def _odom_cb(self, msg): self.odom = msg
++
++    def _odom_cb(self, msg):
++        self.odom = msg
++        if self.gate is not None:
++            self.gate.on_odom(msg.twist.twist.linear.x, self._now_s())
++
++    def _now_s(self):
++        return self.get_clock().now().nanoseconds * 1e-9
++
++    def _flush_gate_events(self):
++        for _, text in self.gate.events:
++            self.get_logger().warn(f'[safety] {text}')
++        self.gate.events.clear()
++
++    def _soft_estop_cb(self, msg):
++        if msg.data:
++            self.gate.trigger('software /simple_mux/estop', self._now_s())
++            self._flush_gate_events()
++
++    def _reset_estop_cb(self, request, response):
++        response.success, response.message = self.gate.request_reset(self._now_s())
++        self.get_logger().warn(f'[safety] reset request: {response.message}')
++        self._flush_gate_events()
++        return response
++
++    def _safety_loop(self):
++        now = self._now_s()
++        host = self.gate.update(now)
++        self._flush_gate_events()
++        self.host_pub.publish(String(data=host))
++        self.estop_state_pub.publish(String(
++            data=f'latched: {self.gate.reason}' if self.gate.latched else f'clear: {host}'))
++        out = AckermannDriveStamped()          # speed 0, steering 0
++        out.header.stamp = self.get_clock().now().to_msg()
++        if host == 'autodrive' and self._is_fresh(self.autodrive):
++            out = deepcopy(self.autodrive)
++        if self.use_estop:
++            out = self.estop.should_stop(self.scan, self.odom, out)
++        self.drive_pub.publish(out)
+     def _drive_cb(self, msg): self.autodrive = msg
+ 
+     def _is_fresh(self, msg):
+@@ -104,6 +175,9 @@ class SimpleMuxNode(Node):
+         return out
+ 
+     def _loop(self):
++        if self.safety_mode:
++            self._safety_loop()
++            return
+         zero = AckermannDriveStamped()
+         zero.header.stamp = self.get_clock().now().to_msg()
+         self.host_pub.publish(String(data=self.current_host or 'none'))
+@@ -137,6 +211,10 @@ class SimpleMuxNode(Node):
+             self._handle_joy(msg)
+ 
+     def _handle_joy(self, msg):
++        if self.safety_mode:     # no manual drive; LB/A latch the E-stop
++            self.gate.on_joy(msg.buttons, self._now_s())
++            self._flush_gate_events()
++            return
+         use_human = msg.buttons[4] if len(msg.buttons) > 4 else False
+         use_auto  = msg.buttons[5] if len(msg.buttons) > 5 else False
+ 
+-- 
+2.43.0
+

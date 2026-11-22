@@ -207,6 +207,16 @@ class Controller:
         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
         return self.mpc_speed_cmd
 
+    def _mpc_recenter_steering(self):
+        """Steering while the MPC requests STOP: move the last applied steering toward 0
+        at the configured rate limit. Holding it forever (previous behaviour) kept the
+        servo off-centre and fed the same stale steering back into every new solve."""
+        cfg = self.lateral_mpc.config
+        step = cfg.max_steer_rate * cfg.dt
+        current = float(self.curr_steering_angle) if np.isfinite(self.curr_steering_angle) else 0.0
+        current = float(np.clip(current, -cfg.max_steer, cfg.max_steer))
+        return current - min(max(current, -step), step)
+
     def integrated_loop(self, state, position, waypoints, speed):
         # Entire PP speed/steering preprocessing is bypassed. Unsupported behavior
         # states stop rather than silently losing opponent-following safeguards.
@@ -231,11 +241,12 @@ class Controller:
             result = self.lateral_mpc.reject('invalid_local_control_input', self.curr_steering_angle)
         self.mpc_result = result
         self._report_mpc_result()
-        self.record_applied_steering(result.steering)
+        steering = result.steering if result.success else self._mpc_recenter_steering()
+        self.record_applied_steering(steering)
         speed_cmd = self._mpc_speed_command(result, measured)
         point = result.reference[-1, :2] if result.success else rear[:2]
         nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
-        return (speed_cmd, result.acceleration, 0., result.steering,
+        return (speed_cmd, result.acceleration, 0., steering,
                 point, float(np.linalg.norm(point-rear[:2])), nearest, 0., rear.reshape(1, 3))
 
     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):

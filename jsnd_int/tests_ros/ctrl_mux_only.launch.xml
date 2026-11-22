@@ -1,10 +1,19 @@
 <launch>
-  <!-- GENERATED from race.launch.xml (controller blocks verbatim) + low_level simple_mux. No VESC/sensors. -->
+  <!-- GENERATED from race.launch.xml (args + controller blocks verbatim) + low_level simple_mux. No VESC/sensors. -->
   <arg name="sim"        default="false" description="Use simulator (true) or real hardware (false)"/>
   <arg name="controller" default="pp"
        description="pp: legacy Pure-Pursuit + speed control (default). mpc: integrated speed+steering MPC (config/mpc_car.yaml). Any other value starts no controller."/>
+  <arg name="mpc_profile" default="lowspeed"
+       description="controller:=mpc only: loads config/mpc_profile_&lt;name&gt;.yaml after mpc_car.yaml. lowspeed = 1.0 m/s (real car). exp2mps = 2.0 m/s (wheels-lifted bench experiment only)."/>
+  <arg name="mpc_rate_hz" default="100"
+       description="controller:=mpc only: control loop rate (MPC solved every tick). 40 = previous rate."/>
+  <arg name="safety_mode" default="$(eval &quot;'$(var controller)' == 'mpc'&quot;)"
+       description="simple_mux latched E-stop: LB/A = stop latch (no manual drive), RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
+  <arg name="mux_rate_hz" default="$(eval &quot;'100' if '$(var controller)' == 'mpc' else '50'&quot;)"
+       description="simple_mux output rate. Default 100 Hz for controller:=mpc, legacy 50 Hz otherwise."/>
   <arg name="mpc_pydeps" default="$(env HOME)/JSND_INT/pydeps"
        description="Directory holding only the osqp package; prepended to PYTHONPATH of controller_manager in mpc mode only."/>
+  <!-- controller:=pp (unchanged legacy node) -->
   <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen"
         if="$(eval &quot;'$(var controller)' == 'pp'&quot;)">
     <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
@@ -22,6 +31,7 @@
     <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller.yaml"/>
     <param name="sim" value="$(var sim)"/>
   </node>
+  <!-- controller:=mpc -->
   <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen"
         if="$(eval &quot;'$(var controller)' == 'mpc'&quot;)">
     <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
@@ -41,6 +51,9 @@
     <!-- Integrated MPC: replaces PP steering AND legacy speed control. FTGONLY still runs FTG;
          behavior_strategy, simple_mux, estop and VESC paths are unchanged. -->
     <param from="$(find-pkg-share stack_master)/config/mpc_car.yaml"/>
+    <!-- speed profile overlay: config/mpc_profile_<mpc_profile>.yaml (unknown name -> launch fails) -->
+    <param from="$(find-pkg-share stack_master)/config/mpc_profile_$(var mpc_profile).yaml"/>
+    <param name="control_loop_rate_hz" value="$(var mpc_rate_hz)" type="int"/>
     <param name="lateral_controller" value="MPC" type="str"/>
     <env name="PYTHONPATH" value="$(var mpc_pydeps):$(env PYTHONPATH '')"/>
   </node>
@@ -52,6 +65,8 @@
     <param name="joy_max_speed" value="4.0" type="float"/>
     <param name="use_estop" value="true"/>
     <param name="joy_freshness_threshold" value="0.25" type="float"/>  <!-- = low_level cmd_freshness default -->
+    <param name="safety_mode" value="$(var safety_mode)"/>
+    <param name="rate_hz" value="$(var mux_rate_hz)" type="float"/>
     <param name="sim" value="false"/>
   </node>
 </launch>

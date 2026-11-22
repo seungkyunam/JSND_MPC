@@ -6,10 +6,12 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Joy, LaserScan
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger
 from ackermann_msgs.msg import AckermannDriveStamped
 from copy import deepcopy
 
 from controller.estop import EStop
+from controller.safety_gate import SafetyGate
 
 
 class SimpleMuxNode(Node):
@@ -37,6 +39,18 @@ class SimpleMuxNode(Node):
         # initial human-drive source; the pitwall panel can flip it at runtime
         # via ego_control_topic. False = joy, True = keyboard (/joy_keyboard).
         self.declare_parameter('use_keyboard', False)
+        # safety_mode (default False = legacy behaviour, unchanged): latched E-stop,
+        # LB/A = E-stop instead of manual drive, explicit restart approval
+        # (/simple_mux/reset_estop), zero command whenever not engaged.
+        self.declare_parameter('safety_mode', False)
+        self.declare_parameter('safety_estop_buttons', [0, 4])
+        self.declare_parameter('safety_engage_button', 5)
+        self.declare_parameter('safety_require_engage_hold', True)
+        self.declare_parameter('safety_joy_timeout_s', 0.5)
+        self.declare_parameter('safety_min_latch_s', 2.0)
+        self.declare_parameter('safety_standstill_mps', 0.05)
+        self.declare_parameter('safety_standstill_hold_s', 1.0)
+        self.declare_parameter('safety_start_latched', True)
         p = lambda name: self.get_parameter(name).value
 
         out_topic          = p('out_topic')
@@ -82,6 +96,25 @@ class SimpleMuxNode(Node):
             self.create_subscription(LaserScan, scan_topic, self._scan_cb, qos_profile_sensor_data)
             self.create_subscription(Odometry,  odom_topic, self._odom_cb, 10)
 
+        self.safety_mode = bool(p('safety_mode'))
+        self.gate = None
+        if self.safety_mode:
+            self.gate = SafetyGate(
+                estop_buttons=p('safety_estop_buttons'), engage_button=p('safety_engage_button'),
+                joy_timeout_s=p('safety_joy_timeout_s'), min_latch_s=p('safety_min_latch_s'),
+                standstill_mps=p('safety_standstill_mps'), standstill_hold_s=p('safety_standstill_hold_s'),
+                require_hold=p('safety_require_engage_hold'), start_latched=p('safety_start_latched'))
+            if not self.use_estop:   # wheel odometry is needed for the standstill check
+                self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
+            self.create_subscription(Bool, '/simple_mux/estop', self._soft_estop_cb, 10)
+            self.estop_state_pub = self.create_publisher(String, '/simple_mux/estop_state', 10)
+            self.create_service(Trigger, '/simple_mux/reset_estop', self._reset_estop_cb)
+            self.get_logger().warn(
+                f'safety_mode ON: estop buttons {list(p("safety_estop_buttons"))}, engage button '
+                f'{p("safety_engage_button")} (hold={p("safety_require_engage_hold")}), manual drive DISABLED. '
+                'Software stop only - keep the physical power cut within reach.')
+            self._flush_gate_events()
+
         self.drive_pub = self.create_publisher(AckermannDriveStamped, out_topic, 10)
         # Selected source (none/autodrive/humandrive) for the MPC controller: it holds
         # its speed command at 0 unless autodrive is selected. Pure status, no control.
@@ -89,7 +122,45 @@ class SimpleMuxNode(Node):
         self.create_timer(1.0 / p('rate_hz'), self._loop)
 
     def _scan_cb(self, msg): self.scan = msg
-    def _odom_cb(self, msg): self.odom = msg
+
+    def _odom_cb(self, msg):
+        self.odom = msg
+        if self.gate is not None:
+            self.gate.on_odom(msg.twist.twist.linear.x, self._now_s())
+
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _flush_gate_events(self):
+        for _, text in self.gate.events:
+            self.get_logger().warn(f'[safety] {text}')
+        self.gate.events.clear()
+
+    def _soft_estop_cb(self, msg):
+        if msg.data:
+            self.gate.trigger('software /simple_mux/estop', self._now_s())
+            self._flush_gate_events()
+
+    def _reset_estop_cb(self, request, response):
+        response.success, response.message = self.gate.request_reset(self._now_s())
+        self.get_logger().warn(f'[safety] reset request: {response.message}')
+        self._flush_gate_events()
+        return response
+
+    def _safety_loop(self):
+        now = self._now_s()
+        host = self.gate.update(now)
+        self._flush_gate_events()
+        self.host_pub.publish(String(data=host))
+        self.estop_state_pub.publish(String(
+            data=f'latched: {self.gate.reason}' if self.gate.latched else f'clear: {host}'))
+        out = AckermannDriveStamped()          # speed 0, steering 0
+        out.header.stamp = self.get_clock().now().to_msg()
+        if host == 'autodrive' and self._is_fresh(self.autodrive):
+            out = deepcopy(self.autodrive)
+        if self.use_estop:
+            out = self.estop.should_stop(self.scan, self.odom, out)
+        self.drive_pub.publish(out)
     def _drive_cb(self, msg): self.autodrive = msg
 
     def _is_fresh(self, msg):
@@ -104,6 +175,9 @@ class SimpleMuxNode(Node):
         return out
 
     def _loop(self):
+        if self.safety_mode:
+            self._safety_loop()
+            return
         zero = AckermannDriveStamped()
         zero.header.stamp = self.get_clock().now().to_msg()
         self.host_pub.publish(String(data=self.current_host or 'none'))
@@ -137,6 +211,10 @@ class SimpleMuxNode(Node):
             self._handle_joy(msg)
 
     def _handle_joy(self, msg):
+        if self.safety_mode:     # no manual drive; LB/A latch the E-stop
+            self.gate.on_joy(msg.buttons, self._now_s())
+            self._flush_gate_events()
+            return
         use_human = msg.buttons[4] if len(msg.buttons) > 4 else False
         use_auto  = msg.buttons[5] if len(msg.buttons) > 5 else False
 

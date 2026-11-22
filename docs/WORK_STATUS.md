@@ -1,12 +1,12 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 12:47, Bench 실제 구동 완료 — 랩 주행 불가 판단)**
-> - 실차 Bench(4바퀴 공중)에서 **Integrated MPC로 모터·서보 실제 구동 확인**: MPC 명령 0→2.0 m/s, VESC 명령 최대 9228 ERPM, 실제 최대 8981 ERPM, 역회전·fault 없음
-> - 설정 변경: `mpc_max_speed_mps` 1.0→**2.0** (사용자 지시, src+install yaml, 재빌드 없음). 그 외 안전 제한 그대로(조향 0.15 rad 등)
-> - ⚠ LB(humandrive) 중 **18456 ERPM**(joy_max_speed 4.0 × 스틱 1.0), 실제 13781 ERPM 발생 — LB는 정지가 아니라 수동 주행
-> - ⚠ 2.0 m/s에서 osqp 실패 후 조향 고정 → **max iterations 영구 반복**(재기동 전까지 RB 무반응)
-> - 랩 주행 보류: 조향 0.15 rad로 코너 불가, 2.0 m/s solver 불안정, 정지 수단 미검증 (상세 "단계 8")
-
+> **현재 상태 요약 (2026-11-22 단계 9, 오프라인/ROS 모의 안정화 — 실차 모터 구동 없음)**
+> - **P8 OSQP 고착 원인 확정·수정**: 정지 상태 QP가 cold start에서 500~3300회 ADMM 반복 필요 → `mpc_max_iter=400` 초과 → STOP → 계속 정지 → 같은 실패 반복(자기강화). 직전 조향 유지가 악화 요인(기존 예산에서 solved 0.4% vs 조향 0이면 40%). 실차 bag 입력으로 재현·해소 확인
+> - 수정: 반복 상한 4000(시간 한도 4 ms가 실제 예산), 쌍대 warm start, 예산 초과 시 OSQP 중간 해로 다음 주기 이어쓰기, STOP 시 조향을 변화율 한계로 0 복귀
+> - **100 Hz**: 제어 출력 100.1 Hz(ROS 모의), MPC 계산 p50 2.1 / p99 2.5 ms, 제어 루프 전체 p99 3.6~4.1 ms. 실차 Jetson 부하 상태는 **미검증**
+> - **안전 정지**: simple_mux `safety_mode`(MPC 기본 on): LB/A/joy 끊김/토픽 → 래치, 속도·조향 0 지속 발행, 수동주행 없음, `/simple_mux/reset_estop` 승인 + RB 재입력. ROS 모의 통과, **실차 미검증** → 완료 표시 안 함. 물리 전원 차단을 대체하지 않음
+> - 설정 분리: `mpc_car.yaml` 기본 1.0 m/s, `mpc_profile:=lowspeed`(1.0, 기본) / `exp2mps`(2.0, bench 전용). Jetson의 미커밋 2.0 m/s 수정은 백업 후 되돌림
+> - JSND_INT `c8727bb`(로컬), 이 브랜치 `jsnd_int/0003-*.patch` + 사본. 원본 JSND·PP·FTG 코드 무변경
 
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
 
@@ -259,3 +259,76 @@
 ### 판단: 랩 주행 보류
 - 사용자 랩 완주 요청에 대해 보류: ① 조향 0.15 rad로 코너 불가 ② 2.0 m/s solver 불안정·고착 ③ 정지 수단(LB) 위험 확인, 2.0 m/s 제동거리 미검증
 - 제안 순서: 조향 기계 한계·servo 실측 → `mpc_max_steer_rad` 결정 → 1.0 m/s 복귀 및 solver 안정 조건 오프라인 확인 → 정지 수단 확정 → 바닥 1.0 m/s 직선 일부 → 1랩
+
+
+## 2026-11-22 단계 9: OSQP 안정화 · 100 Hz · 안전 정지 · 설정 분리 (실차 모터 구동 없음)
+JSND_INT `82a1fd5` → `c8727bb` (patch `jsnd_int/0003-*.patch`). 배터리 충전 중 오프라인/ROS 모의로만 진행.
+
+### 1. 백업 / 실행본 차이
+- 백업: Jetson `~/JSND_backups/bench_20261122_full/` (bench_logs 전체 454 MB 포함 bag, SHA256SUMS, 실행 yaml 3종). 업로드: `docs/logs/bench_20261122_notes.txt`, `docs/logs/jetson_runtime_2p0_vs_82a1fd5.diff`
+- 실행 코드 ↔ GitHub(`89122a3`) sha256 비교: Controller/controller_manager/race·low_level launch/simple_mux **일치**. 차이는 `mpc_car.yaml` 1줄뿐: `mpc_max_speed_mps 1.0 → 2.0`(src·install 모두, 미커밋, sha 83861a74… vs GitHub 8f9da23d…). 이번 커밋에서 기본은 1.0으로 복귀, 2.0은 `mpc_profile_exp2mps.yaml`로만 존재
+
+### 2. P8 OSQP `maximum iterations` 고착 — 원인과 수정
+재현 데이터: rosbag `bag_mpc_1230`(12:30~12:50)에서 `/car_state/odom`, `/behavior_strategy` 70 local wpnts, 직전 발행 조향을 추출해 MPC에 그대로 재생 (`jsnd_int/tests_offline/bench_20261122_mpc_inputs.npz`, 고착 3구간 243틱 + 주행 3구간 368틱).
+
+| 조건 (같은 실차 입력) | 결과 |
+|---|---|
+| 배포 코드·설정(40 Hz, iter 400) | 고착 구간 >90% `maximum iterations` 재현. 고착 틱 **전부 v<0.05 m/s(정지)** |
+| 배포 코드, iter만 20000 | 고착 틱 **전부 solved** (최대 >400회, 1~2 ms) → 실행불가능 문제가 아니라 반복 예산 문제 |
+| 배포 코드, 직전 조향 유지 vs 0 | solved 0.4% vs 40% → 조향 유지가 크게 악화시키지만 단독 원인 아님 |
+| bag 전체 cold start 4795틱 | 실패 2125건 중 2050건이 정지 상태 |
+
+메커니즘: 실패 → 속도 0 → 바퀴 정지 → 정지 입력에서 다시 실패 (재기동 전까지 반복).
+
+수정 (`integrated_mpc.py`, `Controller.py`, `mpc_car.yaml`)
+- `mpc_max_iter 400→4000`, `solver_time_limit 4 ms`, `deadline 8 ms` (≤ 1/100 s, 시작 시 검증)
+- OSQP 쌍대 변수 warm start (반복 중앙값 510→110)
+- `maximum iterations`/`run time limit`/`solved inaccurate`이면 이번 주기는 STOP, 다음 주기는 그 중간 해에서 이어서 풀기 (예산 400·200회로 줄여도 ≤5주기에 복구)
+- MPC STOP 시 조향: 직전 값 무기한 유지 → **변화율 한계(0.3 rad/s)로 0 복귀**, 다음 solve의 직전 조향도 실제 발행값
+- 결과: bag 전체 연속 재생 16,969 유효 틱 OSQP 실패 **0** (남은 거부는 경로/방향 이탈·비선형 검증 등 안전 검사)
+
+### 3. 100 Hz — 출력 주기와 최적화 계산 구분
+최적화(수식·horizon 10·preview 0.1 s)는 그대로, 구현만 최적화: 상수인 제약행렬 A 1회 생성(속도 행은 선형화와 무관, 시험으로 확인), `np.r_`/스칼라 numpy 제거, `np.gradient` 동일 공식 직접 구현. 기존 대비 차이는 solver 허용오차 이내(조향 ≤ 6.6e-5 rad, 8605틱 중 상태 불일치 1).
+| 항목 | 값 | 환경 |
+|---|---|---|
+| MPC 1회 계산 (Python+OSQP) | 3.2 → **1.8~2.2 ms p50**, p99 2.6~3.7 ms | 오프라인, bag 입력, Jetson 유휴 |
+| OSQP 자체 | p50 0.2 ms, p99 1.6 ms | 〃 |
+| 제어 출력 (controller_manager 발행) | **100.1 Hz**, 타이머 주기 p50 10.0 / p99 10.6~10.8 / max 13 ms | ROS 모의 (domain 219, fake world 동시 실행) |
+| simple_mux → `/vesc/ackermann_cmd` | **100.0 Hz** (MPC 모드 `mux_rate_hz` 100; PP는 기존 50) | 〃 |
+| MPC 계산 | p50 2.1 / p99 2.4~2.5 / max 7.9~9.2 ms (첫 1회 `deadline_exceeded`) | 〃 |
+| 제어 루프 전체 | p50 2.9~3.0 / p99 3.6~4.1 / max 10.7~12.2 ms | 〃 |
+| 최적화 수행률 | 매 틱 계산, solved 95.5~98 % (나머지 TRAILING·odom/behavior 유실 시나리오 등 의도된 STOP) | 〃 |
+- `mpc_rate_hz:=40`으로 기존 주기 복귀 가능 (설정 유효성 시험 포함)
+- 미검증: 실차 Jetson(PF·LiDAR·perception 동시 부하)에서의 100 Hz. 11-22 bench에서는 40 Hz에서 MPC p99 11.7 ms였음(구 코드). 실차에서 `/controller/mpc_loop_period_ms`, `/controller/mpc_cycle_ms`, `/controller/mpc_elapsed_ms` 측정 필요
+- 관찰(분석 안 함): FTGONLY 구간에서 제어 루프 최대 104 ms(FTG 처리), 그 구간 출력 88 Hz. FTG 코드는 무변경
+
+### 4. 안전 정지 (simple_mux `safety_mode`, `controller:=mpc` 기본 on, PP 기본 off)
+| 항목 | 동작 |
+|---|---|
+| 래치 조건 | A(buttons[0]), LB(buttons[4]), autodrive 중 `/joy` 0.5 s 끊김, `/simple_mux/estop`(Bool true) |
+| 래치 중 | `active_host=estop`, 속도 0·조향 0을 매 주기 발행(능동 제동), MPC도 0 |
+| 수동주행 | 없음 (LB+스틱 = 정지). 11-22 18456 ERPM 사건 경로 제거 |
+| 기동 | 래치 상태로 시작 → 첫 주행 전 승인 필수 |
+| 재시작 승인 | `ros2 service call /simple_mux/reset_estop std_srvs/srv/Trigger` + 조건: 래치 ≥2 s, 모든 버튼 놓음(fresh /joy), `/vesc/odom` |v|<0.05 m/s 1 s 이상 → `none`. RB를 **새로 눌러** 0부터 램프 |
+| RB | hold-to-run: 놓으면 `none`(속도 0, 래치 아님) |
+ROS 모의 결과(estop 시나리오, 지면 주행 모델): 래치까지 +0.05 s(joy 20 Hz 주기), 래치~리셋 구간 mux 속도·조향 최대 0.000, LB+스틱 전진에서도 humandrive 0회, 이동 중 리셋 거부("latched only 0.3 s; wheels not still"), 조건 충족 리셋 4/4 성공, joy 끊김 +0.50 s 래치.
+**실차 미검증**: F710 모드(X/D)에 따른 A 버튼 번호, 실제 joy_node 발행 주기, VESC 제동. 소프트웨어 정지이며 Jetson/mux/USB 장애 시 동작하지 않음 → **물리 전원 차단 담당 유지 필수**.
+
+### 5. 시험 결과
+- 오프라인 `tests_offline`: **29 passed** (기존 9 + 신규 20: 고착 재현·원인 분리·해소, 예산 초과 복구, 기존 대비 동일성, A 행렬 상수성, gradient 동일성, STOP 조향 복귀, STOP 후 정지 출발 복구, 100 Hz 계산 예산, 프로파일, SafetyGate 9건)
+- ROS 모의 (domain 219, VESC 없음)
+  - MPC + safety_mode estop 시나리오: 위 4절 전 항목 기대대로
+  - MPC + 기존 mux(`safety_mode:=false`) safety 시나리오: RB 전 0, 0부터 램프(0.01 m/s/틱), LB 0, odom 유실 0, TTC estop, behavior 유실 0, TRAILING 0, controller 종료 후 0.329 s에 0 → 기존과 동일
+  - FTG 시나리오: FTGONLY에서 기존 FTG 1.0 m/s 동작(무변경 확인만)
+  - PP 회귀 1회(`controller:=pp`, mux 50 Hz, safety off): 주행, LB 0, behavior 유실·TRAILING 0, controller 종료 후 0 ✓ (요약 스크립트가 MPC 지표 없음으로 끝에 오류 → 수정만, 재실행 안 함)
+  - 시험 종료 시 Traceback은 `pkill -INT`에 의한 rclpy 종료 메시지(기능 무관)
+
+### 6. 미해결
+| # | 내용 |
+|---|---|
+| U1 | 실차 Jetson 부하에서 100 Hz 여유 미측정 |
+| U2 | E-stop 래치/리셋 실차 미검증 (패드 버튼 매핑, joy 주기, VESC 제동) |
+| P6 | 정지 odom 잡음 < −0.02 m/s → `invalid_local_control_input` (변경 안 함) |
+| P9 | 조향 0.15 rad로 코너 추종 불가 (ROS 모의 지면 주행에서도 `nonlinear_prediction_outside_envelope` 반복) → 실측 필요 |
+| U3 | 단발 `solved inaccurate`/`deadline_exceeded` 1틱 STOP 시 속도 setpoint가 0으로 리셋되어 명령 단속 가능 |
+| U4 | FTGONLY 구간 제어 루프 최대 ~100 ms (분석 범위 밖) |

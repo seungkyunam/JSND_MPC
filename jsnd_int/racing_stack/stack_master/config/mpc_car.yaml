@@ -1,10 +1,16 @@
 # Integrated speed+steering MPC for the real car (race.launch.xml controller:=mpc).
 # Loaded AFTER controller.yaml / dynamic_controller.yaml; only MPC keys live here.
-# First low-speed runs: conservative limits. Legacy PP/speed settings stay untouched.
+# Speed profile overlays loaded after this file (race.launch mpc_profile:=<name>):
+#   mpc_profile_lowspeed.yaml  1.0 m/s, real car (default)
+#   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
+# Legacy PP/speed settings stay untouched.
 controller_manager:
   ros__parameters:
     measure: true
-    control_loop_rate_hz: 40          # sim-validated rate (Jetson CPU margin); PP keeps 50 Hz
+    # 100 Hz target (2026-11-22). race.launch overrides it with mpc_rate_hz (default 100,
+    # mpc_rate_hz:=40 = previous rate). The MPC solves every control tick; first-stage dt = 1/rate.
+    # PP keeps 50 Hz. simple_mux re-publishes at mux_rate_hz (100 in MPC mode).
+    control_loop_rate_hz: 100
     # --- geometry (source: CAR/vehicle_config.yaml + mpc-build.vehicle-assets/vehicle.json,
     #     geometry_confirmed=true there) ---
     wheelbase: 0.324
@@ -16,17 +22,21 @@ controller_manager:
     mpc_max_steer_rad: 0.15
     mpc_max_steer_rate_radps: 0.3
     # --- speed envelope (first low-speed run) ---
-    mpc_max_speed_mps: 1.0
+    mpc_max_speed_mps: 1.0            # profile overlay sets the active value (2.0 only in mpc_profile_exp2mps.yaml)
     mpc_max_accel_mps2: 1.0
     mpc_max_decel_mps2: 2.0
     mpc_max_lateral_accel_mps2: 2.0
     mpc_braking_preview_ratio: 0.3
-    # --- solver budget (sim-tuned) ---
+    # --- solver budget ---
+    # 2026-11-22 bench: max_iter 400 was the cause of the permanent
+    # "osqp: maximum iterations reached" lock (standstill QPs need 500-3300 ADMM
+    # iterations from a cold start, ~2 us each). The wall-clock time limit is the
+    # real budget now; deadline <= 1/control_loop_rate_hz is enforced at startup.
     mpc_horizon: 10
     mpc_preview_dt: 0.1
-    mpc_max_iter: 400
-    mpc_solver_time_limit_s: 0.012
-    mpc_deadline_s: 0.020
+    mpc_max_iter: 4000
+    mpc_solver_time_limit_s: 0.004
+    mpc_deadline_s: 0.008
     mpc_q_heading: 8.0
     mpc_r_rate: 2.0
     # --- acceleration -> VESC speed setpoint ---

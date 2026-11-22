@@ -18,7 +18,8 @@ from f110_msgs.msg import BehaviorStrategy, Wpnt, WpntArray
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Joy, LaserScan
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
+from std_srvs.srv import Trigger
 
 MAP = Path.home() / 'JSND_INT/src/racing_stack/stack_master/maps/11_18_6/global_waypoints.json'
 WB, GAIN, MIN_ERPM, TAU, DT = 0.324, 4614.0, 900.0, 0.15, 0.01
@@ -47,6 +48,16 @@ SCENARIOS = {
                 phases=[(3.0, 6.0, 'auto_mpc', 'MPC'),
                         (6.0, 7.0, 'FTGONLY', 'FTG command (ftg_max_speed 1.0)'),
                         (7.0, 12.0, 'GB_TRACK', 'MPC resumes or STOP if off path')]),
+    # simple_mux safety_mode (latched E-stop + restart approval), car on the ground (not lifted)
+    'estop': dict(duration=25.0, rb=[(3.0, 3.3), (5.0, 7.0), (7.5, 9.5), (12.0, 14.0), (16.0, 18.0), (20.5, 23.0)],
+                  lb=[(9.0, 9.3)], a=[(13.0, 13.2)], stick_forward=[(9.0, 9.3)], joy_silent=[(16.8, 17.6)],
+                  soft_estop=[21.5], resets=[4.0, 9.6, 11.6, 15.5, 19.8],
+                  odom_loss=[], obstacle=[], beh_loss=[], trailing=[], ftg=[], kill=None,
+                  events=[('startup latched', 0.0, 'none'), ('RB while latched', 3.0, 'none'),
+                          ('RB hold', 5.0, 'drive'), ('RB released', 7.0, 'release'), ('RB hold again', 7.5, 'drive'),
+                          ('LB + stick fwd (incident)', 9.0, 'latch'), ('A button', 13.0, 'latch'),
+                          ('joy lost', 16.8, 'latch'), ('soft estop topic', 21.5, 'latch')],
+                  phases=[]),
 }
 SC = SCENARIOS[sys.argv[1] if len(sys.argv) > 1 else 'safety']
 PHASES = SC['phases']
@@ -81,6 +92,15 @@ class World(Node):
         self.create_timer(0.025, self.pub_lidar)
         self.create_timer(0.05, self.pub_joystick)
         self.create_timer(1.0, self.pub_global)
+        self.create_subscription(String, '/simple_mux/active_host', lambda m: self.rec('host', m.data), 10)
+        self.create_subscription(String, '/simple_mux/estop_state', lambda m: self.rec('estop_state', m.data), 10)
+        self.create_subscription(Float32, '/controller/mpc_loop_period_ms', lambda m: self.rec('period', m.data), 10)
+        self.create_subscription(Float32, '/controller/mpc_cycle_ms', lambda m: self.rec('cycle', m.data), 10)
+        self.pub_soft = self.create_publisher(Bool, '/simple_mux/estop', 10)
+        self.reset_cli = self.create_client(Trigger, '/simple_mux/reset_estop')
+        self.pending = list(SC.get('resets', []))
+        self.soft = list(SC.get('soft_estop', []))
+        self.reset_futures = []
 
     def t(self):
         return time.monotonic() - self.t0
@@ -181,11 +201,77 @@ class World(Node):
             j.buttons[5] = 1  # RB -> autodrive
         if IN(t, SC['lb']):
             j.buttons[4] = 1  # LB held, sticks neutral -> human 0
+        if IN(t, SC.get('a', [])):
+            j.buttons[0] = 1  # A
+        if IN(t, SC.get('stick_forward', [])):
+            j.axes[1] = 1.0   # full forward stick (2026-11-22 18456 ERPM incident in legacy mux)
+        if self.pending and t >= self.pending[0]:
+            at = self.pending.pop(0)
+            fut = self.reset_cli.call_async(Trigger.Request())
+            self.reset_futures.append((at, fut))
+        if self.soft and t >= self.soft[0]:
+            self.soft.pop(0)
+            self.pub_soft.publish(Bool(data=True))
+            self.rec('soft', 1)
+        if IN(t, SC.get('joy_silent', [])):
+            return            # pad lost: no /joy at all
         self.pub_joy.publish(j)
         if SC['kill'] is not None and t >= SC['kill'] and not self.killed:
             self.killed = True
             subprocess.run(['pkill', '-INT', '-f', 'lib/controller/controller_manager'], check=False)
             self.rec('killed', 1)
+
+
+def summarize_estop(node):
+    log = node.log
+    mux, host = log['mux'], log['host']
+    def first(seq, t0, pred):
+        return next((t for t, v in seq if t >= t0 and pred(v)), None)
+    print('reset requests:')
+    for at, fut in node.reset_futures:
+        r = fut.result() if fut.done() else None
+        host_after = next((v for t, v in log['host'] if t > at + 0.05), None)
+        print(f'  t={at:5.1f}s  ' + (f'success={r.success}  {r.message}' if r else 'NO RESPONSE') + f'  [host after: {host_after}]')
+    print(f"{'event':26s} {'t':>5s}  result")
+    for name, t0, kind in SC['events']:
+        nxt = min([e[1] for e in SC['events'] if e[1] > t0] + [SC['duration']])
+        seg = [v for t, v in mux if t0 <= t < nxt]
+        hosts = sorted({v for t, v in host if t0 <= t < nxt})
+        vmax = max([v[0] for v in seg], default=float('nan'))
+        if kind == 'latch':
+            th = first(host, t0, lambda v: v == 'estop')
+            until = min([r for r in SC['resets'] if r > t0] + [SC['duration']])
+            latched = [v for t, v in mux if th is not None and th + 0.02 <= t < until]   # one mux tick after the latch
+            ok = [r.success for at, fut in node.reset_futures if at > t0 and fut.done() for r in [fut.result()]]
+            carv = [(t, v) for t, v in log['v'] if th is not None and t >= th]
+            stop_t = next((t for t, v in carv if v < 0.05), None)
+            v_at = max([v for t, v in log['v'] if th is not None and abs(t - th) < 0.01], default=float('nan'))
+            print(f'{name:26s} {t0:5.1f}  host->estop +{(th - t0) if th else float("nan"):.3f}s; until next reset ({until:.1f}s) '
+                  f'mux n={len(latched)} speed max {max([v[0] for v in latched], default=float("nan")):.3f} '
+                  f'|steer| max {max([abs(v[1]) for v in latched], default=float("nan")):.3f}; car {v_at:.2f} m/s -> <0.05 in '
+                  f'{(stop_t - th) if stop_t else float("nan"):.2f}s (model tau {TAU}s)')
+        else:
+            print(f'{name:26s} {t0:5.1f}  mux n={len(seg)} speed max {vmax:.3f}, hosts {hosts}')
+    states = [v for t, v in log['estop_state']]
+    print('estop_state changes:', [s for i, s in enumerate(states) if i == 0 or s != states[i - 1]])
+    mt = np.array([t for t, _ in mux])
+    print(f'mux output rate {len(mt) / (mt[-1] - mt[0]):.1f} Hz, period p50 {1e3*np.median(np.diff(mt)):.1f} p99 {1e3*np.percentile(np.diff(mt), 99):.1f} ms; '
+          f'max mux speed overall {max(v[0] for _, v in mux):.3f} m/s; humandrive host seen: {any(v == "humandrive" for _, v in host)}')
+    rates(log)
+
+
+def rates(log):
+    ct = np.array([t for t, _ in log['ctrl']])
+    per = np.array([v for _, v in log['period']]) if log['period'] else np.zeros(1)
+    cyc = np.array([v for _, v in log['cycle']]) if log['cycle'] else np.zeros(1)
+    el = np.array([v for _, v in log['elapsed']]) if log['elapsed'] else np.zeros(1)
+    solved = [t for t, v in log['status'] if v == 'solved']
+    span = (ct[-1] - ct[0]) if len(ct) > 1 else 1.0
+    print(f'OUTPUT  controller publish {len(ct) / span:.1f} Hz (receive-side period p50 {1e3*np.median(np.diff(ct)):.1f} p99 {1e3*np.percentile(np.diff(ct), 99):.1f} max {1e3*np.diff(ct).max():.1f} ms); '
+          f'timer period (node) p50 {np.median(per):.2f} p99 {np.percentile(per, 99):.2f} max {per.max():.2f} ms')
+    print(f'COMPUTE control cycle ms p50 {np.median(cyc):.2f} p99 {np.percentile(cyc, 99):.2f} max {cyc.max():.2f}; '
+          f'MPC solve ms p50 {np.median(el):.2f} p99 {np.percentile(el, 99):.2f} max {el.max():.2f}; '
+          f'solved solves/s {len(solved) / span:.1f} ({len(solved)}/{len(log["status"])} ticks)')
 
 
 def summarize(log):
@@ -205,7 +291,7 @@ def summarize(log):
         print(f"{name:18s} {expect:38s} {len(c):6d} {cv.mean():8.3f}/{cv.max():7.3f} {cs.max():15.3f} "
               f"{len(m):5d} {mv.max():9.3f} {max(car) if car else 0:9.3f}  {st}")
     ct = [t for t, _ in log['ctrl'] if 3 < t < (SC['kill'] or SC['duration'])]
-    el = np.array([v for _, v in log['elapsed']])
+    el = np.array([v for _, v in log['elapsed']]) if log['elapsed'] else np.zeros(1)   # PP: no MPC timing
     print(f"controller rate {len(ct) / (ct[-1] - ct[0]):.1f} Hz; period p99 {1e3*np.percentile(np.diff(ct), 99):.1f} ms "
           f"max {1e3*np.max(np.diff(ct)):.1f} ms; mpc elapsed ms p50 {np.median(el):.2f} p99 {np.percentile(el, 99):.2f} max {el.max():.2f}")
     # engage: controller speed before RB, first commands after RB
@@ -232,7 +318,12 @@ def main():
     end = time.monotonic() + SC['duration']
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=0.005)
-    summarize(node.log)
+    if sys.argv[1:2] == ['estop']:
+        summarize_estop(node)
+    else:
+        summarize(node.log)
+        if node.log['period']:
+            rates(node.log)
     node.destroy_node()
     rclpy.shutdown()
 
