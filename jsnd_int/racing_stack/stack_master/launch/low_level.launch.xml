@@ -8,6 +8,7 @@
   <arg name="vehicle_config" default="$(var config_dir)/vehicle_config.yaml"/>
   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
   <arg name="safety_mode"    default="false"               description="simple_mux latched E-stop / restart approval (race.launch: on for controller:=mpc)"/>
+  <arg name="safety_engage_hold" default="true" description="simple_mux safety_mode: RB hold-to-run (true) or press-once (false)"/>
   <arg name="mux_rate_hz"    default="50"                  description="simple_mux output rate [Hz] (legacy 50)"/>
   <arg name="cmd_freshness"  default="0.25"                description="simple_mux: autodrive/humandrive command older than this [s] -> zero output (node default 1.0)"/>
   <!-- virtual_perception (scan_overlay + virtual opponent + static obstacles).
@@ -124,6 +125,7 @@
     <param name="use_estop" value="$(var use_estop)"/>
     <param name="joy_freshness_threshold" value="$(var cmd_freshness)" type="float"/>
     <param name="safety_mode" value="$(var safety_mode)" type="bool"/>
+    <param name="safety_require_engage_hold" value="$(var safety_engage_hold)" type="bool"/>
     <param name="rate_hz" value="$(var mux_rate_hz)" type="float"/>
     <param name="sim" value="$(var sim)"/>
     <!-- use_keyboard defaults False (joy); the pitwall panel flips it at runtime via

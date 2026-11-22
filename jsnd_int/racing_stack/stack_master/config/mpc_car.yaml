@@ -2,6 +2,8 @@
 # Loaded AFTER controller.yaml / dynamic_controller.yaml; only MPC keys live here.
 # Speed profile overlays loaded after this file (race.launch mpc_profile:=<name>):
 #   mpc_profile_lowspeed.yaml  1.0 m/s, real car (default)
+#   mpc_profile_1p5.yaml       1.5 m/s
+#   mpc_profile_2p25.yaml      2.25 m/s
 #   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
 # Legacy PP/speed settings stay untouched.
 controller_manager:

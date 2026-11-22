@@ -1,0 +1,6 @@
+# 2.25 m/s profile (2026-11-22, user request: 1p5 1.5 x 1.5). Load with mpc_profile:=2p25.
+# Only the MPC speed cap changes; steering 0.4 rad / 0.3 rad/s, accel, lateral accel 2.0 m/s^2 as mpc_car.yaml.
+# LB manual (joy_max_speed 1.0) is unchanged. Not yet driven on the ground at this speed.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 2.25

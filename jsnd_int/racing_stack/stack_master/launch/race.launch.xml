@@ -32,6 +32,8 @@
   <!-- simple_mux options, forwarded through base_system/localization/low_level -->
   <arg name="safety_mode" default="$(eval &quot;'$(var controller)' == 'mpc'&quot;)"
        description="simple_mux latched E-stop: A = stop latch, LB hold = manual drive, RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
+  <arg name="safety_engage_hold" default="false"
+       description="simple_mux safety_mode: false = RB press once engages autodrive (stays until A latch / LB / joy loss), true = RB hold-to-run."/>
   <arg name="joy_max_speed" default="$(eval &quot;'1.0' if '$(var controller)' == 'mpc' else '4.0'&quot;)"
        description="simple_mux manual (LB) speed at full stick [m/s]. controller:=mpc: 1.0 (= MPC lowspeed). Otherwise legacy 4.0 (low_level default)."/>
   <arg name="mux_rate_hz" default="$(eval &quot;'100' if '$(var controller)' == 'mpc' else '50'&quot;)"

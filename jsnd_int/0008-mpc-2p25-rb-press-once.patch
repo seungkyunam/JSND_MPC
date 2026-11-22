@@ -1,0 +1,89 @@
+From 2cee5278b4d7631fd491700d14c08912f31a46d9 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Sun, 22 Nov 2026 15:18:16 +0900
+Subject: [PATCH 1/2] Add mpc_profile_2p25 (MPC max speed 2.25 m/s)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ stack_master/config/mpc_car.yaml          | 2 ++
+ stack_master/config/mpc_profile_2p25.yaml | 6 ++++++
+ 2 files changed, 8 insertions(+)
+ create mode 100644 stack_master/config/mpc_profile_2p25.yaml
+
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index af0b78d..9f2af6d 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -2,6 +2,8 @@
+ # Loaded AFTER controller.yaml / dynamic_controller.yaml; only MPC keys live here.
+ # Speed profile overlays loaded after this file (race.launch mpc_profile:=<name>):
+ #   mpc_profile_lowspeed.yaml  1.0 m/s, real car (default)
++#   mpc_profile_1p5.yaml       1.5 m/s
++#   mpc_profile_2p25.yaml      2.25 m/s
+ #   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
+ # Legacy PP/speed settings stay untouched.
+ controller_manager:
+diff --git a/stack_master/config/mpc_profile_2p25.yaml b/stack_master/config/mpc_profile_2p25.yaml
+new file mode 100644
+index 0000000..3859048
+--- /dev/null
++++ b/stack_master/config/mpc_profile_2p25.yaml
+@@ -0,0 +1,6 @@
++# 2.25 m/s profile (2026-11-22, user request: 1p5 1.5 x 1.5). Load with mpc_profile:=2p25.
++# Only the MPC speed cap changes; steering 0.4 rad / 0.3 rad/s, accel, lateral accel 2.0 m/s^2 as mpc_car.yaml.
++# LB manual (joy_max_speed 1.0) is unchanged. Not yet driven on the ground at this speed.
++controller_manager:
++  ros__parameters:
++    mpc_max_speed_mps: 2.25
+-- 
+2.43.0
+
+
+From 9e4cce3998d00f9712f905213498d88acc90b108 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Sun, 22 Nov 2026 15:26:46 +0900
+Subject: [PATCH 2/2] race.launch safety_engage_hold (default false): RB press
+ once engages autodrive
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ stack_master/launch/low_level.launch.xml | 2 ++
+ stack_master/launch/race.launch.xml      | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/stack_master/launch/low_level.launch.xml b/stack_master/launch/low_level.launch.xml
+index 7fe4f02..0185df5 100644
+--- a/stack_master/launch/low_level.launch.xml
++++ b/stack_master/launch/low_level.launch.xml
+@@ -8,6 +8,7 @@
+   <arg name="vehicle_config" default="$(var config_dir)/vehicle_config.yaml"/>
+   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
+   <arg name="safety_mode"    default="false"               description="simple_mux latched E-stop / restart approval (race.launch: on for controller:=mpc)"/>
++  <arg name="safety_engage_hold" default="true" description="simple_mux safety_mode: RB hold-to-run (true) or press-once (false)"/>
+   <arg name="mux_rate_hz"    default="50"                  description="simple_mux output rate [Hz] (legacy 50)"/>
+   <arg name="cmd_freshness"  default="0.25"                description="simple_mux: autodrive/humandrive command older than this [s] -> zero output (node default 1.0)"/>
+   <!-- virtual_perception (scan_overlay + virtual opponent + static obstacles).
+@@ -124,6 +125,7 @@
+     <param name="use_estop" value="$(var use_estop)"/>
+     <param name="joy_freshness_threshold" value="$(var cmd_freshness)" type="float"/>
+     <param name="safety_mode" value="$(var safety_mode)" type="bool"/>
++    <param name="safety_require_engage_hold" value="$(var safety_engage_hold)" type="bool"/>
+     <param name="rate_hz" value="$(var mux_rate_hz)" type="float"/>
+     <param name="sim" value="$(var sim)"/>
+     <!-- use_keyboard defaults False (joy); the pitwall panel flips it at runtime via
+diff --git a/stack_master/launch/race.launch.xml b/stack_master/launch/race.launch.xml
+index f5c6269..c7e8275 100644
+--- a/stack_master/launch/race.launch.xml
++++ b/stack_master/launch/race.launch.xml
+@@ -32,6 +32,8 @@
+   <!-- simple_mux options, forwarded through base_system/localization/low_level -->
+   <arg name="safety_mode" default="$(eval &quot;'$(var controller)' == 'mpc'&quot;)"
+        description="simple_mux latched E-stop: A = stop latch, LB hold = manual drive, RB hold-to-run, restart via /simple_mux/reset_estop. Default on for controller:=mpc, off for pp."/>
++  <arg name="safety_engage_hold" default="false"
++       description="simple_mux safety_mode: false = RB press once engages autodrive (stays until A latch / LB / joy loss), true = RB hold-to-run."/>
+   <arg name="joy_max_speed" default="$(eval &quot;'1.0' if '$(var controller)' == 'mpc' else '4.0'&quot;)"
+        description="simple_mux manual (LB) speed at full stick [m/s]. controller:=mpc: 1.0 (= MPC lowspeed). Otherwise legacy 4.0 (low_level default)."/>
+   <arg name="mux_rate_hz" default="$(eval &quot;'100' if '$(var controller)' == 'mpc' else '50'&quot;)"
+-- 
+2.43.0
+

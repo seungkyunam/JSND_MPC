@@ -466,3 +466,14 @@ JSND_INT `91d0e26 → 8c35270`, 이 브랜치 `jsnd_int/0006-*.patch` + 사본. 
 - 사용자 요청(1.0 x 1.5). JSND_INT `e53b31a`: `config/mpc_profile_1p5.yaml` 추가(`mpc_max_speed_mps` 1.5만). 조향 0.4/0.3, 50 Hz, LB 수동 1.0 그대로
 - MPC 파라미터는 실행 중 변경 불가 → launch 재기동 `mpc_profile:=1p5`. 재기동 확인: max_speed 1.5, 50 Hz, 래치, 모터 0. 2D Pose Estimate 재지정 필요
 - 참고: 횡가속 한도 2.0 m/s² → 곡률 1.11 코너는 MPC가 약 1.34 m/s 이하로 감속
+
+## 2026-11-22 단계 16: 2.25 m/s 프로파일, RB 한 번 누르기, 노트북 MPC 패널 설치, 코너 멈칫 진단
+JSND_INT `e53b31a → 9e4cce3` (`jsnd_int/0008-*.patch` + 사본). controller·MPC 코드 변경 없음.
+- `config/mpc_profile_2p25.yaml`: `mpc_max_speed_mps` 2.25 (1p5 × 1.5). 실행 `mpc_profile:=2p25`. 지면 검증 전
+- race.launch `safety_engage_hold` (기본 **false**) → simple_mux `safety_require_engage_hold`: RB 한 번 누르면 자율 유지. 해제 = A(래치, `reset_estop` 필요) / LB(수동, 떼면 0) / joy 끊김. 이전 동작은 `safety_engage_hold:=true`
+- Jetson 재부팅 후 복구: 남은 프로세스 없음. Wi-Fi iPhone 핫스팟 172.20.10.4, 노트북 172.20.10.3 ping OK, Jetson→노트북 SSH 불가(22 닫힘)
+- 노트북 pitwall MPC 패널: `jsnd_int/laptop_pitwall_mpc/install_pitwall_mpc_panel.sh`(단계 13 pitwall 2파일 내장, thirdimpact alias로 작업공간 탐지, 원본 해시일 때만 교체+백업, `pitwall`만 빌드). 노트북에서
+  `ssh jsnd@172.20.10.4 'cat JSND_INT/laptop_pitwall_mpc/install_pitwall_mpc_panel.sh' | bash` → `thirdimpact` → `pitwall`. Jetson 모의 작업공간에서 2회 실행 확인, 노트북 실제 실행은 미확인. 데이터 없으면 N/A(기존 동작)
+- 모니터 CPU 절감 검토(미적용): 노트북에서 모니터 노드 실행(권장) / EventsExecutor / C++ 재작성
+- 실차 주행(2p25, 약 145 s, 로그 `race_mpc_20261122_152621.log`): MPC STOP 303회(~2회/s) — deadline_exceeded 145, nonlinear_speed_profile_violation 79, OSQP inaccurate/time limit/infeasible 57, invalid_local_control_input 21. 한 주기 실패 → 속도 명령 0(전류 제동)+조향 0 복귀 → 코너 멈칫·조향 끊김의 원인. 최대 코너 곡률 1.11 → 필요 조향 ~0.35 rad < 0.4라 조향각 상한을 낮추면 악화. 조향 속도 0.3 rad/s가 느림(0→0.35 rad 1.2 s)
+- 사용자 결정 대기: (1) 짧은 실패(≤0.1 s)는 직전 계획 이어쓰기 후 정지 (2) 조향 속도 상향(바퀴 들고 서보 측정 선행) (3) 횡가속 2.0→1.5
