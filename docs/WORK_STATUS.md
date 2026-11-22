@@ -26,3 +26,53 @@
 - 없음 (코드). 문서만: `docs/PROJECT_BASELINE.md`, `docs/WORK_STATUS.md`, `docs/NEXT_ACTION.md`.
 - 스냅샷: `~/JSND_backups/JSND_MPC_20261122_jetson/`
 - 브랜치: `JSND_MPC`에 `jsnd-integrated-mpc` 생성(미커밋 변경 유지, 커밋·push 안 함).
+
+## 2026-11-22 단계 2: JSND_INT 통합 구현 + 오프라인/ROS 시험 (모터 구동 없음)
+
+### 작업본
+- `~/JSND_INT/src/racing_stack`: `~/JSND/src/racing_stack` 독립 clone, 브랜치 `integrated-mpc`
+  - `5fb1587` 원본의 미커밋 launch 수정·맵 스냅샷, `0406352` MPC 통합 (로컬 커밋, push 안 함)
+- 오버레이 빌드: `~/JSND_INT/install` (controller, stack_master만; 나머지는 `~/JSND/install`)
+- 원본 `~/JSND` 변경 없음 (git status 동일 확인)
+
+### 변경 파일 (`0406352`)
+| 파일 | +/- | 내용 |
+|---|---|---|
+| `controller/controller/mpc/*` | 신규 | JSND_MPC 원본 그대로 복사 (sha256 동일) |
+| `combined/src/Controller.py` | +93/-0 | MPC 분기, 가속도→속도 setpoint 변환. PP 코드 삭제·수정 없음 |
+| `controller_manager.py` | +57/-2 | PP/MPC 선택, 실차 제한 해제, FTGONLY=FTG 유지, MPC 모드 odom 0.2 s 끊김 시 0 |
+| `stack_master/launch/race.launch.xml` | +30/-1 | `controller:=pp`(기본, 기존 노드 그대로) / `mpc` |
+| `stack_master/config/mpc_car.yaml` | 신규 | 1.0 m/s, 40 Hz, 조향 0.4 rad, FTG 속도 1.0 |
+
+### 해결 내용
+- **B1**: setpoint `v_cmd ← v_cmd + a·dt` (MPC 피드백은 계속 odom 실측 속도).
+  상한 = min(MPC 계획 최고속도, `mpc_max_speed_mps`, 실측+0.5 m/s), 하한 0. STOP/FTG/입력 유실/0 명령 시 초기화.
+  최소 출발속도 강제 없음. `acceleration` 필드는 `ackermann_to_vesc`가 사용하지 않음(코드 확인).
+- **B2**: 실차 MPC 거부 제거. **B3**: osqp 1.1.3만 `~/JSND_INT/pydeps`(1.5 MB)에 두고 MPC 모드 controller_manager에만 PYTHONPATH 적용. 시스템 numpy 1.26.4/scipy 1.11.4 유지.
+- Jetson 미커밋 변경 중 컨트롤러 관련: 정지 odom 노이즈(−0.02~0 m/s)를 0으로 처리 → 반영.
+
+### 시험 결과
+- 빌드: `colcon build --packages-select controller stack_master` 성공
+- 오프라인 (`~/JSND_INT/tests_offline`, 맵 11_18_6 iqp): **8 passed**
+  - 기존 방식(v+a·dt): 정지에서 못 벗어남 재현 / 새 방식: 0.175 s에 900 ERPM 도달, 10 s 모두 solved
+  - 속도 ≤ 1.0, 조향 ≤ 0.4, 바퀴 막힘 시 setpoint ≤ 0.5, 역주행·NaN·경로이탈 → 0
+  - solver p50 3.0 / p99 3.2 / max 6.1 ms
+- ROS (`~/JSND_INT/tests_ros`, 격리 domain 219, VESC·센서 없음, race.launch 컨트롤러 블록 그대로 + simple_mux, use_estop=true)
+  | 시나리오 | 결과 |
+  |---|---|
+  | RB→MPC | 속도·조향 동시 출력, mux 통과, 3.05 s(RB 직후) 900 ERPM 이상 |
+  | LB 수동(스틱 중립) | mux 0 (MPC는 계속 계산) ✓ |
+  | odom 0.6 s 유실 | 컨트롤러 0 ✓ |
+  | 전방 0.15 m 장애물 | TTC estop 작동. 단 기존 estop은 래치가 아니라 감속 후 TTC>0.35 s면 다시 통과 (기존 동작) |
+  | behavior_strategy 유실 | 기존 waypoint safety로 0 ✓ |
+  | TRAILING | MPC 미지원 → 0 ✓ |
+  | controller 강제 종료 | mux freshness(1.0 s) 후 0 ✓ |
+  | FTGONLY | 기존 FTG 1.0 m/s 동작 ✓. 복귀 시 경로에서 벗어나 있으면 MPC STOP(heading/tracking envelope) |
+  | PP 회귀 (`controller:=pp`) | 기존 PP 50 Hz 주행 ✓ |
+  - 제어 주기 40.1 Hz, p99 28 ms / MPC 계산 p99 6.7 ms (fake world 동시 실행 부하)
+
+### 남은 위험 / 미확인
+- `mpc_max_steer_rad 0.4`, `mpc_max_steer_rate_radps 3.2`는 실측값 아님 (bench 프로파일은 0.15 / 0.3)
+- VESC 속도 PID 최소 ERPM 실제값 미확인 (시험은 900 가정)
+- simple_mux 명령 freshness 1.0 s 그대로 (설정만으로 0.25 s 가능, 미적용)
+- RB 전 대기 중에도 setpoint가 최대 0.5 m/s까지 쌓여 RB 즉시 0.5 m/s 명령 (PP는 즉시 프로파일 속도)
