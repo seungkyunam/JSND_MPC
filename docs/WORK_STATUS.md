@@ -123,3 +123,23 @@
 - 패치 재현: JSND `2091417` + `0000` + `git am 0001 0002` → JSND_INT의 변경 파일 12개(mapping.launch 포함) 모두 동일
 - 이 브랜치가 main 대비 추가한 것: `docs/` 3개, `jsnd_int/` 14개뿐. 맵·빌드·venv/pydeps·인증정보 없음
 - JSND 원본(미커밋 2건 그대로), `~/JSND_MPC` 미커밋 18건, `main`(`c8f84e2`) 무변경
+
+## 2026-11-22 단계 4: 실차 Bench — launch 및 RB 전 확인 (모터 구동 없음)
+- 물리 안전(스탠드 고정, 4바퀴 공중, 주변 무인, 배터리 차단 담당, 패드 담당): 사용자 확인
+- 환경: ROS_DOMAIN_ID 173 / cyclonedds, `controller`·`stack_master` = `~/JSND_INT/install`(`82a1fd5`), VESC `/dev/ttyACM0` fault 0, **배터리 11.6 V**, F710 `/dev/input/js0`, Hokuyo 192.168.0.10 응답
+- 실행: `ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=mpc use_estop:=true` → 노드 ~30개 기동, 종료된 프로세스 없음
+
+### RB 전 명령 경로 상태
+| 단계 | 토픽 | 결과 |
+|---|---|---|
+| behavior | `/behavior_strategy` | GB_TRACK |
+| MPC | `/controller/mpc_status` | **`outside_heading_envelope` (STOP)** |
+| controller 출력 | `/vesc/high_level/ackermann_cmd` | speed 0.0, steer 0.0, 40.0 Hz ✓ |
+| mux 선택 | `/simple_mux/active_host` | none ✓ |
+| mux 출력 | `/vesc/ackermann_cmd` | 미발행 ✓ |
+| VESC 명령 | `motor/speed`, `servo/position` | 미발행 ✓ |
+| VESC 상태 | `/vesc/sensors/core` | duty 0, speed 0 ✓ |
+
+### 문제: MPC STOP 원인 (코드 문제 아님)
+- 추정 자세 x=2.06, y=3.21, yaw=−0.54 rad → raceline 79번까지 0.39 m(허용 1.0), 경로 방향 −3.03 rad → **방향 오차 2.49 rad (허용 0.7)**
+- `/initialpose` 수신 기록 없음 → PF 초기 자세 미지정 또는 차량이 경로 반대 방향

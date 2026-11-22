@@ -2,7 +2,8 @@
 
 **모터 구동은 사용자 확인 후 시작. 아래 0단계가 모두 OK가 아니면 진행하지 않는다.**
 
-현재 상태: GitHub `a8f7524` 코드 = Jetson 실행 코드(해시 검증 완료). **사용자 GitHub 코드 검토 대기** → 승인 후 0단계부터.
+현재 상태 (단계 4): 0·1단계 완료, launch 실행 중, RB 전 속도 0 확인. **MPC `outside_heading_envelope`** →
+① 차량을 경로 진행 방향(해당 지점 약 −x)으로 놓기 ② pitwall RViz 2D Pose Estimate → `mpc_status`=solved 확인 후 사용자 승인 받아 3단계(LB)·4단계(RB).
 
 ## 미확인 값 (이 시험의 전제)
 | 항목 | 현재 값 | 상태 |
