@@ -1,5 +1,13 @@
 # WORK_STATUS
 
+> **현재 상태 요약 (2026-11-22 12:13, 배선 정리로 실차 작업 중단)**
+> - 목표: 기존 JSND 구조 유지 + controller_manager에 Integrated MPC(속도+조향) → 실차 저속 자율주행
+> - 코드: Jetson `~/JSND_INT` 브랜치 `integrated-mpc` `82a1fd5` = GitHub `jsnd_int/` (해시 동일 확인). 빌드·오프라인·ROS(VESC 없음) 시험 통과
+> - 실차: bench launch까지 진행. **RB 미입력, 모터·서보 구동 0회.** MPC는 초기 자세 미정합으로 안정적 solved 미도달
+> - launch는 종료함(12:12, SIGINT). 실행 중인 ROS 프로세스 없음
+> - 다음 시작 지점: `docs/NEXT_ACTION.md` "재개 절차"
+
+
 ## 2026-11-22 단계 1: 진단 (코드 수정·모터 구동 없음)
 
 ### 확인된 사실
@@ -143,3 +151,32 @@
 ### 문제: MPC STOP 원인 (코드 문제 아님)
 - 추정 자세 x=2.06, y=3.21, yaw=−0.54 rad → raceline 79번까지 0.39 m(허용 1.0), 경로 방향 −3.03 rad → **방향 오차 2.49 rad (허용 0.7)**
 - `/initialpose` 수신 기록 없음 → PF 초기 자세 미지정 또는 차량이 경로 반대 방향
+
+## 2026-11-22 단계 5: 실차 Bench 중간 결과 및 중단 (모터 구동 0회)
+요약 로그: `docs/logs/bench_20261122_launch_summary.txt` (전체 로그는 Jetson `~/bench_logs/race_mpc_20261122_120041.log`, 미업로드)
+
+### 실제 관찰·로그로 확인된 것 (성공)
+- race.launch(`map:=11_18_6 controller:=mpc use_estop:=true`)로 JSND 전체 스택 + MPC controller_manager 기동, 약 12분 동안 시험 중 종료된 프로세스 없음
+- controller_manager MPC 모드 선택, osqp 로드(PYTHONPATH 범위 한정) 정상
+- `/vesc/high_level/ackermann_cmd` **40.0 Hz**, RB 전 speed **0.0** (MPC STOP 중에도)
+- `/simple_mux/active_host` = **none**, `/vesc/ackermann_cmd`·`motor/speed`·`servo/position` **미발행** → RB 전 VESC 명령 없음
+- VESC 연결: fault 0, duty 0, 입력 전압 11.6 V
+
+### 확인하지 못한 것 (미검증)
+- MPC 안정적 solved 상태, RB 후 모터 ERPM 상승·서보 구동, LB 수동 정지(실차), controller 종료 시 실차 정지, 실제 ERPM 추종
+- VESC 최소 ERPM, 실제 조향 기계 한계·servo 변환, 배터리 차단 절차의 실제 동작
+- 실차 Jetson 부하에서의 MPC 계산 여유
+
+### 발생한 문제
+| # | 현상 | 근거 | 판단 / 상태 |
+|---|---|---|---|
+| P1 | MPC `outside_heading_envelope` 지속 (0~9분) | 추정 yaw −0.54 vs 경로 −3.03 rad (오차 2.49, 허용 0.7). 정지 차량인데 추정 자세가 x 2.06→2.92, yaw −0.54→+1.22로 변함 | PF 초기 자세 미지정(`/initialpose` 발행자 0, 노트북 RViz 미연결). **미해결** — 다음 시작 시 2D Pose Estimate 필요 |
+| P2 | TF 오류 `map→laser` 209회, EKF `odom→base_link` 43회 | 로그, 시작~약 3.5분 구간 | 위치추정 미수렴과 연관 추정. 미확인 |
+| P3 | 후반 약 3분(540 s~) solved와 STOP이 번갈아 발생 | `tracking local path` 41회 vs `nonlinear_speed_profile_violation` 19, `osqp: solved inaccurate` 20, `osqp: maximum iterations` 11, `deadline_exceeded` 3, `nonlinear_prediction_outside_envelope` 5 | 자세 불안정 중 발생이라 원인 분리 안 됨. **자세 정합 후 재관찰 필요** (sim·오프라인에서는 0회) |
+| P4 | state_machine 대부분 `TRAILING` (+ OVERTAKE) | `[STATIC_OT] state=` 로그 | 주변 물체/스탠드를 장애물로 인식 추정. MPC는 TRAILING에서 정지(설계). 주변 정리 후 재확인 |
+| P5 | Hokuyo `Error count exceeded limit, reconnecting` 1회 | 로그 ~554 s | 재연결됨. 배선 정리 시 LiDAR 케이블 확인 |
+
+### 해결 과정
+- RB 전 0.5 m/s 누적, freshness, 조향 한계 → 단계 3에서 수정·시험 완료(코드 `82a1fd5`)
+- P1은 원인 진단까지 완료(코드 문제 아님), 사용자 2D Pose Estimate 대기 중 중단
+- 코드 수정 없음

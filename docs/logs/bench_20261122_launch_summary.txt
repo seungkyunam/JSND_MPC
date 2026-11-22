@@ -1,0 +1,305 @@
+# Bench launch summary 2026-11-22 (race.launch.xml map:=11_18_6 controller:=mpc use_estop:=true)
+# full log on Jetson: ~/bench_logs/race_mpc_20261122_120041.log (not uploaded, 1.1 MB)
+# t = seconds since first log line. RB was never pressed. No process died before SIGINT.
+
+## state_machine [STATIC_OT] state counts
+  288 TRAILING
+   25 GB_TRACK
+   20 OVERTAKE
+
+## ERROR lines (count, excluding shutdown)
+  209 [detect-21] [ERROR]  [detect]: [Opponent Detection]: lookup Transform between map and laser not possible: "map" passed to lookupTransform argument tar
+   43 [ekf_node-13] [ERROR]  [ekf_localization]: Could not obtain transform from odom->base_link
+    1 [ekf_node-13] [ERROR]  [ekf_localization]: Failed to meet update rate! Took 0.032591979000000000088seconds. Try decreasing the rate, limiting sensor o
+    1 [urg_node_driver-4] [ERROR]  [urg_node]: Error count exceeded limit, reconnecting.
+
+## controller_manager [MPC] status transitions
+   12.1s  STOP requested: invalid_local_control_input
+   13.4s  STOP requested: ValueError:outside_heading_envelope
+   13.4s  STOP requested: invalid_local_control_input
+   14.2s  STOP requested: ValueError:outside_heading_envelope
+   14.4s  STOP requested: invalid_local_control_input
+   14.4s  STOP requested: ValueError:outside_heading_envelope
+   15.5s  STOP requested: invalid_local_control_input
+   15.7s  STOP requested: ValueError:outside_heading_envelope
+   16.2s  STOP requested: invalid_local_control_input
+   16.5s  STOP requested: ValueError:outside_heading_envelope
+   19.3s  STOP requested: invalid_local_control_input
+   19.4s  STOP requested: ValueError:outside_heading_envelope
+   23.9s  STOP requested: invalid_local_control_input
+   23.9s  STOP requested: ValueError:outside_heading_envelope
+   30.1s  STOP requested: invalid_local_control_input
+   30.2s  STOP requested: ValueError:outside_heading_envelope
+   30.3s  STOP requested: invalid_local_control_input
+   30.4s  STOP requested: ValueError:outside_heading_envelope
+   37.9s  STOP requested: invalid_local_control_input
+   38.0s  STOP requested: ValueError:outside_heading_envelope
+   55.2s  STOP requested: invalid_local_control_input
+   55.5s  STOP requested: ValueError:outside_heading_envelope
+   57.0s  STOP requested: invalid_local_control_input
+   57.1s  STOP requested: ValueError:outside_heading_envelope
+   83.8s  STOP requested: invalid_local_control_input
+   83.9s  STOP requested: ValueError:outside_heading_envelope
+   90.3s  STOP requested: invalid_local_control_input
+   90.3s  STOP requested: ValueError:outside_heading_envelope
+   94.7s  STOP requested: invalid_local_control_input
+   94.7s  STOP requested: ValueError:outside_heading_envelope
+   95.2s  STOP requested: invalid_local_control_input
+   95.4s  STOP requested: ValueError:outside_heading_envelope
+   96.6s  STOP requested: invalid_local_control_input
+   96.6s  STOP requested: ValueError:outside_heading_envelope
+   96.7s  STOP requested: invalid_local_control_input
+   96.8s  STOP requested: ValueError:outside_heading_envelope
+   99.5s  STOP requested: invalid_local_control_input
+   99.6s  STOP requested: ValueError:outside_heading_envelope
+   99.6s  STOP requested: invalid_local_control_input
+   99.6s  STOP requested: ValueError:outside_heading_envelope
+  100.3s  STOP requested: invalid_local_control_input
+  100.5s  STOP requested: ValueError:outside_heading_envelope
+  102.5s  STOP requested: invalid_local_control_input
+  102.5s  STOP requested: ValueError:outside_heading_envelope
+  106.0s  STOP requested: invalid_local_control_input
+  106.0s  STOP requested: ValueError:outside_heading_envelope
+  106.7s  STOP requested: invalid_local_control_input
+  106.7s  STOP requested: ValueError:outside_heading_envelope
+  112.8s  STOP requested: invalid_local_control_input
+  112.8s  STOP requested: ValueError:outside_heading_envelope
+  117.3s  STOP requested: invalid_local_control_input
+  117.4s  STOP requested: ValueError:outside_heading_envelope
+  130.1s  STOP requested: invalid_local_control_input
+  130.2s  STOP requested: ValueError:outside_heading_envelope
+  136.3s  STOP requested: invalid_local_control_input
+  136.4s  STOP requested: ValueError:outside_heading_envelope
+  136.5s  STOP requested: invalid_local_control_input
+  136.6s  STOP requested: ValueError:outside_heading_envelope
+  143.2s  STOP requested: invalid_local_control_input
+  143.3s  STOP requested: ValueError:outside_heading_envelope
+  147.5s  STOP requested: invalid_local_control_input
+  147.8s  STOP requested: ValueError:outside_heading_envelope
+  152.2s  STOP requested: invalid_local_control_input
+  152.3s  STOP requested: ValueError:outside_heading_envelope
+  153.2s  STOP requested: invalid_local_control_input
+  153.3s  STOP requested: ValueError:outside_heading_envelope
+  160.4s  STOP requested: invalid_local_control_input
+  160.4s  STOP requested: ValueError:outside_heading_envelope
+  161.9s  STOP requested: invalid_local_control_input
+  162.0s  STOP requested: ValueError:outside_heading_envelope
+  162.5s  STOP requested: invalid_local_control_input
+  162.6s  STOP requested: ValueError:outside_heading_envelope
+  164.4s  STOP requested: invalid_local_control_input
+  164.5s  STOP requested: ValueError:outside_heading_envelope
+  166.4s  STOP requested: invalid_local_control_input
+  166.6s  STOP requested: ValueError:outside_heading_envelope
+  173.2s  STOP requested: invalid_local_control_input
+  173.3s  STOP requested: ValueError:outside_heading_envelope
+  176.0s  STOP requested: invalid_local_control_input
+  176.3s  STOP requested: ValueError:outside_heading_envelope
+  176.8s  STOP requested: invalid_local_control_input
+  176.9s  STOP requested: ValueError:outside_heading_envelope
+  179.0s  STOP requested: invalid_local_control_input
+  179.2s  STOP requested: ValueError:outside_heading_envelope
+  183.3s  STOP requested: invalid_local_control_input
+  183.4s  STOP requested: ValueError:outside_heading_envelope
+  186.1s  STOP requested: invalid_local_control_input
+  186.1s  STOP requested: ValueError:outside_heading_envelope
+  191.9s  STOP requested: invalid_local_control_input
+  191.9s  STOP requested: ValueError:outside_heading_envelope
+  192.9s  STOP requested: invalid_local_control_input
+  192.9s  STOP requested: ValueError:outside_heading_envelope
+  193.9s  STOP requested: invalid_local_control_input
+  194.0s  STOP requested: ValueError:outside_heading_envelope
+  198.2s  STOP requested: invalid_local_control_input
+  198.2s  STOP requested: ValueError:outside_heading_envelope
+  205.6s  STOP requested: invalid_local_control_input
+  205.7s  STOP requested: ValueError:outside_heading_envelope
+  205.8s  STOP requested: invalid_local_control_input
+  205.9s  STOP requested: ValueError:outside_heading_envelope
+  207.8s  STOP requested: invalid_local_control_input
+  207.8s  STOP requested: ValueError:outside_heading_envelope
+  213.9s  STOP requested: invalid_local_control_input
+  214.0s  STOP requested: ValueError:outside_heading_envelope
+  216.7s  STOP requested: invalid_local_control_input
+  216.8s  STOP requested: ValueError:outside_heading_envelope
+  217.1s  STOP requested: invalid_local_control_input
+  217.1s  STOP requested: ValueError:outside_heading_envelope
+  217.2s  STOP requested: invalid_local_control_input
+  217.3s  STOP requested: ValueError:outside_heading_envelope
+  221.0s  STOP requested: invalid_local_control_input
+  221.1s  STOP requested: ValueError:outside_heading_envelope
+  221.1s  STOP requested: invalid_local_control_input
+  221.2s  STOP requested: ValueError:outside_heading_envelope
+  221.3s  STOP requested: invalid_local_control_input
+  221.7s  STOP requested: ValueError:outside_heading_envelope
+  222.6s  STOP requested: unsupported_behavior:TRAILING
+  222.7s  STOP requested: ValueError:outside_heading_envelope
+  230.0s  STOP requested: unsupported_behavior:TRAILING
+  232.5s  STOP requested: ValueError:outside_heading_envelope
+  317.3s  STOP requested: unsupported_behavior:TRAILING
+  319.9s  STOP requested: ValueError:outside_heading_envelope
+  327.8s  STOP requested: unsupported_behavior:TRAILING
+  328.1s  STOP requested: ValueError:outside_heading_envelope
+  330.2s  STOP requested: unsupported_behavior:TRAILING
+  330.3s  STOP requested: ValueError:outside_heading_envelope
+  330.6s  STOP requested: unsupported_behavior:TRAILING
+  331.2s  STOP requested: ValueError:outside_heading_envelope
+  331.6s  STOP requested: unsupported_behavior:TRAILING
+  331.8s  STOP requested: ValueError:outside_heading_envelope
+  361.9s  STOP requested: unsupported_behavior:TRAILING
+  361.9s  STOP requested: ValueError:outside_heading_envelope
+  387.9s  STOP requested: unsupported_behavior:TRAILING
+  391.8s  STOP requested: ValueError:outside_heading_envelope
+  392.1s  STOP requested: unsupported_behavior:TRAILING
+  392.2s  STOP requested: ValueError:outside_heading_envelope
+  397.4s  STOP requested: unsupported_behavior:TRAILING
+  399.7s  STOP requested: ValueError:outside_heading_envelope
+  420.6s  STOP requested: unsupported_behavior:TRAILING
+  420.7s  STOP requested: ValueError:outside_heading_envelope
+  434.5s  STOP requested: unsupported_behavior:TRAILING
+  434.5s  STOP requested: ValueError:outside_heading_envelope
+  464.7s  STOP requested: unsupported_behavior:TRAILING
+  464.7s  STOP requested: ValueError:outside_heading_envelope
+  492.6s  STOP requested: unsupported_behavior:TRAILING
+  492.7s  STOP requested: ValueError:outside_heading_envelope
+  504.1s  STOP requested: unsupported_behavior:TRAILING
+  504.2s  STOP requested: ValueError:outside_heading_envelope
+  510.5s  STOP requested: unsupported_behavior:TRAILING
+  510.6s  STOP requested: ValueError:outside_heading_envelope
+  521.9s  STOP requested: unsupported_behavior:TRAILING
+  522.0s  STOP requested: ValueError:outside_heading_envelope
+  529.8s  STOP requested: unsupported_behavior:TRAILING
+  530.9s  STOP requested: ValueError:outside_heading_envelope
+  530.9s  STOP requested: unsupported_behavior:TRAILING
+  531.4s  STOP requested: ValueError:outside_heading_envelope
+  540.1s  STOP requested: unsupported_behavior:TRAILING
+  542.2s  tracking local path
+  543.6s  STOP requested: unsupported_behavior:TRAILING
+  543.6s  tracking local path
+  545.1s  STOP requested: osqp:maximum iterations reached
+  545.1s  STOP requested: osqp:solved inaccurate
+  545.2s  tracking local path
+  545.5s  STOP requested: osqp:solved inaccurate
+  545.5s  tracking local path
+  545.7s  STOP requested: unsupported_behavior:TRAILING
+  546.2s  STOP requested: osqp:solved inaccurate
+  546.2s  STOP requested: osqp:maximum iterations reached
+  546.3s  tracking local path
+  546.3s  STOP requested: unsupported_behavior:TRAILING
+  547.1s  tracking local path
+  548.1s  STOP requested: osqp:solved inaccurate
+  548.1s  STOP requested: unsupported_behavior:TRAILING
+  551.7s  tracking local path
+  551.9s  STOP requested: deadline_exceeded
+  551.9s  tracking local path
+  552.0s  STOP requested: nonlinear_speed_profile_violation
+  554.7s  STOP requested: osqp:solved inaccurate
+  555.1s  tracking local path
+  557.3s  STOP requested: nonlinear_speed_profile_violation
+  557.4s  tracking local path
+  557.7s  STOP requested: nonlinear_speed_profile_violation
+  557.8s  STOP requested: osqp:maximum iterations reached
+  557.8s  tracking local path
+  557.8s  STOP requested: osqp:maximum iterations reached
+  558.0s  tracking local path
+  558.1s  STOP requested: osqp:solved inaccurate
+  558.1s  STOP requested: unsupported_behavior:TRAILING
+  559.5s  tracking local path
+  559.6s  STOP requested: osqp:maximum iterations reached
+  559.7s  tracking local path
+  559.7s  STOP requested: osqp:maximum iterations reached
+  559.7s  tracking local path
+  559.7s  STOP requested: osqp:solved inaccurate
+  559.8s  tracking local path
+  559.8s  STOP requested: osqp:solved inaccurate
+  559.8s  tracking local path
+  559.8s  STOP requested: osqp:solved inaccurate
+  559.9s  STOP requested: nonlinear_speed_profile_violation
+  560.0s  STOP requested: osqp:solved inaccurate
+  560.1s  STOP requested: nonlinear_speed_profile_violation
+  560.3s  STOP requested: osqp:solved inaccurate
+  560.3s  STOP requested: nonlinear_speed_profile_violation
+  560.4s  tracking local path
+  560.4s  STOP requested: nonlinear_speed_profile_violation
+  561.8s  tracking local path
+  562.0s  STOP requested: nonlinear_speed_profile_violation
+  562.4s  tracking local path
+  563.1s  STOP requested: ValueError:outside_heading_envelope
+  563.9s  STOP requested: unsupported_behavior:TRAILING
+  564.3s  STOP requested: ValueError:outside_heading_envelope
+  565.3s  STOP requested: unsupported_behavior:TRAILING
+  566.4s  tracking local path
+  566.4s  STOP requested: osqp:solved inaccurate
+  566.5s  STOP requested: unsupported_behavior:TRAILING
+  566.7s  STOP requested: nonlinear_speed_profile_violation
+  566.9s  STOP requested: nonlinear_prediction_outside_envelope
+  567.1s  STOP requested: ValueError:outside_heading_envelope
+  568.0s  STOP requested: unsupported_behavior:TRAILING
+  569.8s  tracking local path
+  570.9s  STOP requested: osqp:maximum iterations reached
+  570.9s  STOP requested: unsupported_behavior:TRAILING
+  571.3s  tracking local path
+  571.5s  STOP requested: ValueError:outside_heading_envelope
+  572.1s  tracking local path
+  572.5s  STOP requested: osqp:solved inaccurate
+  572.5s  tracking local path
+  572.6s  STOP requested: osqp:maximum iterations reached
+  572.6s  STOP requested: osqp:solved inaccurate
+  572.6s  tracking local path
+  572.7s  STOP requested: osqp:maximum iterations reached
+  572.7s  STOP requested: unsupported_behavior:TRAILING
+  573.2s  STOP requested: nonlinear_prediction_outside_envelope
+  576.6s  tracking local path
+  577.6s  STOP requested: unsupported_behavior:TRAILING
+  578.0s  tracking local path
+  578.8s  STOP requested: nonlinear_speed_profile_violation
+  578.8s  tracking local path
+  580.1s  STOP requested: nonlinear_speed_profile_violation
+  580.2s  tracking local path
+  580.3s  STOP requested: nonlinear_speed_profile_violation
+  580.8s  tracking local path
+  580.9s  STOP requested: nonlinear_speed_profile_violation
+  581.0s  tracking local path
+  581.7s  STOP requested: nonlinear_speed_profile_violation
+  581.7s  tracking local path
+  581.8s  STOP requested: nonlinear_speed_profile_violation
+  582.2s  tracking local path
+  584.0s  STOP requested: deadline_exceeded
+  584.1s  tracking local path
+  584.4s  STOP requested: deadline_exceeded
+  584.4s  tracking local path
+  591.1s  STOP requested: unsupported_behavior:TRAILING
+  593.3s  STOP requested: ValueError:outside_heading_envelope
+  604.7s  STOP requested: unsupported_behavior:TRAILING
+  604.8s  STOP requested: ValueError:outside_heading_envelope
+  610.8s  STOP requested: unsupported_behavior:TRAILING
+  613.3s  tracking local path
+  613.7s  STOP requested: unsupported_behavior:TRAILING
+  614.8s  STOP requested: nonlinear_speed_profile_violation
+  615.2s  tracking local path
+  618.0s  STOP requested: nonlinear_speed_profile_violation
+  619.3s  STOP requested: unsupported_behavior:TRAILING
+  630.0s  STOP requested: osqp:maximum iterations reached
+  630.1s  tracking local path
+  630.2s  STOP requested: osqp:solved inaccurate
+  630.3s  tracking local path
+  630.4s  STOP requested: osqp:maximum iterations reached
+  630.5s  STOP requested: osqp:solved inaccurate
+  630.8s  STOP requested: invalid_local_control_input
+  632.1s  STOP requested: nonlinear_speed_profile_violation
+  634.8s  STOP requested: osqp:solved inaccurate
+  660.6s  STOP requested: unsupported_behavior:TRAILING
+  662.7s  STOP requested: osqp:solved inaccurate
+  679.7s  STOP requested: unsupported_behavior:TRAILING
+  682.7s  STOP requested: osqp:solved inaccurate
+  683.6s  STOP requested: unsupported_behavior:TRAILING
+  693.9s  STOP requested: osqp:solved inaccurate
+  714.2s  STOP requested: unsupported_behavior:TRAILING
+  714.3s  tracking local path
+  716.7s  STOP requested: unsupported_behavior:TRAILING
+  716.7s  STOP requested: nonlinear_speed_profile_violation
+  716.9s  STOP requested: unsupported_behavior:TRAILING
+  721.1s  STOP requested: nonlinear_prediction_outside_envelope
+  721.8s  STOP requested: ValueError:outside_heading_envelope
+  721.9s  STOP requested: nonlinear_prediction_outside_envelope
+  722.0s  STOP requested: ValueError:outside_heading_envelope
+  722.0s  STOP requested: nonlinear_prediction_outside_envelope
+--- SIGINT (launch 종료, Claude) ---

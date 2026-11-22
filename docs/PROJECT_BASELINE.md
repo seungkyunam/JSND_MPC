@@ -8,6 +8,7 @@
 |---|---|---|
 | `~/JSND/src/racing_stack` | 기존 정상 JSND (실차 실행 기준, `~/JSND/install`) | HEAD `2091417`, `race.launch.xml`(joy_node 추가)·`mapping.launch.xml` 미커밋, 맵 `11_16_*`, `11_18_*` 미추적 |
 | `~/JSND_MPC` | 최신 Integrated MPC 작업 (Jetson이 최신) | 브랜치 `jsnd-integrated-mpc`(main `bc696d5`에서 분기, origin/main보다 1커밋 앞섬) + **미커밋 15개 파일**(`mpc_vehicle` global_waypoints 구독 등), 미추적 `pitwall/`, `mpc_report.txt` |
+| `~/JSND_INT/src/racing_stack` | **최종 통합 작업본** (JSND clone + MPC, 브랜치 `integrated-mpc`, 빌드 `~/JSND_INT/install`) — GitHub `jsnd_int/`와 동일 | `82a1fd5` (2026-11-22) |
 | `~/JSND_MPC/mpc-build.WFANmz` | mpc_vehicle Jazzy 빌드 + `venv`(osqp 1.1.3, system-site-packages) | — |
 | `~/JSND_backups/JSND_MPC_20261122_jetson/` | 오늘 진단 전 전체 스냅샷(tgz) + 미커밋 patch + HEAD | — |
 
@@ -24,3 +25,6 @@
 - `controller_manager.py`: 파라미터로 PP/MPC 선택. **단, `sim=false`에서 MPC를 거부**(실차는 mpc_vehicle 사용 설계).
 - `mpc_vehicle`(Shadow/Bench/Drive Gate), `pitwall/`(173↔174 relay): 과거 검증용 별도 스택. 오늘 최종 아키텍처에서는 사용하지 않음.
 - `JSND_MPC/stack_master`는 기존 JSND보다 **오래된 사본**(맵·joy launch·base_system 차이). 통합 시 기준으로 쓰지 않음.
+
+## 갱신 (2026-11-22)
+최종 아키텍처는 `~/JSND_INT` (기존 JSND + controller_manager의 Integrated MPC, `race.launch.xml controller:=mpc`). `mpc_vehicle`/Gate/relay는 사용하지 않음. 진행 상황은 `WORK_STATUS.md`, 재개 방법은 `NEXT_ACTION.md`.
