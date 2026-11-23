@@ -523,3 +523,10 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 무변경: 장애물 검출·TTC EStop·A 래치·기동 잠금·PP/FTG 경로·5p0 프로파일·가감속·횡가속.
 - 테스트: 신규 `tests_offline/test_mpc_trailing.py` 6개 + 기존 `test_mpc_integration.py` 통과(18/18), state_machine 기존 56/56. 오버레이에 `controller`·`state_machine` 빌드(state_machine 원본=JSND 일치 확인), 백업 `~/JSND_backups/step21_20261123_134113`.
 - 실차 확인(5p0, 래치 유지, 모터 0): `max_speed=5.0` 로드, MPC가 TRAILING에서 거부 대신 계산 → 현재 `outside_tracking_envelope`(차량이 레이싱라인에서 1.08 m, 한계 1.0 m). 레이싱라인 위 정렬 + 2D Pose Estimate 필요. 검출 물체(차량 뒤 1.4 m, 좌측 벽 근처)는 실물 확인 필요.
+
+## 2026-11-23 단계 22: 5 m/s 요청 검토 (코드 변경 없음, PP로 전환)
+- 트랙 13.9 m, 곡률 max 1.11 / p90 0.86 1/m → 코너 속도 한계: 횡가속 2.0이면 1.3~1.5 m/s, 4.0이면 1.9~2.2, 8.0이어도 2.7~3.1 m/s. 웨이포인트 vx 최대 3.9(평균 2.86), Sector1·3 배율 0.6. 5 m/s는 이 트랙에서 불가.
+- 오프라인 폐루프(11_18_6 raceline): 5p0·fast2(웨이포인트 속도 무시, 횡가속 4.0, 가속 3.0) 모두 약 2 m/s로 첫 급코너(s≈3 m, κ≈1) 진입 시 MPC 조향 증가가 늦어 바깥으로 밀림 → `nonlinear_prediction_outside_envelope` STOP. 조향속도 0.3→3.2 rad/s, envelope를 횡방향 거리 판정으로 바꿔도 동일 → 원인은 MPC 코너 진입(비용 가중치/참조 샘플링 추정, 미확인).
+- fast2·옵션 코드 초안은 원복(`~/JSND_backups/step22_fast2_draft`), 빌드·배포 없음.
+- 사용자 결정: 당일은 PP 주행. 권장 실행 `race.launch.xml map:=11_18_6 controller:=pp use_estop:=true safety_mode:=true joy_max_speed:=1.0`(A 래치 유지, LB 1.0). PP 속도 = 웨이포인트 vx × 구간 배율.
+- 다음: MPC 코너 진입 조향 지연 수정(오프라인 랩 검증 필요).
