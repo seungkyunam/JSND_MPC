@@ -556,3 +556,13 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
   - 차량 0.12~0.16 m 앞 정적 검출(id 25, s≈1.06)이 실물인지 오검출인지 미판별.
   - 5 m/s는 속도 계획 최대 3.9 m/s라 불가 — 더 빠르게는 섹터 배율/레이싱라인 재생성 필요.
   - 실차 출발은 자동 실행하지 않음.
+
+## 2026-11-23 단계 23 Jetson 배포
+- GitHub `88960e1` = Jetson 소스 일치 확인, 백업 `~/JSND_backups/step23_deploy_20261123_142725`, 오버레이 빌드(controller, stack_master, state_machine), 설치본=소스 일치.
+- ROS 모의 시험에서 발견: `controller_manager.global_wpnts_cb`가 `__init__` 지역변수 `mpc_values` 참조 → `/global_waypoints` 수신 시 NameError로 노드 종료(오프라인 시험은 노드를 거치지 않아 미검출). `self.mpc_values`로 수정(JSND_INT, 패치 0013). 튜닝·구조 변경 없음.
+- 수정 후 모의 시험(domain 219, VESC 없음):
+  - `run.sh mpc safety safety_mode:=false`: 전 구간 기대대로(lowspeed 1.0 m/s 주행, odom/웨이포인트 끊김·TRAILING 무대상 0, 컨트롤러 종료 후 mux 0), 100 Hz, MPC solve p99 1.8 ms, 2197/2197 solved. `scan_obstacle`은 use_estop 기본 off라 mux 0이 아님(PP 동일).
+  - `run.sh mpc estop`(safety_mode on): 시작 래치·리셋·RB 출발·A/조이 끊김/soft estop 시 0 m/s 정상, 2398/2398 solved.
+  - 참고: `safety` 시나리오는 safety_mode 이전 시나리오라 기본값(on)으로 돌리면 시작 래치로 속도 0(설계대로).
+  - 시험 종료 시 SIGINT로 인한 `context is invalid` traceback은 종료 시점 아티팩트(PP·simple_mux 동일).
+- 실차 미출발.
