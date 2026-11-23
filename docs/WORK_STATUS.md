@@ -508,3 +508,9 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 2p25 스택 기동 확인: `/map` 225×142, `/scan` 40 Hz, PF 40 Hz, odom 50 Hz, MPC `max_speed=2.25` 로드. 사용자 보고: 2.25 m/s 멈칫 해결.
 - 신규 `speed_rec.sh <프로파일>`(tmux `rec`, mcap bag `~/bench_logs/bags/`)와 `speed_report.py <bag> --vmax N`: 자율 구간 횡오차 |d|, 명령 대비 속도, 제동 이벤트(명령 0→실속 0.1 m/s 미만까지 거리·시간·감속, 3/4/5 m/s 예상 제동거리), 조향 최대·0.4 포화율·부호반전·yaw rate, MPC 계산시간 p99, 다음 단계 판정(잠정: |d| p95<0.25, max<0.5 m, 포화<5%, 반전<60/분, MPC p99<16 ms, 목표 90% 도달).
 - 프로파일·가감속·횡가속·PP/FTG·안전 기능 무변경. 정지 상태 6초 기록으로 기록·파싱만 확인, 주행 지표는 실차 데이터로 미검증.
+
+## 2026-11-23 단계 20: 3p0 출발 불가·수동 후 재출발 진단 (코드 변경 없음)
+- 3p0 실행 로그에서 MPC `max_speed=3.0` 로드 확인. 5p0 설치본=소스(`mpc_max_speed_mps: 5.0`), 실행 `bash ~/JSND_INT/run/race_mpc.sh 5p0`.
+- 기동 직후 속도 0: (1) 기동 래치 상태에서 `reset_estop`·RB 없음 → `active_host=estop` → controller_manager가 MPC 속도 0 고정. (2) 차량이 레이싱라인에서 0.90 m(한계 1.0)·방위 38.5°(한계 0.7 rad=40.1°, MPC 투영 기준 초과) → `outside_heading_envelope` STOP. 라인 위 정렬 + 2D Pose Estimate로 해소.
+- LB 수동 → 해제(none) → RB 한 번 재선택은 설계대로 동작(로그 :114→:120→:131, 래치 없음). 재출발 안 된 원인은 상태머신 TRAILING(장애물 s≈9.27, d≈0.23, 0.15 m 감지) → MPC `unsupported_behavior:TRAILING` STOP. 주행 중 짧은 정지는 TTC EStop(0.35 s, 비래치).
+- 사용자 결정 대기: MPC의 TRAILING 지원(감속 추종) 여부. 그 전까지 TRAILING=STOP 유지.
