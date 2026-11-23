@@ -27,8 +27,26 @@ controller_manager:
     #   0.4/0.3: max |steer| 0.336, rate saturates at 0.3, max lateral error 0.05 m (same as
     #   3.2 rad/s). Real servo lag / localisation jumps not modelled -> verify on the car.
     mpc_max_steer_rad: 0.4
-    mpc_max_steer_rate_radps: 0.3
-    # --- speed envelope (first low-speed run) ---
+    # 2026-11-23 step 23: 0.3 -> 3.2 rad/s. 0.3 was a wheels-lifted bench value, not a servo
+    #   limit (PP on this car already commands up to 0.4 rad per 20 ms tick). Offline 11_18_6
+    #   (jsnd speed source): with 0.3 the corner steering lags and 60 ms servo dead time /
+    #   2 cm pose noise give 0.25-0.31 m lateral error; 3.2 (F1TENTH sim sv_max) -> 0.018-0.025 m.
+    #   Real servo rate still UNMEASURED: lower this if the measured rate is below 3.2.
+    mpc_max_steer_rate_radps: 3.2
+    # --- step 23 architecture: speed = legacy JSND pipeline (raceline x sector scaling ->
+    #     /local_waypoints -> PP lookahead speed, lat/heading error scaling, trailing, AEB),
+    #     MPC = steering only. 'integrated' restores the previous joint speed+steering MPC
+    #     (its keys below: max_accel/decel/lateral_accel/braking_preview/horizon/cmd_max_lead). ---
+    mpc_speed_source: jsnd
+    mpc_steer_horizon: 15             # 1 x control dt + 14 x 0.05 s = 0.72 s preview
+    mpc_steer_preview_dt: 0.05
+    mpc_plan_lateral_accel_limit_mps2: 4.5   # ggv ay_max (CAR/veh_dyn_info/ggv.csv); plan check only
+    mpc_fallback_max_s: 0.2           # solver miss -> PP steering up to 0.2 s, then STOP
+    # --- speed envelope ---
+    # mpc_max_speed_mps: operator ceiling from the mpc_profile overlay (lowspeed 1.0 ... 5p0 5.0).
+    # jsnd mode: min(JSND speed command, this). The 11_18_6 plan peaks at 3.9 m/s (2.3 in the
+    # 0.6-scaled sectors), so 4p0/5p0 never bind there. Keys below up to braking_preview are
+    # used only by mpc_speed_source: integrated.
     mpc_max_speed_mps: 1.0            # profile overlay sets the active value (2.0 only in mpc_profile_exp2mps.yaml)
     mpc_max_accel_mps2: 1.0
     mpc_max_decel_mps2: 2.0

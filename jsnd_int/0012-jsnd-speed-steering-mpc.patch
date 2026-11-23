@@ -1,0 +1,600 @@
+From a3396c2cca4f38caa0e0e9a8458ebb244d2a7b42 Mon Sep 17 00:00:00 2001
+From: jsnd <ros2kil105@gmail.com>
+Date: Mon, 23 Nov 2026 14:24:15 +0900
+Subject: [PATCH] Step 23: JSND speed pipeline + steering-only MPC
+ (mpc_speed_source: jsnd), steer rate 3.2 rad/s, short-track obstacle horizon
+ guard
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../controller/combined/src/Controller.py     | 102 ++++++++
+ controller/controller/controller_manager.py   |  16 +-
+ controller/controller/mpc/configuration.py    |  39 +++-
+ controller/controller/mpc/steering_mpc.py     | 218 ++++++++++++++++++
+ stack_master/config/mpc_car.yaml              |  22 +-
+ .../state_machine/state_machine_node.py       |  18 +-
+ .../state_machine/state_machine_params.py     |  11 +
+ 7 files changed, 419 insertions(+), 7 deletions(-)
+ create mode 100644 controller/controller/mpc/steering_mpc.py
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index 640ed32..cc97691 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -6,6 +6,9 @@ import numpy as np
+ 
+ from visualization_msgs.msg import Marker, MarkerArray
+ 
++from controller.mpc.lateral_mpc import MPCResult, SafetyRequest
++from controller.mpc.steering_mpc import ENVELOPE_REASONS
++
+ 
+ class Controller:
+     """This class implements the L1 / Pure-Pursuit controller for autonomous driving.
+@@ -72,6 +75,9 @@ class Controller:
+                 lateral_mpc=None,
+                 pose_to_rear_axle_m=0.0,
+                 mpc_cmd_max_lead_mps=0.5,
++                mpc_speed_source="integrated",
++                mpc_plan_lateral_accel_limit=4.5,
++                mpc_fallback_max_ticks=10,
+             ):
+ 
+         # Parameters from manager
+@@ -162,8 +168,20 @@ class Controller:
+         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
+         self.mpc_result = None
+         self.mpc_trailing_cap = None
++        self.curr_applied_steering = 0.0
+         self._mpc_last_status = None
+         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
++        # Step 23: 'jsnd' = legacy JSND/PP speed pipeline + steering-only MPC (SteeringMPC);
++        # 'integrated' = previous joint speed+steering IntegratedMPC.
++        if mpc_speed_source not in ("jsnd", "integrated"):
++            raise ValueError("mpc_speed_source must be jsnd or integrated")
++        self.mpc_speed_source = mpc_speed_source
++        self.mpc_plan_lateral_accel_limit = float(mpc_plan_lateral_accel_limit)
++        self.mpc_fallback_max_ticks = int(mpc_fallback_max_ticks)
++        self.mpc_fallback_ticks = 0
++        self.mpc_lat_cap_active = False   # physical a_lat check bound the plan speed this tick
++        self.mpc_profile_cap_active = False  # mpc_profile operator ceiling bound this tick
++        self.mpc_pp_steering = 0.0        # legacy PP steering of this tick (fallback/diagnosis)
+ 
+     # ============================ Integrated MPC ============================
+     STANDSTILL_NOISE_MPS = 0.02
+@@ -178,6 +196,7 @@ class Controller:
+             limit = self.lateral_mpc.config.max_steer
+             self.curr_steering_angle = float(np.clip(steering, -limit, limit))
+             self.current_steer_command = self.curr_steering_angle
++            self.curr_applied_steering = self.curr_steering_angle
+ 
+     def _report_mpc_result(self):
+         if self.mpc_result.status != self._mpc_last_status:
+@@ -284,10 +303,93 @@ class Controller:
+         return (speed_cmd, result.acceleration, 0., steering,
+                 point, float(np.linalg.norm(point-rear[:2])), nearest, 0., rear.reshape(1, 3))
+ 
++    def _plan_lateral_accel_check(self, waypoints):
++        """Physical lateral-acceleration limit applied to the PLAN, point by point:
++        v_i <= sqrt(a_lat_max / |kappa_i|) with the planner's own kappa (column 5). The
++        limit is the ggv ay_max the raceline was optimised with, so for a feasible plan
++        this is a no-op (bit-identical waypoints); it only acts on a physically
++        infeasible plan (e.g. sector scaling > 1, an avoidance spline). Returns the
++        (possibly) clipped copy; self.mpc_lat_cap_active says whether it acted."""
++        w = np.asarray(waypoints, dtype=float)
++        kappa = np.abs(w[:, 5])
++        with np.errstate(divide='ignore'):
++            cap = np.where(kappa > 1e-6, np.sqrt(self.mpc_plan_lateral_accel_limit / np.maximum(kappa, 1e-12)), np.inf)
++        over = w[:, 2] > cap + 0.01
++        self.mpc_lat_cap_active = bool(np.any(over))
++        if not self.mpc_lat_cap_active:
++            return waypoints
++        w = w.copy()
++        w[over, 2] = cap[over]
++        return w
++
++    def jsnd_mpc_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent,
++                      position_in_map_frenet, acc_now, track_length):
++        """Step 23 architecture: the legacy JSND controller pipeline runs unchanged and
++        decides the SPEED (raceline x sector scaling via /local_waypoints, lookahead speed,
++        lateral/heading error scaling, trailing controller, AEB, all states). The MPC
++        replaces only the PP steering. STOP only on: path/heading envelope violation,
++        invalid input, or solver misses longer than mpc_fallback_max_ticks (in between,
++        the legacy PP steering of this tick is used and the status says so)."""
++        waypoint_array_in_map = self._plan_lateral_accel_check(waypoint_array_in_map)
++        out = list(self._pp_main_loop(state, position_in_map, waypoint_array_in_map, speed_now,
++                                      opponent, position_in_map_frenet, acc_now, track_length))
++        speed, pp_steer = float(out[0]), float(out[3])
++        self.mpc_pp_steering = pp_steer
++        # Operator speed ceiling of the selected mpc_profile (lowspeed 1.0 ... 5p0 5.0), kept
++        # as the explicit staged-ramp limit it was; above the plan's maximum it never binds.
++        self.mpc_profile_cap_active = speed > self.lateral_mpc.config.max_speed + 1e-6
++        speed = min(speed, self.lateral_mpc.config.max_speed)
++        cfg = self.lateral_mpc.config
++        prev = float(np.clip(self.curr_applied_steering, -cfg.max_steer, cfg.max_steer))
++        try:
++            pose = np.asarray(position_in_map, dtype=float)[0].copy()
++            pose[:2] += self.pose_to_rear_axle_m * np.array([np.cos(pose[2]), np.sin(pose[2])])
++            measured = float(speed_now)
++            if not np.isfinite(measured) or measured < -self.STANDSTILL_NOISE_MPS:
++                raise ValueError('invalid_or_reverse_speed')
++            result = self.lateral_mpc.solve(np.r_[pose, max(0.0, measured)],
++                                            np.asarray(waypoint_array_in_map, dtype=float), prev)
++        except (ValueError, IndexError, TypeError) as exc:
++            result = self.lateral_mpc.reject('invalid_local_control_input:' + str(exc), prev)
++        if result.success:
++            self.mpc_fallback_ticks = 0
++            steering = result.steering
++        elif (result.status not in ENVELOPE_REASONS
++              and not result.status.startswith('invalid_local_control_input')
++              and self.mpc_fallback_ticks < self.mpc_fallback_max_ticks):
++            # Transient compute/solver miss: legacy PP steering (rate/limit as the MPC).
++            self.mpc_fallback_ticks += 1
++            step = cfg.max_steer_rate * cfg.dt
++            steering = float(np.clip(pp_steer, max(-cfg.max_steer, prev - step), min(cfg.max_steer, prev + step)))
++            result = MPCResult(steering, SafetyRequest.NONE, 'pp_fallback:' + result.status, result.elapsed_s)
++        else:
++            # STOP. The fallback budget is NOT refilled here: it refills only on a solved
++            # MPC tick, so an exhausted budget cannot alternate STOP / PP-fallback.
++            steering = self._mpc_recenter_steering_from(prev)
++            speed = 0.0
++        self.mpc_result = result
++        self._report_mpc_result()
++        self.record_applied_steering(steering)
++        out[0], out[3] = speed, steering
++        return tuple(out)
++
++    def _mpc_recenter_steering_from(self, current):
++        cfg = self.lateral_mpc.config
++        step = cfg.max_steer_rate * cfg.dt
++        return current - min(max(current, -step), step)
++
+     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+         if self.lateral_controller == "MPC":
++            if self.mpc_speed_source == "jsnd":
++                return self.jsnd_mpc_loop(state, position_in_map, waypoint_array_in_map, speed_now,
++                                          opponent, position_in_map_frenet, acc_now, track_length)
+             return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now,
+                                         opponent, position_in_map_frenet, track_length)
++        return self._pp_main_loop(state, position_in_map, waypoint_array_in_map, speed_now, opponent,
++                                  position_in_map_frenet, acc_now, track_length)
++
++    def _pp_main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
++        # Legacy JSND PP loop, unchanged (also the speed/fallback source of jsnd_mpc_loop).
+         # Updating parameters from manager
+         self.state = state
+         self.position_in_map = position_in_map
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 3c7c4d4..4af28f5 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -22,7 +22,7 @@ from visualization_msgs.msg import Marker, MarkerArray
+ 
+ from controller.combined.src.Controller import Controller
+ from controller.ftg.ftg import FTG
+-from controller.mpc.configuration import MPC_DEFAULTS, make_config
++from controller.mpc.configuration import MPC_DEFAULTS, make_config, make_steering_config
+ 
+ 
+ # tunable L1 params (ROS1 controller.cfg / dyn_controller). All consumed by the
+@@ -113,7 +113,16 @@ class ControllerManager(Node):
+         self.mux_host_time = None
+         self.mpc_mux_host_timeout_s = float(self._get_param('mpc_mux_host_timeout_s', 0.25))
+         self.lateral_mpc = None
+-        if self.lateral_controller == 'MPC':
++        self.mpc_speed_source = str(mpc_values['mpc_speed_source'])
++        if self.mpc_speed_source not in ('jsnd', 'integrated'):
++            raise ValueError('mpc_speed_source must be jsnd or integrated')
++        if self.lateral_controller == 'MPC' and self.mpc_speed_source == 'jsnd':
++            # Step 23: JSND speed pipeline (unchanged) + steering-only MPC.
++            from controller.mpc.steering_mpc import SteeringMPC  # imports OSQP
++            config = make_steering_config(mpc_values, self.wheelbase, wheelbase_explicit, self.loop_rate)
++            self.lateral_mpc = SteeringMPC(config)
++            self.get_logger().info(f"[{self.name}] JSND speed + steering MPC selected: {config}")
++        elif self.lateral_controller == 'MPC':
+             from controller.mpc.integrated_mpc import IntegratedMPC  # imports OSQP
+             config = make_config(mpc_values, self.wheelbase, wheelbase_explicit, self.loop_rate)
+             self.lateral_mpc = IntegratedMPC(config)
+@@ -250,6 +259,9 @@ class ControllerManager(Node):
+             lateral_mpc=self.lateral_mpc,
+             pose_to_rear_axle_m=self.pose_to_rear_axle_m,
+             mpc_cmd_max_lead_mps=self.mpc_cmd_max_lead_mps,
++            mpc_speed_source=self.mpc_speed_source,
++            mpc_plan_lateral_accel_limit=float(mpc_values['mpc_plan_lateral_accel_limit_mps2']),
++            mpc_fallback_max_ticks=max(1, int(round(float(mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
+         )
+         self.controller.speed_now = self.speed_now
+         self.controller.yaw_rate = self.yaw_rate
+diff --git a/controller/controller/mpc/configuration.py b/controller/controller/mpc/configuration.py
+index 6cc0147..a331914 100644
+--- a/controller/controller/mpc/configuration.py
++++ b/controller/controller/mpc/configuration.py
+@@ -3,6 +3,7 @@
+ import numpy as np
+ 
+ from .integrated_mpc import IntegratedConfig
++from .steering_mpc import SteeringConfig
+ 
+ 
+ MPC_DEFAULTS = {
+@@ -31,15 +32,51 @@ MPC_DEFAULTS = {
+     'mpc_max_iter': 1000,
+     'mpc_max_tracking_error_m': 1.0,
+     'mpc_max_heading_error_rad': 0.7,
++    # ---- step 23: speed source. 'jsnd' (default) = legacy JSND/PP speed pipeline decides
++    # the speed, SteeringMPC decides only the steering. 'integrated' = previous joint
++    # speed+steering IntegratedMPC (kept selectable for comparison). ----
++    'mpc_speed_source': 'jsnd',
++    'mpc_steer_horizon': 15,
++    'mpc_steer_preview_dt': .05,
++    'mpc_forecast_accel_mps2': 5.0,      # ggv ax_max (CAR/veh_dyn_info/ggv.csv), forecast only
++    'mpc_forecast_decel_mps2': 5.0,
++    # physical lateral-acceleration limit checked against the PLAN (planner kappa x commanded
++    # speed). = ggv ay_max the raceline was optimised with, so it binds only if a plan is
++    # physically infeasible (never on the iqp raceline x sector scaling <= 1).
++    'mpc_plan_lateral_accel_limit_mps2': 4.5,
++    # transient solver/compute miss -> legacy PP steering for at most this long, then STOP.
++    # Envelope violations (path/heading) STOP immediately.
++    'mpc_fallback_max_s': .2,
+ }
+ 
+ 
+-def make_config(values, wheelbase, wheelbase_explicit, loop_rate):
++def _check(values, wheelbase_explicit):
+     if values['mpc_geometry_confirmed'] is not True or not wheelbase_explicit:
+         raise ValueError('MPC requires explicit wheelbase and mpc_geometry_confirmed=true; '
+                          'confirm pose reference, steering units/sign and measured limits first')
+     if not np.isfinite(values['mpc_pose_to_rear_axle_m']):
+         raise ValueError('mpc_pose_to_rear_axle_m must be finite')
++
++
++def make_steering_config(values, wheelbase, wheelbase_explicit, loop_rate):
++    _check(values, wheelbase_explicit)
++    return SteeringConfig(
++        wheelbase=wheelbase, dt=1.0 / loop_rate,
++        max_steer=values['mpc_max_steer_rad'], max_steer_rate=values['mpc_max_steer_rate_radps'],
++        horizon=int(values['mpc_steer_horizon']), preview_dt=values['mpc_steer_preview_dt'],
++        forecast_accel=values['mpc_forecast_accel_mps2'], forecast_decel=values['mpc_forecast_decel_mps2'],
++        max_speed=values['mpc_max_speed_mps'],
++        q_position=values['mpc_q_position'], q_heading=values['mpc_q_heading'],
++        r_steer=values['mpc_r_steer'], r_rate=values['mpc_r_rate'],
++        terminal_scale=values['mpc_terminal_scale'],
++        solver_time_limit=values['mpc_solver_time_limit_s'], deadline=values['mpc_deadline_s'],
++        max_iter=int(values['mpc_max_iter']), max_tracking_error=values['mpc_max_tracking_error_m'],
++        max_heading_error=values['mpc_max_heading_error_rad'],
++    )
++
++
++def make_config(values, wheelbase, wheelbase_explicit, loop_rate):
++    _check(values, wheelbase_explicit)
+     return IntegratedConfig(
+         wheelbase=wheelbase, dt=1.0 / loop_rate,
+         braking_preview_ratio=values['mpc_braking_preview_ratio'],
+diff --git a/controller/controller/mpc/steering_mpc.py b/controller/controller/mpc/steering_mpc.py
+new file mode 100644
+index 0000000..72fd7e2
+--- /dev/null
++++ b/controller/controller/mpc/steering_mpc.py
+@@ -0,0 +1,218 @@
++"""Steering-only LTV MPC on top of the unchanged JSND speed plan (step 23).
++
++The longitudinal command is NOT decided here: the caller (Controller) runs the legacy
++JSND/PP speed pipeline (raceline x sector scaling -> local waypoints -> lookahead speed,
++lateral/heading error scaling, trailing controller, AEB). This solver only chooses the
++road-wheel steering that tracks the local path, given a speed FORECAST taken from that
++same plan (measured speed at stage 0, then the waypoint speeds, ramped by the vehicle's
++ggv acceleration so the forecast is physically reachable).
++
++Decision variables: steering only. Constraints: |delta| <= max_steer and
++|delta_k - delta_{k-1}| <= max_steer_rate * period_k (actuator limits). The first stage
++lasts one control period, later stages preview_dt (longer preview at the same size).
++
++Failures are classified so the caller can tell geometry from compute:
++  ENVELOPE_REASONS  vehicle > max_tracking_error from the path / heading error too large
++                    -> the caller requests STOP (safety, unchanged from the old MPC).
++  anything else     solver/compute miss -> caller may use its fallback steering for a
++                    bounded number of ticks, then STOP.
++"""
++from dataclasses import dataclass
++from time import perf_counter
++
++import numpy as np
++
++from .lateral_mpc import MPCConfig, MPCResult, SafetyRequest
++
++
++@dataclass(frozen=True)
++class SteeringConfig(MPCConfig):
++    preview_dt: float = .05
++    forecast_accel: float = 5.0     # ggv ax_max (CAR/veh_dyn_info/ggv.csv), forecast only
++    forecast_decel: float = 5.0
++    max_speed: float = 1.0          # operator ceiling (mpc_profile), applied by the Controller
++
++
++ENVELOPE_REASONS = ('outside_tracking_envelope', 'outside_heading_envelope',
++                    'prediction_outside_tracking_envelope')
++
++
++def _gradient(f, x):
++    out = np.empty_like(f)
++    dx = np.diff(x)
++    dx1, dx2 = dx[:-1], dx[1:]
++    a = -dx2/(dx1*(dx1+dx2))
++    b = (dx2-dx1)/(dx1*dx2)
++    c = dx1/(dx2*(dx1+dx2))
++    if f.ndim == 2:
++        a, b, c = a[:, None], b[:, None], c[:, None]
++    out[1:-1] = a*f[:-2] + b*f[1:-1] + c*f[2:]
++    out[0] = (f[1]-f[0])/dx[0]
++    out[-1] = (f[-1]-f[-2])/dx[-1]
++    return out
++
++
++class SteeringMPC:
++    def __init__(self, config):
++        import osqp
++        from scipy import sparse
++        self.config = c = config
++        self.osqp, self.sparse = osqp, sparse
++        n = c.horizon
++        self.periods = np.concatenate(([c.dt], np.full(n-1, c.preview_dt)))
++        self.diff = np.eye(n) - np.eye(n, k=-1)
++        self.matrix = sparse.csc_matrix(np.vstack((np.eye(n), self.diff)))
++        self.p_rows = np.concatenate([np.arange(j+1) for j in range(n)])
++        self.p_cols = np.concatenate([np.full(j+1, j) for j in range(n)])
++        self.p_indptr = np.r_[0, np.cumsum(np.arange(1, n+1))]
++        self.h_base = c.r_steer*np.eye(n) + c.r_rate*self.diff.T@self.diff
++        w = np.tile([c.q_position, c.q_position, c.q_heading], (n, 1))
++        w[-1] *= c.terminal_scale
++        self.weights = w
++        self.solver = None
++        self.previous = None
++
++    def reset(self):
++        self.previous = None
++
++    def reject(self, reason, previous_steering, started=None):
++        self.previous = None
++        try:
++            steer = float(previous_steering)
++            if not np.isfinite(steer):
++                steer = 0.
++        except (TypeError, ValueError):
++            steer = 0.
++        c = self.config
++        return MPCResult(float(np.clip(steer, -c.max_steer, c.max_steer)), SafetyRequest.STOP, reason,
++                         0. if started is None else perf_counter()-started)
++
++    def _reference(self, state, path):
++        """Project the rear axle on the local path, forecast speed from the plan, sample
++        the path by forecast travel. path columns: x, y, planned speed."""
++        c = self.config
++        keep = np.concatenate(([True], np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1) > 1e-6))
++        path = path[keep]
++        if len(path) < 3:
++            raise ValueError('degenerate_path')
++        xy = path[:, :2] - state[:2]
++        seg = np.diff(xy, axis=0)
++        ds = np.linalg.norm(seg, axis=1)
++        arc = np.concatenate(([0.], np.cumsum(ds)))
++        frac = np.clip(-np.sum(xy[:-1]*seg, axis=1)/ds**2, 0., 1.)
++        proj = xy[:-1] + frac[:, None]*seg
++        i = int(np.argmin(np.sum(proj**2, axis=1)))
++        if np.linalg.norm(proj[i]) > c.max_tracking_error:
++            raise ValueError('outside_tracking_envelope')
++        start = arc[i] + frac[i]*ds[i]
++        tangent = _gradient(xy, arc)
++        heading = np.unwrap(np.arctan2(tangent[:, 1], tangent[:, 0]))
++        heading += 2*np.pi*np.round((state[2]-np.interp(start, arc, heading))/(2*np.pi))
++        if abs(np.interp(start, arc, heading)-state[2]) > c.max_heading_error:
++            raise ValueError('outside_heading_envelope')
++        curvature = _gradient(heading, arc)
++        s, v = float(start), max(0., float(state[3]))
++        samples, speeds = [s], []
++        for dt in self.periods.tolist():
++            target = float(np.interp(s, arc, path[:, 2]))
++            v_next = min(max(target, v-c.forecast_decel*dt), v+c.forecast_accel*dt)
++            speeds.append(v)                 # stage k is integrated with v_k (explicit Euler)
++            s += v*dt
++            v = max(0., v_next)
++            samples.append(s)
++        samples = np.asarray(samples)
++        if samples[-1] > arc[-1]:
++            raise ValueError('insufficient_path_horizon')
++        ref = np.column_stack((np.interp(samples, arc, xy[:, 0]), np.interp(samples, arc, xy[:, 1]),
++                               np.interp(samples, arc, heading)))
++        steer_ref = np.clip(np.arctan(c.wheelbase*np.interp(samples[:-1], arc, curvature)),
++                            -c.max_steer, c.max_steer)
++        return ref, steer_ref, np.asarray(speeds)
++
++    def solve(self, state, path, previous_steering):
++        """state: rear axle [x, y, yaw, v_measured]; path: local waypoints [x, y, v_plan, ...]."""
++        started = perf_counter()
++        c, n = self.config, self.config.horizon
++        try:
++            state = np.asarray(state, float)
++            path = np.asarray(path, float)[:, :3]
++            prev = float(previous_steering)
++            if (state.shape != (4,) or not np.isfinite(state).all() or path.ndim != 2 or len(path) < 3
++                    or not np.isfinite(path).all() or not np.isfinite(prev)):
++                raise ValueError('invalid_state_or_path')
++            prev = float(np.clip(prev, -c.max_steer, c.max_steer))
++            ref, delta, v = self._reference(state, path)
++            p = self.periods
++            yaw = ref[:-1, 2]
++            # Linearised rear-axle bicycle around the reference: z=[x,y,yaw], u=delta.
++            aa = np.tile(np.eye(3), (n, 1, 1))
++            aa[:, 0, 2] = -v*np.sin(yaw)*p
++            aa[:, 1, 2] = v*np.cos(yaw)*p
++            bb = v*p/(c.wheelbase*np.cos(delta)**2)
++            ff = ref[:-1] + p[:, None]*np.column_stack((v*np.cos(yaw), v*np.sin(yaw), v*np.tan(delta)/c.wheelbase))
++            affine = ff - np.einsum('nij,nj->ni', aa, ref[:-1])
++            affine[:, 2] -= bb*delta
++            m = np.zeros((3, n))
++            b = np.array([0., 0., state[2]])
++            all_m = np.empty((n, 3, n))
++            all_b = np.empty((n, 3))
++            for k in range(n):
++                m = aa[k]@m
++                m[2, k] += bb[k]
++                b = aa[k]@b + affine[k]
++                all_m[k], all_b[k] = m, b
++            stacked = all_m.reshape(3*n, n)
++            h = self.h_base + stacked.T@(self.weights.reshape(-1, 1)*stacked)
++            prev_vec = np.zeros(n)
++            prev_vec[0] = prev
++            g = stacked.T@(self.weights*(all_b-ref[1:])).ravel() - c.r_steer*delta - c.r_rate*self.diff.T@prev_vec
++            rate = c.max_steer_rate*p
++            lo = np.concatenate((np.full(n, -c.max_steer), prev_vec-rate))
++            hi = np.concatenate((np.full(n, c.max_steer), prev_vec+rate))
++            px = 2*h[self.p_rows, self.p_cols]
++            if self.solver is None:
++                self.solver = self.osqp.OSQP()
++                self.solver.setup(P=self.sparse.csc_matrix((px, self.p_rows, self.p_indptr), shape=(n, n)),
++                                  q=2*g, A=self.matrix, l=lo, u=hi, verbose=False, polishing=False,
++                                  eps_abs=1e-5, eps_rel=1e-5, max_iter=c.max_iter,
++                                  time_limit=c.solver_time_limit, check_termination=10)
++            else:
++                self.solver.update(Px=px, q=2*g, l=lo, u=hi)
++            guess = (np.r_[self.previous[1:], self.previous[-1]] if self.previous is not None
++                     else np.clip(delta, prev-np.cumsum(rate), prev+np.cumsum(rate)))
++            self.solver.warm_start(x=guess)
++            sol = self.solver.solve(raise_error=False)
++            if sol.info.status_val != 1 or sol.x is None or not np.isfinite(sol.x).all():
++                return self.reject('osqp:'+str(sol.info.status), prev, started)
++            u = np.array(sol.x)
++            # Remove solver tolerance: replay the actuator limits exactly.
++            last = prev
++            for k in range(n):
++                last = float(np.clip(u[k], max(-c.max_steer, last-rate[k]), min(c.max_steer, last+rate[k])))
++                u[k] = last
++            # Nonlinear rollout check against the geometric envelope (safety, not speed).
++            z = np.array([0., 0., state[2]])
++            pred = [z]
++            for k in range(n):
++                z = np.array([z[0]+p[k]*v[k]*np.cos(z[2]), z[1]+p[k]*v[k]*np.sin(z[2]),
++                              z[2]+p[k]*v[k]*np.tan(u[k])/c.wheelbase])
++                pred.append(z)
++            pred = np.asarray(pred)
++            if (np.max(np.linalg.norm(pred[:, :2]-ref[:, :2], axis=1)) > c.max_tracking_error
++                    or np.max(np.abs(pred[:, 2]-ref[:, 2])) > c.max_heading_error):
++                return self.reject('prediction_outside_tracking_envelope', prev, started)
++            elapsed = perf_counter()-started
++            if elapsed > c.deadline:
++                self.previous = u.copy()       # valid but late: keep as warm start
++                return MPCResult(float(u[0]), SafetyRequest.STOP, 'deadline_exceeded', elapsed,
++                                 float(sol.info.run_time), int(sol.info.iter))
++            self.previous = u.copy()
++            ref[:, :2] += state[:2]
++            pred[:, :2] += state[:2]
++            return MPCResult(float(u[0]), SafetyRequest.NONE, 'solved', elapsed, float(sol.info.run_time),
++                             int(sol.info.iter), ref, pred, u)
++        except ValueError as exc:
++            return self.reject(str(exc), previous_steering, started)
++        except Exception as exc:
++            self.solver = None
++            return self.reject(type(exc).__name__+':'+str(exc), previous_steering, started)
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 1f6734b..b484cda 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -27,8 +27,26 @@ controller_manager:
+     #   0.4/0.3: max |steer| 0.336, rate saturates at 0.3, max lateral error 0.05 m (same as
+     #   3.2 rad/s). Real servo lag / localisation jumps not modelled -> verify on the car.
+     mpc_max_steer_rad: 0.4
+-    mpc_max_steer_rate_radps: 0.3
+-    # --- speed envelope (first low-speed run) ---
++    # 2026-11-23 step 23: 0.3 -> 3.2 rad/s. 0.3 was a wheels-lifted bench value, not a servo
++    #   limit (PP on this car already commands up to 0.4 rad per 20 ms tick). Offline 11_18_6
++    #   (jsnd speed source): with 0.3 the corner steering lags and 60 ms servo dead time /
++    #   2 cm pose noise give 0.25-0.31 m lateral error; 3.2 (F1TENTH sim sv_max) -> 0.018-0.025 m.
++    #   Real servo rate still UNMEASURED: lower this if the measured rate is below 3.2.
++    mpc_max_steer_rate_radps: 3.2
++    # --- step 23 architecture: speed = legacy JSND pipeline (raceline x sector scaling ->
++    #     /local_waypoints -> PP lookahead speed, lat/heading error scaling, trailing, AEB),
++    #     MPC = steering only. 'integrated' restores the previous joint speed+steering MPC
++    #     (its keys below: max_accel/decel/lateral_accel/braking_preview/horizon/cmd_max_lead). ---
++    mpc_speed_source: jsnd
++    mpc_steer_horizon: 15             # 1 x control dt + 14 x 0.05 s = 0.72 s preview
++    mpc_steer_preview_dt: 0.05
++    mpc_plan_lateral_accel_limit_mps2: 4.5   # ggv ay_max (CAR/veh_dyn_info/ggv.csv); plan check only
++    mpc_fallback_max_s: 0.2           # solver miss -> PP steering up to 0.2 s, then STOP
++    # --- speed envelope ---
++    # mpc_max_speed_mps: operator ceiling from the mpc_profile overlay (lowspeed 1.0 ... 5p0 5.0).
++    # jsnd mode: min(JSND speed command, this). The 11_18_6 plan peaks at 3.9 m/s (2.3 in the
++    # 0.6-scaled sectors), so 4p0/5p0 never bind there. Keys below up to braking_preview are
++    # used only by mpc_speed_source: integrated.
+     mpc_max_speed_mps: 1.0            # profile overlay sets the active value (2.0 only in mpc_profile_exp2mps.yaml)
+     mpc_max_accel_mps2: 1.0
+     mpc_max_decel_mps2: 2.0
+diff --git a/state_machine/state_machine/state_machine_node.py b/state_machine/state_machine/state_machine_node.py
+index dbe2c36..aa2e520 100644
+--- a/state_machine/state_machine/state_machine_node.py
++++ b/state_machine/state_machine/state_machine_node.py
+@@ -242,6 +242,7 @@ class StateMachine(Node):
+         self.gb_horizon_m = self.params.gb_horizon_m
+         self.interest_horizon_m = self.params.interest_horizon_m
+         self.obstacle_stale_timeout_s = self.params.obstacle_stale_timeout_s
++        self.obstacle_rear_exclusion_m = self.params.obstacle_rear_exclusion_m
+         self._obstacles_rx_sec = None
+         self._obstacles_stale_warned = False
+         self.overtake_min_closing_mps = self.params.overtake_min_closing_mps
+@@ -829,9 +830,10 @@ class StateMachine(Node):
+             self.obstacles_perception = data.obstacles[:]
+             self.obstacles = data.obstacles
+             obstacles_in_interest = []
++            horizon = self._forward_horizon(self.interest_horizon_m)
+             for obs in data.obstacles:
+                 gap = (obs.s_start - self.cur_s) % self.track_length
+-                if gap < self.interest_horizon_m:
++                if gap < horizon:
+                     obstacles_in_interest.append(obs)
+             self.obstacles_in_interest = obstacles_in_interest
+             self._obstacles_rx_sec = self.now_sec()
+@@ -1037,8 +1039,20 @@ class StateMachine(Node):
+         }
+         return bool(relative_speed_ok)
+ 
++    def _forward_horizon(self, horizon_m):
++        """Forward search horizon that cannot wrap round to the car's own tail.
++
++        Gaps are (obs_s - ego_s) mod track_length, so on a lap shorter than the horizon
++        (11_18_6: 13.9 m vs interest 20 m / gb 15 m) an object 1.4 m BEHIND the car is
++        read as 12.5 m AHEAD -> TRAILING (observed 2026-11-23, blocked_obs_id=25
++        gap=12.5m) and OVERTAKE never sees the 'no enemy in front' exit. Same idea as
++        the 0.5*track_length windows used for the dynamic-opponent checks below."""
++        if self.track_length and self.track_length > 0.0:
++            return min(float(horizon_m), max(0.0, self.track_length - self.obstacle_rear_exclusion_m))
++        return float(horizon_m)
++
+     def _check_enemy_in_front(self) -> bool:
+-        horizon = self.gb_horizon_m
++        horizon = self._forward_horizon(self.gb_horizon_m)
+         for obs in self.obstacles:
+             gap = (obs.s_start - self.cur_s) % self.track_length
+             if gap < horizon:
+diff --git a/state_machine/state_machine/state_machine_params.py b/state_machine/state_machine/state_machine_params.py
+index 38b80a0..ad60b02 100644
+--- a/state_machine/state_machine/state_machine_params.py
++++ b/state_machine/state_machine/state_machine_params.py
+@@ -133,6 +133,17 @@ class StateMachineParams:
+         )
+         self.interest_horizon_m: float = node.get_parameter("interest_horizon_m").value
+ 
++        self._declare(
++            "obstacle_rear_exclusion_m", 2.0,
++            ParameterDescriptor(
++                description="Short-track guard: obstacle gaps are forward Frenet distances modulo the lap, so an "
++                            "obstacle just behind the car reads as almost one lap ahead. interest/gb horizons are "
++                            "capped at track_length - this [m] (no effect when the horizons are shorter than that)",
++                type=ParameterType.PARAMETER_DOUBLE,
++            ),
++        )
++        self.obstacle_rear_exclusion_m: float = node.get_parameter("obstacle_rear_exclusion_m").value
++
+         self._declare(
+             "obstacle_stale_timeout_s", 1.0,
+             ParameterDescriptor(
+-- 
+2.43.0
+

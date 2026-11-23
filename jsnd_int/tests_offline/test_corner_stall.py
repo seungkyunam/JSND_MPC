@@ -23,6 +23,7 @@ def config(**over):
     v = {k: CAR.get(k, d) for k, d in MPC_DEFAULTS.items()}
     v.update(P2)
     v.update({'mpc_deadline_s': .8/RATE, 'mpc_solver_time_limit_s': .4/RATE})  # race.launch values
+    v.update({'mpc_max_steer_rate_radps': 0.3})  # step-17 record (integrated MPC at 0.3 rad/s; step 23 -> 3.2)
     v.update(over)
     return make_config(v, CAR['wheelbase'], True, RATE)
 

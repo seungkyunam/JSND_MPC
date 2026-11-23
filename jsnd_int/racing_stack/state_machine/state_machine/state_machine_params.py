@@ -134,6 +134,17 @@ class StateMachineParams:
         self.interest_horizon_m: float = node.get_parameter("interest_horizon_m").value
 
         self._declare(
+            "obstacle_rear_exclusion_m", 2.0,
+            ParameterDescriptor(
+                description="Short-track guard: obstacle gaps are forward Frenet distances modulo the lap, so an "
+                            "obstacle just behind the car reads as almost one lap ahead. interest/gb horizons are "
+                            "capped at track_length - this [m] (no effect when the horizons are shorter than that)",
+                type=ParameterType.PARAMETER_DOUBLE,
+            ),
+        )
+        self.obstacle_rear_exclusion_m: float = node.get_parameter("obstacle_rear_exclusion_m").value
+
+        self._declare(
             "obstacle_stale_timeout_s", 1.0,
             ParameterDescriptor(
                 description="Drop the obstacle list if /tracking/obstacles has not arrived for this long [s] (<=0 disables)",

@@ -242,6 +242,7 @@ class StateMachine(Node):
         self.gb_horizon_m = self.params.gb_horizon_m
         self.interest_horizon_m = self.params.interest_horizon_m
         self.obstacle_stale_timeout_s = self.params.obstacle_stale_timeout_s
+        self.obstacle_rear_exclusion_m = self.params.obstacle_rear_exclusion_m
         self._obstacles_rx_sec = None
         self._obstacles_stale_warned = False
         self.overtake_min_closing_mps = self.params.overtake_min_closing_mps
@@ -829,9 +830,10 @@ class StateMachine(Node):
             self.obstacles_perception = data.obstacles[:]
             self.obstacles = data.obstacles
             obstacles_in_interest = []
+            horizon = self._forward_horizon(self.interest_horizon_m)
             for obs in data.obstacles:
                 gap = (obs.s_start - self.cur_s) % self.track_length
-                if gap < self.interest_horizon_m:
+                if gap < horizon:
                     obstacles_in_interest.append(obs)
             self.obstacles_in_interest = obstacles_in_interest
             self._obstacles_rx_sec = self.now_sec()
@@ -1037,8 +1039,20 @@ class StateMachine(Node):
         }
         return bool(relative_speed_ok)
 
+    def _forward_horizon(self, horizon_m):
+        """Forward search horizon that cannot wrap round to the car's own tail.
+
+        Gaps are (obs_s - ego_s) mod track_length, so on a lap shorter than the horizon
+        (11_18_6: 13.9 m vs interest 20 m / gb 15 m) an object 1.4 m BEHIND the car is
+        read as 12.5 m AHEAD -> TRAILING (observed 2026-11-23, blocked_obs_id=25
+        gap=12.5m) and OVERTAKE never sees the 'no enemy in front' exit. Same idea as
+        the 0.5*track_length windows used for the dynamic-opponent checks below."""
+        if self.track_length and self.track_length > 0.0:
+            return min(float(horizon_m), max(0.0, self.track_length - self.obstacle_rear_exclusion_m))
+        return float(horizon_m)
+
     def _check_enemy_in_front(self) -> bool:
-        horizon = self.gb_horizon_m
+        horizon = self._forward_horizon(self.gb_horizon_m)
         for obs in self.obstacles:
             gap = (obs.s_start - self.cur_s) % self.track_length
             if gap < horizon:

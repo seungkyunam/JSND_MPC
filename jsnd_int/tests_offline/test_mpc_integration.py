@@ -114,8 +114,9 @@ LAUNCH = (ROOT / 'launch/race.launch.xml').read_text()
 
 
 def test_step12_steer_limit_and_servo_range():
-    """MPC steer = legacy FTG/manual 0.4 rad; rate kept 0.3 rad/s; servo command stays inside VESC 0..1."""
-    assert CAR['mpc_max_steer_rad'] == 0.4 and CAR['mpc_max_steer_rate_radps'] == 0.3
+    """MPC steer = legacy FTG/manual 0.4 rad; rate 3.2 rad/s since step 23 (was 0.3 bench value);
+    servo command stays inside VESC 0..1."""
+    assert CAR['mpc_max_steer_rad'] == 0.4 and CAR['mpc_max_steer_rate_radps'] == 3.2
     assert 'ftg_max_steer: 0.4' in (ROOT / 'config/controller.yaml').read_text()
     gain, off = VEHICLE['steering_angle_to_servo_gain'], VEHICLE['steering_angle_to_servo_offset']
     servo = [off + gain * d for d in (-CAR['mpc_max_steer_rad'], CAR['mpc_max_steer_rad'])]

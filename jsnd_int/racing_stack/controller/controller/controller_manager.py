@@ -22,7 +22,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from controller.combined.src.Controller import Controller
 from controller.ftg.ftg import FTG
-from controller.mpc.configuration import MPC_DEFAULTS, make_config
+from controller.mpc.configuration import MPC_DEFAULTS, make_config, make_steering_config
 
 
 # tunable L1 params (ROS1 controller.cfg / dyn_controller). All consumed by the
@@ -113,7 +113,16 @@ class ControllerManager(Node):
         self.mux_host_time = None
         self.mpc_mux_host_timeout_s = float(self._get_param('mpc_mux_host_timeout_s', 0.25))
         self.lateral_mpc = None
-        if self.lateral_controller == 'MPC':
+        self.mpc_speed_source = str(mpc_values['mpc_speed_source'])
+        if self.mpc_speed_source not in ('jsnd', 'integrated'):
+            raise ValueError('mpc_speed_source must be jsnd or integrated')
+        if self.lateral_controller == 'MPC' and self.mpc_speed_source == 'jsnd':
+            # Step 23: JSND speed pipeline (unchanged) + steering-only MPC.
+            from controller.mpc.steering_mpc import SteeringMPC  # imports OSQP
+            config = make_steering_config(mpc_values, self.wheelbase, wheelbase_explicit, self.loop_rate)
+            self.lateral_mpc = SteeringMPC(config)
+            self.get_logger().info(f"[{self.name}] JSND speed + steering MPC selected: {config}")
+        elif self.lateral_controller == 'MPC':
             from controller.mpc.integrated_mpc import IntegratedMPC  # imports OSQP
             config = make_config(mpc_values, self.wheelbase, wheelbase_explicit, self.loop_rate)
             self.lateral_mpc = IntegratedMPC(config)
@@ -250,6 +259,9 @@ class ControllerManager(Node):
             lateral_mpc=self.lateral_mpc,
             pose_to_rear_axle_m=self.pose_to_rear_axle_m,
             mpc_cmd_max_lead_mps=self.mpc_cmd_max_lead_mps,
+            mpc_speed_source=self.mpc_speed_source,
+            mpc_plan_lateral_accel_limit=float(mpc_values['mpc_plan_lateral_accel_limit_mps2']),
+            mpc_fallback_max_ticks=max(1, int(round(float(mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
         )
         self.controller.speed_now = self.speed_now
         self.controller.yaw_rate = self.yaw_rate

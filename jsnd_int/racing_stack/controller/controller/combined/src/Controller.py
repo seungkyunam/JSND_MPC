@@ -6,6 +6,9 @@ import numpy as np
 
 from visualization_msgs.msg import Marker, MarkerArray
 
+from controller.mpc.lateral_mpc import MPCResult, SafetyRequest
+from controller.mpc.steering_mpc import ENVELOPE_REASONS
+
 
 class Controller:
     """This class implements the L1 / Pure-Pursuit controller for autonomous driving.
@@ -72,6 +75,9 @@ class Controller:
                 lateral_mpc=None,
                 pose_to_rear_axle_m=0.0,
                 mpc_cmd_max_lead_mps=0.5,
+                mpc_speed_source="integrated",
+                mpc_plan_lateral_accel_limit=4.5,
+                mpc_fallback_max_ticks=10,
             ):
 
         # Parameters from manager
@@ -162,8 +168,20 @@ class Controller:
         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
         self.mpc_result = None
         self.mpc_trailing_cap = None
+        self.curr_applied_steering = 0.0
         self._mpc_last_status = None
         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
+        # Step 23: 'jsnd' = legacy JSND/PP speed pipeline + steering-only MPC (SteeringMPC);
+        # 'integrated' = previous joint speed+steering IntegratedMPC.
+        if mpc_speed_source not in ("jsnd", "integrated"):
+            raise ValueError("mpc_speed_source must be jsnd or integrated")
+        self.mpc_speed_source = mpc_speed_source
+        self.mpc_plan_lateral_accel_limit = float(mpc_plan_lateral_accel_limit)
+        self.mpc_fallback_max_ticks = int(mpc_fallback_max_ticks)
+        self.mpc_fallback_ticks = 0
+        self.mpc_lat_cap_active = False   # physical a_lat check bound the plan speed this tick
+        self.mpc_profile_cap_active = False  # mpc_profile operator ceiling bound this tick
+        self.mpc_pp_steering = 0.0        # legacy PP steering of this tick (fallback/diagnosis)
 
     # ============================ Integrated MPC ============================
     STANDSTILL_NOISE_MPS = 0.02
@@ -178,6 +196,7 @@ class Controller:
             limit = self.lateral_mpc.config.max_steer
             self.curr_steering_angle = float(np.clip(steering, -limit, limit))
             self.current_steer_command = self.curr_steering_angle
+            self.curr_applied_steering = self.curr_steering_angle
 
     def _report_mpc_result(self):
         if self.mpc_result.status != self._mpc_last_status:
@@ -284,10 +303,93 @@ class Controller:
         return (speed_cmd, result.acceleration, 0., steering,
                 point, float(np.linalg.norm(point-rear[:2])), nearest, 0., rear.reshape(1, 3))
 
+    def _plan_lateral_accel_check(self, waypoints):
+        """Physical lateral-acceleration limit applied to the PLAN, point by point:
+        v_i <= sqrt(a_lat_max / |kappa_i|) with the planner's own kappa (column 5). The
+        limit is the ggv ay_max the raceline was optimised with, so for a feasible plan
+        this is a no-op (bit-identical waypoints); it only acts on a physically
+        infeasible plan (e.g. sector scaling > 1, an avoidance spline). Returns the
+        (possibly) clipped copy; self.mpc_lat_cap_active says whether it acted."""
+        w = np.asarray(waypoints, dtype=float)
+        kappa = np.abs(w[:, 5])
+        with np.errstate(divide='ignore'):
+            cap = np.where(kappa > 1e-6, np.sqrt(self.mpc_plan_lateral_accel_limit / np.maximum(kappa, 1e-12)), np.inf)
+        over = w[:, 2] > cap + 0.01
+        self.mpc_lat_cap_active = bool(np.any(over))
+        if not self.mpc_lat_cap_active:
+            return waypoints
+        w = w.copy()
+        w[over, 2] = cap[over]
+        return w
+
+    def jsnd_mpc_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent,
+                      position_in_map_frenet, acc_now, track_length):
+        """Step 23 architecture: the legacy JSND controller pipeline runs unchanged and
+        decides the SPEED (raceline x sector scaling via /local_waypoints, lookahead speed,
+        lateral/heading error scaling, trailing controller, AEB, all states). The MPC
+        replaces only the PP steering. STOP only on: path/heading envelope violation,
+        invalid input, or solver misses longer than mpc_fallback_max_ticks (in between,
+        the legacy PP steering of this tick is used and the status says so)."""
+        waypoint_array_in_map = self._plan_lateral_accel_check(waypoint_array_in_map)
+        out = list(self._pp_main_loop(state, position_in_map, waypoint_array_in_map, speed_now,
+                                      opponent, position_in_map_frenet, acc_now, track_length))
+        speed, pp_steer = float(out[0]), float(out[3])
+        self.mpc_pp_steering = pp_steer
+        # Operator speed ceiling of the selected mpc_profile (lowspeed 1.0 ... 5p0 5.0), kept
+        # as the explicit staged-ramp limit it was; above the plan's maximum it never binds.
+        self.mpc_profile_cap_active = speed > self.lateral_mpc.config.max_speed + 1e-6
+        speed = min(speed, self.lateral_mpc.config.max_speed)
+        cfg = self.lateral_mpc.config
+        prev = float(np.clip(self.curr_applied_steering, -cfg.max_steer, cfg.max_steer))
+        try:
+            pose = np.asarray(position_in_map, dtype=float)[0].copy()
+            pose[:2] += self.pose_to_rear_axle_m * np.array([np.cos(pose[2]), np.sin(pose[2])])
+            measured = float(speed_now)
+            if not np.isfinite(measured) or measured < -self.STANDSTILL_NOISE_MPS:
+                raise ValueError('invalid_or_reverse_speed')
+            result = self.lateral_mpc.solve(np.r_[pose, max(0.0, measured)],
+                                            np.asarray(waypoint_array_in_map, dtype=float), prev)
+        except (ValueError, IndexError, TypeError) as exc:
+            result = self.lateral_mpc.reject('invalid_local_control_input:' + str(exc), prev)
+        if result.success:
+            self.mpc_fallback_ticks = 0
+            steering = result.steering
+        elif (result.status not in ENVELOPE_REASONS
+              and not result.status.startswith('invalid_local_control_input')
+              and self.mpc_fallback_ticks < self.mpc_fallback_max_ticks):
+            # Transient compute/solver miss: legacy PP steering (rate/limit as the MPC).
+            self.mpc_fallback_ticks += 1
+            step = cfg.max_steer_rate * cfg.dt
+            steering = float(np.clip(pp_steer, max(-cfg.max_steer, prev - step), min(cfg.max_steer, prev + step)))
+            result = MPCResult(steering, SafetyRequest.NONE, 'pp_fallback:' + result.status, result.elapsed_s)
+        else:
+            # STOP. The fallback budget is NOT refilled here: it refills only on a solved
+            # MPC tick, so an exhausted budget cannot alternate STOP / PP-fallback.
+            steering = self._mpc_recenter_steering_from(prev)
+            speed = 0.0
+        self.mpc_result = result
+        self._report_mpc_result()
+        self.record_applied_steering(steering)
+        out[0], out[3] = speed, steering
+        return tuple(out)
+
+    def _mpc_recenter_steering_from(self, current):
+        cfg = self.lateral_mpc.config
+        step = cfg.max_steer_rate * cfg.dt
+        return current - min(max(current, -step), step)
+
     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
         if self.lateral_controller == "MPC":
+            if self.mpc_speed_source == "jsnd":
+                return self.jsnd_mpc_loop(state, position_in_map, waypoint_array_in_map, speed_now,
+                                          opponent, position_in_map_frenet, acc_now, track_length)
             return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now,
                                         opponent, position_in_map_frenet, track_length)
+        return self._pp_main_loop(state, position_in_map, waypoint_array_in_map, speed_now, opponent,
+                                  position_in_map_frenet, acc_now, track_length)
+
+    def _pp_main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+        # Legacy JSND PP loop, unchanged (also the speed/fallback source of jsnd_mpc_loop).
         # Updating parameters from manager
         self.state = state
         self.position_in_map = position_in_map

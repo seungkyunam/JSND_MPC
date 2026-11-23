@@ -530,3 +530,29 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - fast2·옵션 코드 초안은 원복(`~/JSND_backups/step22_fast2_draft`), 빌드·배포 없음.
 - 사용자 결정: 당일은 PP 주행. 권장 실행 `race.launch.xml map:=11_18_6 controller:=pp use_estop:=true safety_mode:=true joy_max_speed:=1.0`(A 래치 유지, LB 1.0). PP 속도 = 웨이포인트 vx × 구간 배율.
 - 다음: MPC 코너 진입 조향 지연 수정(오프라인 랩 검증 필요).
+
+## 2026-11-23 단계 23: 구조 재검토 — JSND 속도 계획 + 조향 전용 MPC (JSND_INT `a3396c2`, 패치 0012)
+- 원인(코드·오프라인 로그로 확인): 기존 IntegratedMPC가 JSND 속도 계획(iqp raceline × 섹터 배율, ggv ay 4.5)을 hard 상한으로 쓰면서 속도를 재최적화 → 중복 제한(횡가속 2.0, 0.85 soft, 제동 preview 0.6 m/s², 조향속도 cap, 횡가속 연동 조향 bound, 가속 적분·lead 0.5). 섹터 경계 속도 계단(2.44→1.43, 2.79→1.64 m/s)에서 `nonlinear_speed_profile_violation` STOP. 조향속도 0.3 rad/s(벤치 값)가 조향 위상 지연(~460 ms)·레이싱라인 이탈(최대 0.9 m)의 원인. 파라미터 전부 완화해도 STOP 24회 → 구조 문제.
+- TRAILING/OVERTAKE 이상: 실차 로그 `blocked_obs_id=25 gap=12.5m` — interest 20 m·gb 15 m horizon > 트랙 13.9 m라 차 뒤 1.4 m 물체가 12.5 m 앞으로 계산됨(PP도 동일 영향). OVERTAKE도 `enemy_in_front`가 항상 참.
+- 변경:
+  - `mpc_speed_source: jsnd`(기본): 속도 = 기존 PP 종방향 로직 그대로(lookahead, 횡오차/heading 보정, trailing, AEB, 전 상태). MPC(`mpc/steering_mpc.py`)는 조향만(15단계, 0.72 s preview, 조향각 0.4·조향속도 제약). `integrated`로 기존 MPC 선택 가능.
+  - 유지 안전기능: 경로 1 m/heading 0.7 rad 이탈 즉시 STOP, odom stale·mux·웨이포인트 워치독·TTC EStop·A 래치, mpc_profile 속도 상한(운용 상한, 5p0에선 미발동), 계획 점별 물리 횡가속 4.5(ggv) 확인(실현 가능한 계획에선 no-op). 계산 실패는 최대 0.2 s PP 조향 대체 후 STOP(성공 전까지 STOP 유지).
+  - `mpc_max_steer_rate_radps` 0.3→3.2(F1TENTH sv_max, **실측 아님**).
+  - state_machine: interest/gb horizon을 `track_length − obstacle_rear_exclusion_m(2.0)`으로 제한.
+- 오프라인 11_18_6(같은 속도 계획, 2랩, `tests_offline/lap_sim.py`; 서보·VESC 모델은 가정값):
+
+| | 완주 | 플라잉랩 | 평균/최고 속도 | 최대 횡오차 | STOP |
+|---|---|---|---|---|---|
+| PP | 2/2 | 6.42 s | 2.05 / 3.70 | 0.187 m | 0 |
+| 기존 MPC(5p0) | 2/2 | 11.84 s | 1.40 / 2.28 | 0.899 m | 16 |
+| 신규 MPC | 2/2 | 6.84 s | 2.02 / 3.69 | 0.019 m | 0 |
+
+  - 랩타임 차이는 속도가 아니라 경로: PP는 코너 안쪽 평균 0.11 m 컷(주행 13.11 m), MPC는 레이싱라인 추종(13.77 m).
+  - 서보 지연 60 ms·VESC τ 0.25·위치잡음 2 cm·초기 오프셋 0.3 m/0.2 rad에서도 STOP 0, 완주.
+- 테스트: tests_offline 55/55(신규 `test_jsnd_mpc.py` 9개 포함), state_machine 56/56. 기록용 테스트 3개 파일은 당시 조향속도 0.3을 명시 고정하도록 수정(재현 대상 유지), step12 단언은 3.2로 갱신. 오버레이 빌드 완료(controller, stack_master, state_machine). 백업 `~/JSND_backups/step23_20261123_140844`.
+- 미해결:
+  - ROS 모의 시험(`tests_ros/run.sh mpc safety`) 미실행(사용자 중단), 실차 미검증.
+  - 서보 실제 조향속도·지연 미측정(3.2 rad/s는 가정). 실측 후 낮아야 하면 조정 필요.
+  - 차량 0.12~0.16 m 앞 정적 검출(id 25, s≈1.06)이 실물인지 오검출인지 미판별.
+  - 5 m/s는 속도 계획 최대 3.9 m/s라 불가 — 더 빠르게는 섹터 배율/레이싱라인 재생성 필요.
+  - 실차 출발은 자동 실행하지 않음.
