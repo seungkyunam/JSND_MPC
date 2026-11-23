@@ -4,7 +4,12 @@
 # Runs in tmux session "race" (foreground log tee). Stop: Ctrl-C in tmux, or `tmux kill-session -t race`.
 set -eo pipefail
 PROFILE=${1:?profile: 2p25|3p0|4p0|5p0}; MAP=${2:-11_18_6}
-[ -f "$HOME/JSND_INT/install/stack_master/share/stack_master/config/mpc_profile_${PROFILE}.yaml" ] || { echo "unknown profile $PROFILE"; exit 1; }
+[ "$(id -u)" -eq 0 ] && { echo "ABORT: run as jsnd, not root/sudo"; exit 1; }
+[ "$(hostname)" = "jsnd" ] || { echo "ABORT: run on Jetson (ssh jsnd@172.20.10.4)"; exit 1; }
+INT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd); HOME=$(dirname "$INT"); export HOME
+CFG=$INT/install/stack_master/share/stack_master/config
+[ -f "$CFG/mpc_profile_${PROFILE}.yaml" ] || { echo "unknown profile $PROFILE (in $CFG):"; ls "$CFG" | sed -n 's/^mpc_profile_\(.*\)\.yaml$/  \1/p'; exit 1; }
+[ -f "$INT/install/stack_master/share/stack_master/maps/$MAP/$MAP.yaml" ] || { echo "unknown map $MAP"; exit 1; }
 # single stack only: refuse if another race/vesc stack is alive (yesterday's double-VESC incident)
 if pgrep -f "vesc_driver_node|race.launch.xml" >/dev/null; then echo "ABORT: another stack running:"; pgrep -af "vesc_driver_node|race.launch.xml"; exit 1; fi
 tmux has-session -t race 2>/dev/null && { echo "ABORT: tmux session 'race' exists"; exit 1; }
