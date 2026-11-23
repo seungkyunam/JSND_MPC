@@ -4,6 +4,7 @@
 #   mpc_profile_lowspeed.yaml  1.0 m/s, real car (default)
 #   mpc_profile_1p5.yaml       1.5 m/s
 #   mpc_profile_2p25.yaml      2.25 m/s
+#   mpc_profile_3p0.yaml / 4p0 / 5p0   3.0 / 4.0 / 5.0 m/s (staged ramp, step 18)
 #   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
 # Legacy PP/speed settings stay untouched.
 controller_manager:

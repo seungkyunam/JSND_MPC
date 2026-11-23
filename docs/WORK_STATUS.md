@@ -1,6 +1,6 @@
 # WORK_STATUS
 
-> **현재 상태 요약 (2026-11-22 단계 12 — 조향 0.4 rad · MPC 모드 LB 1.0 m/s 적용, 모터 구동 없음)**
+> **현재 상태 요약 (2026-11-23 단계 18 — Step 17 실차 빌드 적용, 3/4/5 m/s 프로파일·실행/멈칫 로그 스크립트 준비, 모터 구동 없음)**
 > - 코드: JSND_INT `91d0e26` = install. MPC 조향 ±0.4 rad / 변화율 0.3 rad/s 유지, MPC 모드 LB 수동 최고 1.0 m/s(PP 모드 4.0 그대로). RB 자율 / LB 수동 / A 비상정지 래치
 > - 실차 점검 미실시: VESC·LiDAR 전원 상태 미확인(단계 11 기준 꺼짐). 다음은 전원 투입 → launch → bench_check
 > - 남은 확인: 서보 기계 한계·바퀴 실제 각도 미측정, 0.3 rad/s 변화율 실차 추종 검증 필요
@@ -494,3 +494,10 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 기존 테스트: 단독 실행 22/22·전체 37/40. 실패 3건은 부하 하 타이밍 테스트(스택 동시 실행, load 19~21)
 - 미완료: 실차 재기동 확인 중 Jetson에 JSND 원본 race.launch(노트북 SSH pts/1)가 동시에 떠서 VESC 드라이버 2개 → 내 스택 종료. 새 코드 실차 정지 상태 확인·주행 검증 안 됨
 - 남은 문제: CPU 과부하가 근본. controller 실시간 우선순위(limits.conf rtprio, root 필요) 또는 스택 부하 감축 필요. 2틱 넘는 계산 지연과 실제 과속은 계속 STOP
+
+## 2026-11-23 단계 18: Step 17 실차 적용·빌드, 2.25→3→4→5 m/s 준비 (모터 구동 없음)
+- Jetson JSND_INT 소스 = GitHub `ee57524` 코드 일치 확인. 백업 `~/JSND_backups/step17_20261123_122457` 후 `controller`·`stack_master` 재빌드 성공.
+- JSND_INT `6545daa` (`jsnd_int/0010-*.patch` + 사본): `mpc_profile_3p0/4p0/5p0.yaml` 추가. MPC 최고속도만 변경. 조향 0.4 rad/0.3 rad/s, 가속 1.0, 횡가속 2.0 m/s²(코너 속도 제한 그대로), PP/FTG, A 래치, LB 1.0, RB 자율 무변경. 5 m/s = 23070 ERPM(VESC speed_max 23250).
+- 실행 `bash ~/JSND_INT/run/race_mpc.sh <2p25|3p0|4p0|5p0>`: tmux `race`, 다른 race 스택·VESC 드라이버가 있으면 거부, 로그 `~/bench_logs/race_mpc<프로파일>_<시각>.log`(커밋·프로파일 기록).
+- 멈칫 비교 `python3 ~/JSND_INT/run/stall_summary.py <로그...>`: STOP(속도 0) 분당 횟수·원인, 이어쓰기 건수. 수정 전 2.25 m/s 기준 STOP 43.2회/분(정지 시간 포함, 대부분 deadline_exceeded).
+- 검증: 실행 스크립트 건식(VESC 없음) 환경·따옴표 확인. 프로파일 파라미터 로드는 실차 launch에서 확인 필요. 실차 주행은 사용자 직접.

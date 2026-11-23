@@ -1,0 +1,8 @@
+# 4.0 m/s profile (2026-11-23, step 18 staged ramp 2.25 -> 3 -> 4 -> 5). Load with mpc_profile:=4p0.
+# Use only after mpc_profile:=3p0 ran on the ground without corner stalls.
+# Only the MPC speed cap changes; steering 0.4 rad / 0.3 rad/s, accel 1.0 m/s^2, lateral accel
+# 2.0 m/s^2 (limits corner speed), waypoint speed caps, VESC speed_max 23250 ERPM as before.
+# LB manual (joy_max_speed 1.0), A latch, PP/FTG unchanged. Not yet driven on the ground.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 4.0
