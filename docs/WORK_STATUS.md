@@ -566,3 +566,12 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
   - 참고: `safety` 시나리오는 safety_mode 이전 시나리오라 기본값(on)으로 돌리면 시작 래치로 속도 0(설계대로).
   - 시험 종료 시 SIGINT로 인한 `context is invalid` traceback은 종료 시점 아티팩트(PP·simple_mux 동일).
 - 실차 미출발.
+
+## 단계 24 (2026-11-23) — 실차 3p0 조향 이상 분석 (JSND_INT `f3326a1`)
+- 실차 로그 `race_mpc3p0_20261123_143721.log`: RB 후 1.08 s, 1.76 m/s에서 `outside_heading_envelope` STOP → TTC EStop. 출발 전 정지 중에는 MPC solved(초기 자세·방향 정상).
+- `steering angle clipped`는 PP 내부 0.4 변화량 클립(PP 희망 조향과 MPC 조향의 차이)이며 MPC ±0.4 포화가 아님. 로그에 조향값·자세 기록 없음.
+- 코드 비교: 조향 부호(+좌), `/drive`→VESC 경로, rear axle(오프셋 0), 경로 투영·yaw 오차 계산 모두 PP와 일치. 부호 반전은 오프라인에서 PP도 망가뜨리므로 제외.
+- 오프라인 재현(`tests_offline/start_repro.py`, s=12.45 출발): 자세 지연 120~200 ms에서 MPC만 1.2~1.8 s에 heading STOP(PP 정상). **가설이며 실차 지연은 미측정.**
+- 수정: `mpc_latency_comp_s: 0.1`(rear axle 자세를 적용 조향으로 0.1 s 앞 예측, 0이면 기존 동작) + STOP 상세 로그(자세/속도/MPC·PP 조향). 안전 기능·한계값 변경 없음.
+- 시험: 재현 시험 지연 0/120/200 ms 모두 STOP 0, 랩 3p0 MPC 7.04 s/STOP 0/횡오차 0.024 m(PP 6.42 s), `tests_offline` 55 passed, 오버레이 재빌드.
+- 다음: bench(바퀴 띄움)에서 `/car_state/odom` 지연 측정 → 값 확정 후 저속 프로파일부터 실차 재시험.

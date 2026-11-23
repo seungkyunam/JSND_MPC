@@ -78,6 +78,7 @@ class Controller:
                 mpc_speed_source="integrated",
                 mpc_plan_lateral_accel_limit=4.5,
                 mpc_fallback_max_ticks=10,
+                mpc_latency_comp_s=0.0,
             ):
 
         # Parameters from manager
@@ -178,6 +179,8 @@ class Controller:
         self.mpc_speed_source = mpc_speed_source
         self.mpc_plan_lateral_accel_limit = float(mpc_plan_lateral_accel_limit)
         self.mpc_fallback_max_ticks = int(mpc_fallback_max_ticks)
+        # Pose/actuation dead time the MPC state is predicted over (PP: future_constant).
+        self.mpc_latency_comp_s = max(0.0, float(mpc_latency_comp_s))
         self.mpc_fallback_ticks = 0
         self.mpc_lat_cap_active = False   # physical a_lat check bound the plan speed this tick
         self.mpc_profile_cap_active = False  # mpc_profile operator ceiling bound this tick
@@ -347,6 +350,12 @@ class Controller:
             measured = float(speed_now)
             if not np.isfinite(measured) or measured < -self.STANDSTILL_NOISE_MPS:
                 raise ValueError('invalid_or_reverse_speed')
+            # Dead-time compensation: the steering-only MPC has no PP-style lookahead, so a
+            # stale pose (PF/odom latency) makes it chase the past and diverge. Predict the
+            # rear axle over mpc_latency_comp_s with the applied steering (kinematic bicycle).
+            v_now = max(0.0, measured)
+            for _ in range(int(round(self.mpc_latency_comp_s / cfg.dt))):
+                pose += cfg.dt * v_now * np.array([np.cos(pose[2]), np.sin(pose[2]), np.tan(prev) / cfg.wheelbase])
             result = self.lateral_mpc.solve(np.r_[pose, max(0.0, measured)],
                                             np.asarray(waypoint_array_in_map, dtype=float), prev)
         except (ValueError, IndexError, TypeError) as exc:
@@ -367,6 +376,11 @@ class Controller:
             # MPC tick, so an exhausted budget cannot alternate STOP / PP-fallback.
             steering = self._mpc_recenter_steering_from(prev)
             speed = 0.0
+            if result.status != self._mpc_last_status:   # diagnosis: log has no steering otherwise
+                p0 = np.asarray(position_in_map, dtype=float)[0]
+                self.logger_warn(f"[MPC] STOP detail: pose=({p0[0]:.2f},{p0[1]:.2f},{p0[2]:.3f}) "
+                                 f"v={float(speed_now):.2f} prev_steer={prev:+.3f} pp_steer={pp_steer:+.3f} "
+                                 f"latency_comp={self.mpc_latency_comp_s:.2f}s")
         self.mpc_result = result
         self._report_mpc_result()
         self.record_applied_steering(steering)

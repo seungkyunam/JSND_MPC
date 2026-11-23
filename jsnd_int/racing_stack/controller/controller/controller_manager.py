@@ -263,6 +263,7 @@ class ControllerManager(Node):
             mpc_speed_source=self.mpc_speed_source,
             mpc_plan_lateral_accel_limit=float(self.mpc_values['mpc_plan_lateral_accel_limit_mps2']),
             mpc_fallback_max_ticks=max(1, int(round(float(self.mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
+            mpc_latency_comp_s=float(self.mpc_values['mpc_latency_comp_s']),
         )
         self.controller.speed_now = self.speed_now
         self.controller.yaw_rate = self.yaw_rate

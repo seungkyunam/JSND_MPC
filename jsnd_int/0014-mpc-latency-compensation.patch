@@ -1,0 +1,108 @@
+From f3326a1f4a7c75763a0232827526bec7d2781197 Mon Sep 17 00:00:00 2001
+From: jsnd <ros2kil105@gmail.com>
+Date: Mon, 23 Nov 2026 14:48:37 +0900
+Subject: [PATCH] MPC (jsnd speed source): 0.1 s pose dead-time compensation +
+ STOP diagnostic log
+
+Real car 3p0 (2026-11-23 14:37 log): steering diverged, outside_heading_envelope
+1.1 s after RB at 1.76 m/s. Offline start-at-s=12.45 repro: >=120 ms pose delay
+makes the steering-only MPC diverge (PP unaffected); predicting the rear axle
+0.1 s ahead with the applied steering removes it for 0..200 ms delay. Real PF/odom
+latency not measured yet - hypothesis, not log-confirmed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ controller/controller/combined/src/Controller.py | 14 ++++++++++++++
+ controller/controller/controller_manager.py      |  1 +
+ controller/controller/mpc/configuration.py       |  1 +
+ stack_master/config/mpc_car.yaml                 |  4 ++++
+ 4 files changed, 20 insertions(+)
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index cc97691..197df57 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -78,6 +78,7 @@ class Controller:
+                 mpc_speed_source="integrated",
+                 mpc_plan_lateral_accel_limit=4.5,
+                 mpc_fallback_max_ticks=10,
++                mpc_latency_comp_s=0.0,
+             ):
+ 
+         # Parameters from manager
+@@ -178,6 +179,8 @@ class Controller:
+         self.mpc_speed_source = mpc_speed_source
+         self.mpc_plan_lateral_accel_limit = float(mpc_plan_lateral_accel_limit)
+         self.mpc_fallback_max_ticks = int(mpc_fallback_max_ticks)
++        # Pose/actuation dead time the MPC state is predicted over (PP: future_constant).
++        self.mpc_latency_comp_s = max(0.0, float(mpc_latency_comp_s))
+         self.mpc_fallback_ticks = 0
+         self.mpc_lat_cap_active = False   # physical a_lat check bound the plan speed this tick
+         self.mpc_profile_cap_active = False  # mpc_profile operator ceiling bound this tick
+@@ -347,6 +350,12 @@ class Controller:
+             measured = float(speed_now)
+             if not np.isfinite(measured) or measured < -self.STANDSTILL_NOISE_MPS:
+                 raise ValueError('invalid_or_reverse_speed')
++            # Dead-time compensation: the steering-only MPC has no PP-style lookahead, so a
++            # stale pose (PF/odom latency) makes it chase the past and diverge. Predict the
++            # rear axle over mpc_latency_comp_s with the applied steering (kinematic bicycle).
++            v_now = max(0.0, measured)
++            for _ in range(int(round(self.mpc_latency_comp_s / cfg.dt))):
++                pose += cfg.dt * v_now * np.array([np.cos(pose[2]), np.sin(pose[2]), np.tan(prev) / cfg.wheelbase])
+             result = self.lateral_mpc.solve(np.r_[pose, max(0.0, measured)],
+                                             np.asarray(waypoint_array_in_map, dtype=float), prev)
+         except (ValueError, IndexError, TypeError) as exc:
+@@ -367,6 +376,11 @@ class Controller:
+             # MPC tick, so an exhausted budget cannot alternate STOP / PP-fallback.
+             steering = self._mpc_recenter_steering_from(prev)
+             speed = 0.0
++            if result.status != self._mpc_last_status:   # diagnosis: log has no steering otherwise
++                p0 = np.asarray(position_in_map, dtype=float)[0]
++                self.logger_warn(f"[MPC] STOP detail: pose=({p0[0]:.2f},{p0[1]:.2f},{p0[2]:.3f}) "
++                                 f"v={float(speed_now):.2f} prev_steer={prev:+.3f} pp_steer={pp_steer:+.3f} "
++                                 f"latency_comp={self.mpc_latency_comp_s:.2f}s")
+         self.mpc_result = result
+         self._report_mpc_result()
+         self.record_applied_steering(steering)
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 771dcdd..e56dd5f 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -263,6 +263,7 @@ class ControllerManager(Node):
+             mpc_speed_source=self.mpc_speed_source,
+             mpc_plan_lateral_accel_limit=float(self.mpc_values['mpc_plan_lateral_accel_limit_mps2']),
+             mpc_fallback_max_ticks=max(1, int(round(float(self.mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
++            mpc_latency_comp_s=float(self.mpc_values['mpc_latency_comp_s']),
+         )
+         self.controller.speed_now = self.speed_now
+         self.controller.yaw_rate = self.yaw_rate
+diff --git a/controller/controller/mpc/configuration.py b/controller/controller/mpc/configuration.py
+index a331914..2b286a7 100644
+--- a/controller/controller/mpc/configuration.py
++++ b/controller/controller/mpc/configuration.py
+@@ -47,6 +47,7 @@ MPC_DEFAULTS = {
+     # transient solver/compute miss -> legacy PP steering for at most this long, then STOP.
+     # Envelope violations (path/heading) STOP immediately.
+     'mpc_fallback_max_s': .2,
++    'mpc_latency_comp_s': 0.,
+ }
+ 
+ 
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index b484cda..74fb41e 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -42,6 +42,10 @@ controller_manager:
+     mpc_steer_preview_dt: 0.05
+     mpc_plan_lateral_accel_limit_mps2: 4.5   # ggv ay_max (CAR/veh_dyn_info/ggv.csv); plan check only
+     mpc_fallback_max_s: 0.2           # solver miss -> PP steering up to 0.2 s, then STOP
++    # 2026-11-23 real-car 3p0: steering diverged + outside_heading_envelope 1.1 s after RB.
++    #   Offline: >=120 ms pose delay reproduces it (PP unaffected); 0.1 s prediction removes it
++    #   for 0..200 ms delay. Real PF/odom latency NOT measured yet.
++    mpc_latency_comp_s: 0.1
+     # --- speed envelope ---
+     # mpc_max_speed_mps: operator ceiling from the mpc_profile overlay (lowspeed 1.0 ... 5p0 5.0).
+     # jsnd mode: min(JSND speed command, this). The 11_18_6 plan peaks at 3.9 m/s (2.3 in the
+-- 
+2.43.0
+

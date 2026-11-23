@@ -42,6 +42,10 @@ controller_manager:
     mpc_steer_preview_dt: 0.05
     mpc_plan_lateral_accel_limit_mps2: 4.5   # ggv ay_max (CAR/veh_dyn_info/ggv.csv); plan check only
     mpc_fallback_max_s: 0.2           # solver miss -> PP steering up to 0.2 s, then STOP
+    # 2026-11-23 real-car 3p0: steering diverged + outside_heading_envelope 1.1 s after RB.
+    #   Offline: >=120 ms pose delay reproduces it (PP unaffected); 0.1 s prediction removes it
+    #   for 0..200 ms delay. Real PF/odom latency NOT measured yet.
+    mpc_latency_comp_s: 0.1
     # --- speed envelope ---
     # mpc_max_speed_mps: operator ceiling from the mpc_profile overlay (lowspeed 1.0 ... 5p0 5.0).
     # jsnd mode: min(JSND speed command, this). The 11_18_6 plan peaks at 3.9 m/s (2.3 in the

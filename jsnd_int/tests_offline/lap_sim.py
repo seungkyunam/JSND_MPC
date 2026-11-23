@@ -105,7 +105,8 @@ def build(ctrl, profile, overrides, rate):
                      mpc_cmd_max_lead_mps=p.get('mpc_cmd_max_lead_mps', .5),
                      mpc_speed_source=v_['mpc_speed_source'],
                      mpc_plan_lateral_accel_limit=v_['mpc_plan_lateral_accel_limit_mps2'],
-                     mpc_fallback_max_ticks=max(1, round(v_['mpc_fallback_max_s'] * rate)))
+                     mpc_fallback_max_ticks=max(1, round(v_['mpc_fallback_max_s'] * rate)),
+                     mpc_latency_comp_s=v_['mpc_latency_comp_s'])
     c = Controller(**kw, **extra, logger_info=lambda *a, **k: None, logger_warn=lambda *a, **k: None)
     return c, p
 

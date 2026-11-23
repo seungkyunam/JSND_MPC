@@ -47,6 +47,7 @@ MPC_DEFAULTS = {
     # transient solver/compute miss -> legacy PP steering for at most this long, then STOP.
     # Envelope violations (path/heading) STOP immediately.
     'mpc_fallback_max_s': .2,
+    'mpc_latency_comp_s': 0.,
 }
 
 
