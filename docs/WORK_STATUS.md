@@ -514,3 +514,12 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 기동 직후 속도 0: (1) 기동 래치 상태에서 `reset_estop`·RB 없음 → `active_host=estop` → controller_manager가 MPC 속도 0 고정. (2) 차량이 레이싱라인에서 0.90 m(한계 1.0)·방위 38.5°(한계 0.7 rad=40.1°, MPC 투영 기준 초과) → `outside_heading_envelope` STOP. 라인 위 정렬 + 2D Pose Estimate로 해소.
 - LB 수동 → 해제(none) → RB 한 번 재선택은 설계대로 동작(로그 :114→:120→:131, 래치 없음). 재출발 안 된 원인은 상태머신 TRAILING(장애물 s≈9.27, d≈0.23, 0.15 m 감지) → MPC `unsupported_behavior:TRAILING` STOP. 주행 중 짧은 정지는 TTC EStop(0.35 s, 비래치).
 - 사용자 결정 대기: MPC의 TRAILING 지원(감속 추종) 여부. 그 전까지 TRAILING=STOP 유지.
+
+## 2026-11-23 단계 21: TRAILING 고착 해소 (MPC TRAILING 지원, 오래된 장애물 제거)
+- 원인: 트랙 한 바퀴 13.9 m < `interest_horizon_m` 20 m. 차량 뒤 1.4 m(s≈9.27, d≈0.25, 0.21 m, 정적, is_visible) LiDAR 검출이 한 바퀴 앞 12.3 m 장애물로 계산 → GB 경로 막힘(static/geom free_dist 0.024) → TRAILING. 맵상 빈 공간(벽 아님), 좌측 경계에서 약 8 cm. 추적 데이터는 실시간(오래된 데이터 아님). 기존 MPC는 TRAILING을 `unsupported_behavior`로 STOP → PP는 같은 상황에서 정적 장애물 쪽으로 접근(회피 경로 대기)하지만 MPC는 영구 정지.
+- 수정(JSND_INT `509f4ae`, `jsnd_int/0011-*.patch`):
+  - `Controller.py`: TRAILING에서 MPC가 local path를 추종하되 모든 waypoint 속도 상한을 PP와 같은 `trailing_controller` 명령으로 제한(동적: 간격 PID, 정적: standoff 0.5 m 정지·크롤 0.2 m/s). 대상이 없으면 `trailing_without_target` STOP(PP의 0 명령과 동일). TRAILING 이탈 시 정적 정지 래치 초기화.
+  - `state_machine`: `/tracking/obstacles`가 `obstacle_stale_timeout_s`(기본 1.0 s, 0 이하=비활성) 넘게 끊기면 장애물 목록 비움(경고 1회). 살아 있는 tracker 결과는 그대로 사용.
+- 무변경: 장애물 검출·TTC EStop·A 래치·기동 잠금·PP/FTG 경로·5p0 프로파일·가감속·횡가속.
+- 테스트: 신규 `tests_offline/test_mpc_trailing.py` 6개 + 기존 `test_mpc_integration.py` 통과(18/18), state_machine 기존 56/56. 오버레이에 `controller`·`state_machine` 빌드(state_machine 원본=JSND 일치 확인), 백업 `~/JSND_backups/step21_20261123_134113`.
+- 실차 확인(5p0, 래치 유지, 모터 0): `max_speed=5.0` 로드, MPC가 TRAILING에서 거부 대신 계산 → 현재 `outside_tracking_envelope`(차량이 레이싱라인에서 1.08 m, 한계 1.0 m). 레이싱라인 위 정렬 + 2D Pose Estimate 필요. 검출 물체(차량 뒤 1.4 m, 좌측 벽 근처)는 실물 확인 필요.

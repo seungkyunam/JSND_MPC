@@ -161,6 +161,7 @@ class Controller:
         self.pose_to_rear_axle_m = pose_to_rear_axle_m
         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
         self.mpc_result = None
+        self.mpc_trailing_cap = None
         self._mpc_last_status = None
         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
 
@@ -219,9 +220,26 @@ class Controller:
         current = float(np.clip(current, -cfg.max_steer, cfg.max_steer))
         return current - min(max(current, -step), step)
 
-    def integrated_loop(self, state, position, waypoints, speed):
+    def _mpc_trailing_cap(self, opponent, frenet, speed, track_length):
+        """TRAILING speed cap for the MPC: the same trailing controller PP uses (gap PID to
+        the target, static-obstacle standoff stop / crawl, blind-trailing floor), with the
+        MPC max speed as the global speed. No target -> None: the caller requests STOP,
+        as PP commands 0 when TRAILING has lost its target."""
+        if opponent is None or frenet is None or not track_length:
+            self.i_gap = 0
+            return None
+        self.opponent = opponent
+        self.position_in_map_frenet = frenet
+        self.speed_now = max(0.0, float(speed))
+        self.track_length = track_length
+        cap = float(self.trailing_controller(self.lateral_mpc.config.max_speed))
+        return cap if np.isfinite(cap) else 0.0
+
+    def integrated_loop(self, state, position, waypoints, speed, opponent=None, frenet=None, track_length=None):
         # Entire PP speed/steering preprocessing is bypassed. Unsupported behavior
         # states stop rather than silently losing opponent-following safeguards.
+        # TRAILING: the MPC tracks the local path with every waypoint speed cap clipped
+        # to the PP trailing-controller command (target gap / static standoff).
         measured = 0.0
         try:
             position = np.asarray(position, dtype=float)
@@ -234,10 +252,23 @@ class Controller:
             measured = max(0.0, measured)  # clamp only standstill odom jitter
             rear = position[0].copy()
             rear[:2] += self.pose_to_rear_axle_m * np.array([np.cos(rear[2]), np.sin(rear[2])])
-            if state not in ('GB_TRACK', 'START', 'OVERTAKE', 'RECOVERY'):
-                result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
+            if state == 'TRAILING':
+                cap = self._mpc_trailing_cap(opponent, frenet, measured, track_length)
+                self.mpc_trailing_cap = cap
+                if cap is None:
+                    result = self.lateral_mpc.reject('trailing_without_target', self.curr_steering_angle)
+                else:
+                    capped = waypoints.copy()
+                    capped[:, 2] = np.minimum(capped[:, 2], cap)
+                    result = self.lateral_mpc.solve(np.r_[rear, measured], capped, self.curr_steering_angle)
             else:
-                result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints, self.curr_steering_angle)
+                self.mpc_trailing_cap = None
+                self.i_gap = 0
+                self.static_stop_latched = False
+                if state not in ('GB_TRACK', 'START', 'OVERTAKE', 'RECOVERY'):
+                    result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
+                else:
+                    result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints, self.curr_steering_angle)
         except (ValueError, IndexError, TypeError) as exc:
             # Reason kept in the status (e.g. invalid_or_reverse_speed) so the log
             # tells input loss from a reverse/odom-undershoot after hard braking.
@@ -255,7 +286,8 @@ class Controller:
 
     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
         if self.lateral_controller == "MPC":
-            return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now)
+            return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now,
+                                        opponent, position_in_map_frenet, track_length)
         # Updating parameters from manager
         self.state = state
         self.position_in_map = position_in_map

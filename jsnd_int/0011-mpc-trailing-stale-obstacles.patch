@@ -1,0 +1,164 @@
+From 509f4aeac5ed8aade5d721c287ce2b08a548a134 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Mon, 23 Nov 2026 13:42:50 +0900
+Subject: [PATCH] MPC: support TRAILING via PP trailing-controller speed cap;
+ state machine: drop stale /tracking/obstacles
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../controller/combined/src/Controller.py     | 42 ++++++++++++++++---
+ .../state_machine/state_machine_node.py       | 24 ++++++++++-
+ .../state_machine/state_machine_params.py     |  9 ++++
+ 3 files changed, 69 insertions(+), 6 deletions(-)
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index 0a51a41..640ed32 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -161,6 +161,7 @@ class Controller:
+         self.pose_to_rear_axle_m = pose_to_rear_axle_m
+         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
+         self.mpc_result = None
++        self.mpc_trailing_cap = None
+         self._mpc_last_status = None
+         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
+ 
+@@ -219,9 +220,26 @@ class Controller:
+         current = float(np.clip(current, -cfg.max_steer, cfg.max_steer))
+         return current - min(max(current, -step), step)
+ 
+-    def integrated_loop(self, state, position, waypoints, speed):
++    def _mpc_trailing_cap(self, opponent, frenet, speed, track_length):
++        """TRAILING speed cap for the MPC: the same trailing controller PP uses (gap PID to
++        the target, static-obstacle standoff stop / crawl, blind-trailing floor), with the
++        MPC max speed as the global speed. No target -> None: the caller requests STOP,
++        as PP commands 0 when TRAILING has lost its target."""
++        if opponent is None or frenet is None or not track_length:
++            self.i_gap = 0
++            return None
++        self.opponent = opponent
++        self.position_in_map_frenet = frenet
++        self.speed_now = max(0.0, float(speed))
++        self.track_length = track_length
++        cap = float(self.trailing_controller(self.lateral_mpc.config.max_speed))
++        return cap if np.isfinite(cap) else 0.0
++
++    def integrated_loop(self, state, position, waypoints, speed, opponent=None, frenet=None, track_length=None):
+         # Entire PP speed/steering preprocessing is bypassed. Unsupported behavior
+         # states stop rather than silently losing opponent-following safeguards.
++        # TRAILING: the MPC tracks the local path with every waypoint speed cap clipped
++        # to the PP trailing-controller command (target gap / static standoff).
+         measured = 0.0
+         try:
+             position = np.asarray(position, dtype=float)
+@@ -234,10 +252,23 @@ class Controller:
+             measured = max(0.0, measured)  # clamp only standstill odom jitter
+             rear = position[0].copy()
+             rear[:2] += self.pose_to_rear_axle_m * np.array([np.cos(rear[2]), np.sin(rear[2])])
+-            if state not in ('GB_TRACK', 'START', 'OVERTAKE', 'RECOVERY'):
+-                result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
++            if state == 'TRAILING':
++                cap = self._mpc_trailing_cap(opponent, frenet, measured, track_length)
++                self.mpc_trailing_cap = cap
++                if cap is None:
++                    result = self.lateral_mpc.reject('trailing_without_target', self.curr_steering_angle)
++                else:
++                    capped = waypoints.copy()
++                    capped[:, 2] = np.minimum(capped[:, 2], cap)
++                    result = self.lateral_mpc.solve(np.r_[rear, measured], capped, self.curr_steering_angle)
+             else:
+-                result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints, self.curr_steering_angle)
++                self.mpc_trailing_cap = None
++                self.i_gap = 0
++                self.static_stop_latched = False
++                if state not in ('GB_TRACK', 'START', 'OVERTAKE', 'RECOVERY'):
++                    result = self.lateral_mpc.reject('unsupported_behavior:'+str(state), self.curr_steering_angle)
++                else:
++                    result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints, self.curr_steering_angle)
+         except (ValueError, IndexError, TypeError) as exc:
+             # Reason kept in the status (e.g. invalid_or_reverse_speed) so the log
+             # tells input loss from a reverse/odom-undershoot after hard braking.
+@@ -255,7 +286,8 @@ class Controller:
+ 
+     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+         if self.lateral_controller == "MPC":
+-            return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now)
++            return self.integrated_loop(state, position_in_map, waypoint_array_in_map, speed_now,
++                                        opponent, position_in_map_frenet, track_length)
+         # Updating parameters from manager
+         self.state = state
+         self.position_in_map = position_in_map
+diff --git a/state_machine/state_machine/state_machine_node.py b/state_machine/state_machine/state_machine_node.py
+index 9d5d2f9..dbe2c36 100644
+--- a/state_machine/state_machine/state_machine_node.py
++++ b/state_machine/state_machine/state_machine_node.py
+@@ -241,6 +241,9 @@ class StateMachine(Node):
+         self.lateral_width_gb_m = self.params.lateral_width_gb_m
+         self.gb_horizon_m = self.params.gb_horizon_m
+         self.interest_horizon_m = self.params.interest_horizon_m
++        self.obstacle_stale_timeout_s = self.params.obstacle_stale_timeout_s
++        self._obstacles_rx_sec = None
++        self._obstacles_stale_warned = False
+         self.overtake_min_closing_mps = self.params.overtake_min_closing_mps
+ 
+         self.last_recovery_update_time = None
+@@ -831,6 +834,7 @@ class StateMachine(Node):
+                 if gap < self.interest_horizon_m:
+                     obstacles_in_interest.append(obs)
+             self.obstacles_in_interest = obstacles_in_interest
++            self._obstacles_rx_sec = self.now_sec()
+ 
+     def ego_prediction_cb(self, data):
+         self.ego_prediction = data.predictions if len(data.predictions) != 0 else []
+@@ -2275,9 +2279,27 @@ class StateMachine(Node):
+             self.cur_gb_wpnts.initialize_traj(self.gb_wpnts)
+         else:
+             self.cur_gb_wpnts.list = self.gb_wpnts.wpnts
+-        self.cur_obstacles_in_interest = self.obstacles_in_interest
++        self.cur_obstacles_in_interest = self._fresh_obstacles_in_interest()
+         return
+ 
++    def _fresh_obstacles_in_interest(self):
++        """Obstacles of interest, or [] when /tracking/obstacles stopped arriving: a dead
++        tracker must not pin the car in TRAILING on its last list forever. A live tracker
++        (it publishes every cycle, also when empty) is used unchanged."""
++        timeout = self.obstacle_stale_timeout_s
++        if timeout <= 0 or self._obstacles_rx_sec is None:
++            return self.obstacles_in_interest
++        age = self.now_sec() - self._obstacles_rx_sec
++        if age > timeout:
++            if self.obstacles_in_interest and not self._obstacles_stale_warned:
++                self.get_logger().warn(
++                    f"[State Machine] /tracking/obstacles stale ({age:.2f} s > {timeout} s): "
++                    f"dropping {len(self.obstacles_in_interest)} obstacle(s)")
++                self._obstacles_stale_warned = True
++            return []
++        self._obstacles_stale_warned = False
++        return self.obstacles_in_interest
++
+     def get_overtaking_target(self):
+         if self.cur_gb_wpnts.closest_target is not None:
+             return [self.cur_gb_wpnts.closest_target]
+diff --git a/state_machine/state_machine/state_machine_params.py b/state_machine/state_machine/state_machine_params.py
+index 39a9352..38b80a0 100644
+--- a/state_machine/state_machine/state_machine_params.py
++++ b/state_machine/state_machine/state_machine_params.py
+@@ -133,6 +133,15 @@ class StateMachineParams:
+         )
+         self.interest_horizon_m: float = node.get_parameter("interest_horizon_m").value
+ 
++        self._declare(
++            "obstacle_stale_timeout_s", 1.0,
++            ParameterDescriptor(
++                description="Drop the obstacle list if /tracking/obstacles has not arrived for this long [s] (<=0 disables)",
++                type=ParameterType.PARAMETER_DOUBLE,
++            ),
++        )
++        self.obstacle_stale_timeout_s: float = node.get_parameter("obstacle_stale_timeout_s").value
++
+         self._declare(
+             "overtaking_horizon_m", 6.9,
+             ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE),
+-- 
+2.43.0
+
