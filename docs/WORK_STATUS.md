@@ -575,3 +575,12 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 수정: `mpc_latency_comp_s: 0.1`(rear axle 자세를 적용 조향으로 0.1 s 앞 예측, 0이면 기존 동작) + STOP 상세 로그(자세/속도/MPC·PP 조향). 안전 기능·한계값 변경 없음.
 - 시험: 재현 시험 지연 0/120/200 ms 모두 STOP 0, 랩 3p0 MPC 7.04 s/STOP 0/횡오차 0.024 m(PP 6.42 s), `tests_offline` 55 passed, 오버레이 재빌드.
 - 다음: bench(바퀴 띄움)에서 `/car_state/odom` 지연 측정 → 값 확정 후 저속 프로파일부터 실차 재시험.
+
+## 단계 25 (2026-11-23 14:51~15:07) — 실차 5p0 주행, pit 화면 계산 시간 표시 (코드 변경 없음, JSND_INT `f3326a1`)
+- 맵 미표시 원인: 14:37 스택(3p0)이 Ctrl-C로 종료돼 `map_server` 부재. 재기동 절차: `tmux kill-session -t race` 후 `bash ~/JSND_INT/run/race_mpc.sh <profile>`를 단독 명령으로(죽은 `race` 세션이 남아 있으면 ABORT). `/map`은 기동 시 1회 발행 → 나중에 켠 RViz는 Map Durability=Transient Local 필요, 재기동마다 2D Pose Estimate 재지정.
+- 14:53 3p0 재기동(`/map` 225×142 수신 확인) → 15:00 사용자 요청으로 5p0 재기동(`mpc_max_speed_mps`=5.0 확인, VESC 드라이버 1개, 시작 시 estop 래치).
+- 5p0 로그 `race_mpc5p0_20261123_150006.log`(402 s, `stall_summary.py`): STOP 7(모두 `invalid_local_control_input:invalid_or_reverse_speed`, v≈-0.02 정지 잡음), `outside_heading_envelope` 0회 → 단계 24 지연 보정 후 조향 발산 재발 없음. 계산 이어쓰기 31(`deadline_exceeded` 22, osqp 시간한도 2). 사용자 판단: 속도 튜닝 완료.
+- pit 화면 계산 시간: 기존 `mpc_monitor_node.py`(단계 13)를 스택 재기동 없이 별도 tmux `mon`에서 `target_hz:=50`으로 실행 → `/pitwall/mpc_monitor`(2 Hz) → 노트북 pitwall 패널 "MPC monitor".
+  - 정지 상태 측정(10 s): 설정 20 ms/50 Hz, 실제 주기 24.16 ms/41.4 Hz(p99 61.5, max 80.1 ms), 제어 주기 계산 9.85 ms(p99 42.9 ms), MPC 풀이 5.82 ms(p99 14.5 ms), solved 211/failed 1.
+  - 모니터 CPU ≈ 32 %(1코어), Jetson load 15(6코어). 41 Hz 저하에 모니터 부하가 섞였을 수 있음(미분리). 끄기: `tmux kill-session -t mon`. 기동 시 함께 켜려면 launch 인자 `mpc_monitor:=true`(현재 `race_mpc.sh`는 미전달).
+- 다음: 50 Hz 미달 원인 분리(모니터 on/off 비교) 또는 모니터 경량화(C++/저빈도 구독).
