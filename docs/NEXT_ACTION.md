@@ -116,3 +116,20 @@ ros2 bag record -o ~/bench_logs/bag_mpc_$(date +%H%M) /vesc/high_level/ackermann
 2. **LB 수동**: 스틱 중립에서 LB 유지 → `active_host`=humandrive, 속도 0 → 스틱 아주 조금 → 낮은 ERPM → 놓기 → 0. (수동 최고속도 결정 전에는 스틱을 크게 밀지 않기)
 3. **RB 자율** 3~5 s → **A**로 정지 → 래치 중 LB·RB 무반응 확인
 4. 조향 실측(모터 없이 서보만): 서보 끝점에서 기계적 걸림 여부, 바퀴 각도 측정 → MPC 조향 한계 결정 자료
+
+## Step 34 실차 검증 절차 (2026-11-24, JSND_INT `5e69a81` = install, 기본 N=12)
+```bash
+bash ~/JSND_INT/run/race_mpc.sh 3p0 11_18_6 integrated   # 단독 명령으로 기동, 기동 직후 estop_state 확인
+bash ~/JSND_INT/run/speed_rec.sh 3p0                     # 다른 터미널, bag 기록
+python3 ~/JSND_INT/run/speed_report.py <bag> --vmax 3.0
+python3 ~/JSND_INT/run/stall_summary.py <log>
+```
+- 확인: `solved_late`/STOP 횟수, 랩타임을 Step 31(5.95~6.7 s)과 비교.
+
+### N=30 실험 / N=12 복원 (mpc_car.yaml은 install 심링크 → 재빌드 불필요, 스택 재기동만)
+```bash
+sed -i 's/^    mpc_horizon: 12$/    mpc_horizon: 30/' ~/JSND_INT/src/racing_stack/stack_master/config/mpc_car.yaml   # N=30
+sed -i 's/^    mpc_horizon: 30$/    mpc_horizon: 12/' ~/JSND_INT/src/racing_stack/stack_master/config/mpc_car.yaml   # N=12 복원
+# 또는: cd ~/JSND_INT/src/racing_stack && git checkout stack_master/config/mpc_car.yaml
+```
+- N=30 오프라인 p99 11.7 ms(N=12 5.6 ms), 실차 전체 스택 약 2배 → p99 약 23 ms 추정(50 Hz 미달 가능). `deadline_exceeded` 증가나 제어 50 Hz 미달 시 즉시 N=12로 복원.
