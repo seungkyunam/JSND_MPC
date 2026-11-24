@@ -6,7 +6,7 @@ P=${1:?profile}; INT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd); H=$(dir
 tmux has-session -t race 2>/dev/null || { echo "ABORT: race stack not running"; exit 1; }
 tmux has-session -t rec 2>/dev/null && { echo "ABORT: tmux 'rec' exists"; exit 1; }
 OUT=$H/bench_logs/bags/${P}_$(date +%Y%m%d_%H%M%S)
-T="/state_machine /pf/pose/odom /vesc/sensors/imu_corrected /car_state/odom /car_state/odom_frenet /vesc/ackermann_cmd /vesc/high_level/ackermann_cmd /vesc/sensors/core \
+T="/scan /imu/data /state_machine /pf/pose/odom /vesc/sensors/imu_corrected /car_state/odom /car_state/odom_frenet /vesc/ackermann_cmd /vesc/high_level/ackermann_cmd /vesc/sensors/core \
 /simple_mux/active_host /simple_mux/estop_state /controller/mpc_status /controller/mpc_elapsed_ms"
 tmux new-session -d -s rec "bash -c 'source /opt/ros/jazzy/setup.bash; source $H/JSND/install/local_setup.bash; \
 export ROS_DOMAIN_ID=173 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI=file://$H/JSND/src/racing_stack/cyclonedds.xml; \

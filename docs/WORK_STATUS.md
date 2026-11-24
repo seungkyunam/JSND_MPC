@@ -675,3 +675,16 @@ bag `lowspeed_20261124_204417`(142 s, 자율 20.7~125.2 s, 7랩), 로그 `race_m
 - **위치추정(무변경, 원인 미확정)**: 매 랩 s≈2.83에서 1.4 s 동안 휠+IMU 추측항법 1.25 m·요 0.75 rad, PF 0.25 m·0.15 rad(7랩 동일, 횡가속 0.66~0.75 m/s²로 실제 주행 중). PF 입력 정상: 모션모델 속도 0.93 m/s(/vesc/odom), IMU 요레이트, 42 Hz·최대 간격 49 ms·weight collapse 0, 헤더 지연 1~7 ms(now() 스탬프, 의도된 설계). → 센서모델이 자세를 끌어당기는 스캔-맵 불일치로 추정(정적 장애물 1.4 m 앞 또는 맵 변경). /scan 미기록이라 확정 불가 → 코드 무변경. 마지막 랩은 정체 후 d=−0.7 이탈, 125.2 s 수동 개입. PF 정체 중 ego s≈2.9에서 s≈2.40 유령 장애물 검출.
   다음 확인: `speed_rec.sh`에 /scan 추가해 같은 구간 기록, 장애물 제거 상태 1랩 비교.
 - 백업 ~/JSND_backups/step36_20261124_205217.
+
+## Step 37 — 5p0 bag 20:56 영구 정지 수정 (JSND_INT `9fd48ca`, controller만 빌드, 실차 미구동)
+bag `5p0_20261124_205612`(258 s). 최종 mux 출력이 0이 된 이벤트 분류: TTC EStop 13(simple_mux→estop.py, 0.04~0.48 s, 무변경), TRAILING 중 OSQP 시간한도 STOP 2, **heading envelope 영구 정지 1**, 사람 개입 6.
+- **영구 정지**: t=81.2 s 헤어핀 출구(s≈11.5, d −0.95→복귀 중) heading 오차 > 0.7 rad → `integrated_mpc._reference` `outside_heading_envelope` → 소프트 STOP 0.2 s 후 `Controller._mpc_speed_command` 0. 정지 후에도 매 틱 현재 자세로 같은 판정 → 자기 고착(사람 개입까지 0).
+- **수정**: TRAILING 아님 + 속도 ≤ 0.6 m/s + heading envelope STOP이면 PP(전방 1 m) 조향으로 0.5 m/s 크리프 복귀, MPC 해 성공 시 MPC 복귀. `mpc_envelope_recovery_speed_mps: 0.5`(0=기존). N·비용·구조·비상정지 무변경. 테스트 `tests_offline/test_envelope_recovery.py` 2 passed.
+- **PF 정체**: 81 s에서는 결과(정지 전 PF·car_state 차 ≤ 0.07 m). 62.3~63.3 s(휠 2 m/s, s≈9 고정)는 정지에 선행 — PF 고착인지 실제 접촉인지 /scan·IMU 없어 미확정.
+- `run/speed_rec.sh`에 /scan /imu/data 추가.
+
+## Step 38 — '코너 늦은 조향' 점검 (JSND_INT `d837d32`, 비교 프로파일만 추가, 기본값 무변경)
+- 예측 0.02+11×0.05 = 0.57 s(2.2 m/s에서 1.24 m), 코너 진입→정점 2.2~2.6 m → 진입부만 포함.
+- 오프라인 lap_sim(통합 MPC, `--set mpc_speed_source=integrated`): 조향이 레이싱라인 곡률보다 +0.04 s 선행(PP 0.00). dt 0.10: 위상 동일, 횡오차 0.031→0.110 m, STOP 1→6. r_rate 0.5: 변화 없음 → reference·r_rate가 지연 원인 아님.
+- 실차 bag: 조향-곡률 상관 0.30(시뮬 0.98). 명령→PF yaw rate 지연 110 ms(gain 1.11, latency_comp 0.1과 일치). PF/EKF 위치 지터 p95 0.08~0.10 m, EKF–PF heading 차 p95 0.17 rad. `/car_state/odom` angular.z는 조향·PF와 무상관. bag에 imu_corrected 0건(라이브 100 Hz, 원인 미상) → 자세 잡음이 주원인으로 추정, 미확정.
+- 비교 실행: `bash run/race_mpc.sh 5p0_pdt10 11_18_6 integrated` (`mpc_profile_5p0_pdt10.yaml` = 5p0 + `mpc_preview_dt: 0.10`).

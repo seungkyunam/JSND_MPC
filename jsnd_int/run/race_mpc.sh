@@ -4,7 +4,7 @@
 #   3rd arg (step 26): mpc_speed_source, jsnd = steering-only MPC (default), integrated = accel+steer MPC v2
 # Runs in tmux session "race" (foreground log tee). Stop: Ctrl-C in tmux, or `tmux kill-session -t race`.
 set -eo pipefail
-PROFILE=${1:?profile: lowspeed|1p5|2p25|3p0|4p0|5p0|6p0|7p0}; MAP=${2:-11_18_6}; SRC=${3:-jsnd}
+PROFILE=${1:?profile: lowspeed|1p5|2p25|3p0|4p0|5p0|5p0_pdt10|6p0|7p0}; MAP=${2:-11_18_6}; SRC=${3:-jsnd}
 case $SRC in jsnd|integrated) ;; *) echo "ABORT: speed source must be jsnd or integrated"; exit 1;; esac
 [ "$(id -u)" -eq 0 ] && { echo "ABORT: run as jsnd, not root/sudo"; exit 1; }
 [ "$(hostname)" = "jsnd" ] || { echo "ABORT: run on Jetson (ssh jsnd@172.20.10.4)"; exit 1; }

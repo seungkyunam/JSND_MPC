@@ -82,6 +82,7 @@ controller_manager:
     # --- acceleration -> VESC speed setpoint ---
     mpc_cmd_max_lead_mps: 0.5         # setpoint may lead measured odom speed by at most this
     mpc_static_approach_decel_mps2: 1.5  # TRAILING static obstacle: cap = sqrt(crawl^2 + 2*a*(gap-standoff)) (0 = old flat crawl cap)
+    mpc_envelope_recovery_speed_mps: 0.5  # stopped outside heading envelope: PP creep back to the path (0 = old permanent STOP)
     mpc_odom_timeout_s: 0.2           # stale /car_state/odom -> 0 speed
     # --- existing FTG (FTGONLY) is unchanged; only its speed cap is lowered for first runs ---
     ftg_max_speed: 1.0                # controller.yaml keeps 2.0 for PP mode

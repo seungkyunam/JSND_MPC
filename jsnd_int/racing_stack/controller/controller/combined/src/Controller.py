@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import dataclasses
 import logging
 
 import numpy as np
@@ -80,6 +81,7 @@ class Controller:
                 mpc_fallback_max_ticks=10,
                 mpc_latency_comp_s=0.0,
                 mpc_static_approach_decel_mps2=1.5,
+                mpc_envelope_recovery_speed_mps=0.5,
             ):
 
         # Parameters from manager
@@ -171,6 +173,7 @@ class Controller:
         self.mpc_result = None
         self.mpc_trailing_cap = None
         self.mpc_static_approach_decel_mps2 = float(mpc_static_approach_decel_mps2)
+        self.mpc_envelope_recovery_speed_mps = max(0.0, float(mpc_envelope_recovery_speed_mps))
         self.curr_applied_steering = 0.0
         self._mpc_last_status = None
         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
@@ -339,9 +342,28 @@ class Controller:
             # tells input loss from a reverse/odom-undershoot after hard braking.
             rear = np.zeros(3)
             result = self.lateral_mpc.reject('invalid_local_control_input:'+str(exc), self.curr_steering_angle)
+        # Step 37: permanent-stop fix. outside_heading_envelope is re-checked on every tick
+        # from the CURRENT pose, so once the car stops with |heading error| > the envelope
+        # (5p0 bag 20:56, t=81.2 s, hairpin exit s~11.5) the MPC rejects forever and the
+        # setpoint stays 0 until a human drives it. At low speed only, creep at
+        # mpc_envelope_recovery_speed_mps with pure-pursuit steering toward the local path
+        # until the MPC solves again. simple_mux estop/TTC and the not-engaged guard still
+        # force 0 downstream; TRAILING and all other STOP reasons are unchanged.
+        recovery = (not result.success and self.mpc_envelope_recovery_speed_mps > 0.0
+                    and self.mpc_trailing_cap is None
+                    and str(result.status).endswith(':outside_heading_envelope')
+                    and measured <= self.mpc_envelope_recovery_speed_mps + 0.1)
+        if recovery:
+            result = dataclasses.replace(result, status='envelope_recovery:' + str(result.status))
         self.mpc_result = result
         self._report_mpc_result()
         self.mpc_stop_ticks = 0 if result.success else self.mpc_stop_ticks + 1
+        if recovery:
+            steering = self._envelope_recovery_steering(rear, waypoints)
+            self.record_applied_steering(steering)
+            self.reset_mpc_speed_command()   # MPC restarts from the measured speed
+            return (self.mpc_envelope_recovery_speed_mps, 0., 0., steering, rear[:2], 0., 0, 0.,
+                    rear.reshape(1, 3))
         if result.success:
             steering = result.steering
         elif self._mpc_soft_stop(measured):
@@ -357,6 +379,18 @@ class Controller:
         nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
         return (speed_cmd, result.acceleration, 0., steering,
                 point, float(np.linalg.norm(point-rear[:2])), nearest, 0., rear.reshape(1, 3))
+
+    def _envelope_recovery_steering(self, rear, waypoints, lookahead=1.0):
+        """Pure pursuit (rear axle, fixed lookahead) toward the local path, rate-limited."""
+        cfg = self.lateral_mpc.config
+        xy = np.asarray(waypoints, dtype=float)[:, :2]
+        i = int(np.argmin(np.linalg.norm(xy - rear[:2], axis=1)))
+        arc = np.concatenate(([0.], np.cumsum(np.linalg.norm(np.diff(xy[i:], axis=0), axis=1))))
+        dx, dy = xy[i + int(min(np.searchsorted(arc, lookahead), len(arc) - 1))] - rear[:2]
+        lateral = -np.sin(rear[2]) * dx + np.cos(rear[2]) * dy
+        target = np.arctan(2.0 * cfg.wheelbase * lateral / max(dx * dx + dy * dy, 1e-6))
+        prev, step = float(self.curr_applied_steering), cfg.max_steer_rate * cfg.dt
+        return float(np.clip(target, max(-cfg.max_steer, prev - step), min(cfg.max_steer, prev + step)))
 
     def _plan_lateral_accel_check(self, waypoints):
         """Physical lateral-acceleration limit applied to the PLAN, point by point:
