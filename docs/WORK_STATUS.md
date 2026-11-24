@@ -584,3 +584,12 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
   - 정지 상태 측정(10 s): 설정 20 ms/50 Hz, 실제 주기 24.16 ms/41.4 Hz(p99 61.5, max 80.1 ms), 제어 주기 계산 9.85 ms(p99 42.9 ms), MPC 풀이 5.82 ms(p99 14.5 ms), solved 211/failed 1.
   - 모니터 CPU ≈ 32 %(1코어), Jetson load 15(6코어). 41 Hz 저하에 모니터 부하가 섞였을 수 있음(미분리). 끄기: `tmux kill-session -t mon`. 기동 시 함께 켜려면 launch 인자 `mpc_monitor:=true`(현재 `race_mpc.sh`는 미전달).
 - 다음: 50 Hz 미달 원인 분리(모니터 on/off 비교) 또는 모니터 경량화(C++/저빈도 구독).
+
+## 단계 27 (2026-11-24 18:20~18:40) — Step 26 실차 준비 점검·출발 불가 진단 (코드·파라미터 변경 없음, JSND_INT `7734321`)
+- 코드: Jetson JSND_INT `7734321` = Step 26, 작업트리 clean, install = 소스. Hokuyo `192.168.0.10` ping OK. 배터리 3S 11.4 V(3.80 V/셀, 약 50%).
+- `tests_offline`: 5 failed / 50 passed. 실차 영향 없음으로 판단 — `100hz_compute_budget`(100 Hz 예산, 실차 50 Hz), `bench_lifted`(오프라인 실측 시간 `deadline_exceeded`), `drive_windows`(11-22 기록·구 한계 재생, 기존 실패), `profile_refinement`(허용오차 2e-4 m/s 초과), `trailing_far_static`(60틱 후 0.276 < 0.3 m/s, TRAILING 출발 약간 느림).
+- 4p0 integrated 래치 30 s(사용자 측정): loop mean 20.3/p99 33.1/max 82.8 ms, MPC mean 4.1/p99 13.8/max 29.9 ms, solved 1089, `trailing_without_target` 379, deadline 6. 주기 초과 원인 = CPU 경합(load 14.7/6코어, state_machine 82 %, controller 73 %, PF 45 %), MPC p99는 16 ms 마감 이내 → 주행 가능 판단.
+- 출발 불가 원인 1 (직접 원인): 18:21:36 F710이 USB 재연결되며 **DirectInput 모드**(`046d:c219`)로 전환, `logitech: probe failed -1` → `/dev/input/js0` 없음 → `/joy` 미발행 → `simple_mux` `reset refused: no fresh /joy (pad connected?)`. 버튼 매핑(A=0/LB=4/RB=5)도 XInput 기준. 조치: 패드 뒷면 스위치 **X**, 수신기 재삽입(물리 조작, 사용자).
+- 출발 불가 원인 2: `ObstacleTransition`(`state_transitions.py:133-170`)은 관심 장애물이 있고 |d| ≥ gb_ego_width 0.29 m이며 recovery/OT 경로가 없으면 GB가 비어도 TRAILING. 차 d=0.48 m 정지 + 오른쪽 벽 가장자리 검출(s≈9.96, d=-1.54, 폭 -1.66~-1.42, 트랙 d_right 1.70, 맵 xy≈(0.49, 1.76)) → TRAILING, `trailing_targets` 비어 MPC `trailing_without_target` STOP(PP도 0 출력, MPC 고유 문제 아님). 벽 검출 원인(PF 오프셋 vs 실제 벽 위치)은 미확정.
+- 환경 비교: domain 173/cyclone/`cyclonedds.xml` 동일, 중복 노드·VESC 2중 없음. config·맵은 JSND와 동일(`mpc_car.yaml`만 추가). race_mpc.sh 차이는 의도된 MPC 기본값(시작 래치·`/joy` 필요 reset, 수동 1.0 m/s, `use_estop:=true`, 50 Hz).
+- 재출발 절차: F710 X 모드 → `tmux kill-session -t rec`(스택 없이 남은 녹화) → `bash ~/JSND_INT/run/race_mpc.sh 4p0 11_18_6 integrated` → 차를 레이스라인 위(|d|<0.05 m, 20° 이내)에 두고 2D Pose Estimate → `/state_machine` GB_TRACK 확인 → reset_estop + RB(사용자).
