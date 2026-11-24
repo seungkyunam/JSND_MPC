@@ -76,7 +76,7 @@ class IntegratedMPC:
                             'osqp:maximum iterations reached', 'osqp:solved inaccurate')
     ACCEPT_VERIFIED_INEXACT = True
     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
-    MAX_CONTINUATION_TICKS = 2          # at most 2 consecutive ticks (40 ms at 50 Hz)
+    MAX_CONTINUATION_TICKS = 5          # at most 5 consecutive ticks (100 ms at 50 Hz; plan spans 0.57 s)
     CONTINUATION_TOL = (.10, .15, .30)  # measured vs planned: position m, heading rad, speed m/s
     PROFILE_REFINEMENTS = 2             # bounded geometry-envelope refinement
     # Speed caps use this fraction of the lateral limit Y; steering may still use all of Y.
@@ -348,7 +348,9 @@ class IntegratedMPC:
                 return None
             t = max((self.continuation+1)*c.dt, age)
             stage = int(np.searchsorted(self.node_times, t, 'right'))-1
-            if stage < 1 or stage >= c.horizon or t+c.dt > self.node_times[stage+1]+1e-9:
+            # The served tick may cross into the next stage: its control is still re-limited
+            # and rechecked below (state match, cap, lateral accel, tracking).
+            if stage < 1 or stage >= c.horizon:
                 return None
             w = (t-self.node_times[stage])/self.periods[stage]
             p = plan['predicted']

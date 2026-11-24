@@ -182,6 +182,7 @@ class Controller:
         # Pose/actuation dead time the MPC state is predicted over (PP: future_constant).
         self.mpc_latency_comp_s = max(0.0, float(mpc_latency_comp_s))
         self.mpc_fallback_ticks = 0
+        self.mpc_stop_ticks = 0           # integrated: consecutive STOP ticks (soft-stop window)
         self.mpc_lat_cap_active = False   # physical a_lat check bound the plan speed this tick
         self.mpc_profile_cap_active = False  # mpc_profile operator ceiling bound this tick
         self.mpc_pp_steering = 0.0        # legacy PP steering of this tick (fallback/diagnosis)
@@ -223,6 +224,15 @@ class Controller:
         mpc_cmd_max_lead_mps above the measured speed (anti-windup), never < 0.
         """
         if not result.success:
+            # Soft STOP (step 32): a STOP while moving ramps the setpoint down at the MPC's
+            # own max_decel for at most mpc_fallback_max_ticks, instead of a 0 setpoint
+            # (VESC current braking -> stutter on every one-tick solver miss). A STOP that
+            # lasts longer, or starts at standstill, commands 0 as before. simple_mux
+            # estop/TTC and the not-engaged guard still force 0 downstream.
+            if self._mpc_soft_stop(measured):
+                cfg = self.lateral_mpc.config
+                self.mpc_speed_cmd = max(0.0, self.mpc_speed_cmd - cfg.max_decel * cfg.dt)
+                return self.mpc_speed_cmd
             self.reset_mpc_speed_command()
             return 0.0
         base = measured if self.mpc_speed_cmd is None else self.mpc_speed_cmd
@@ -231,6 +241,14 @@ class Controller:
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
         return self.mpc_speed_cmd
+
+    # Behaviour/input STOPs keep the immediate 0 setpoint (state-machine semantics unchanged).
+    HARD_STOP_PREFIXES = ('trailing_without_target', 'unsupported_behavior', 'invalid_local_control_input')
+
+    def _mpc_soft_stop(self, measured):
+        status = str(getattr(self.mpc_result, 'status', ''))
+        return (not status.startswith(self.HARD_STOP_PREFIXES) and self.mpc_stop_ticks <= self.mpc_fallback_max_ticks and self.mpc_speed_cmd is not None
+                and self.mpc_speed_cmd > 0.0 and measured > self.STANDSTILL_NOISE_MPS)
 
     def _mpc_recenter_steering(self):
         """Steering while the MPC requests STOP: move the last applied steering toward 0
@@ -301,7 +319,13 @@ class Controller:
             result = self.lateral_mpc.reject('invalid_local_control_input:'+str(exc), self.curr_steering_angle)
         self.mpc_result = result
         self._report_mpc_result()
-        steering = result.steering if result.success else self._mpc_recenter_steering()
+        self.mpc_stop_ticks = 0 if result.success else self.mpc_stop_ticks + 1
+        if result.success:
+            steering = result.steering
+        elif self._mpc_soft_stop(measured):
+            steering = float(self.curr_steering_angle)  # hold during the soft-stop ramp (no corner jolt)
+        else:
+            steering = self._mpc_recenter_steering()
         self.record_applied_steering(steering)
         speed_cmd = self._mpc_speed_command(result, measured)
         if self.mpc_trailing_cap is not None:

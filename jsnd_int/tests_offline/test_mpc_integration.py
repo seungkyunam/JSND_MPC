@@ -203,3 +203,25 @@ def test_off_path_requests_stop():
     pose = pose_on_line(0) + np.array([[0.0, 2.0, 0.0]])
     cmd, _ = step(ctrl, 'GB_TRACK', pose, local_window(0), 0.5)
     assert cmd == 0.0 and not ctrl.mpc_result.success
+
+
+def test_solver_stop_while_moving_ramps_down_then_zero():
+    """Step 32: a solver STOP while moving ramps the setpoint at max_decel with steering
+    held for mpc_fallback_max_ticks, then commands 0 (no one-tick 0 -> VESC braking jolt)."""
+    ctrl = make_controller()
+    pose, w = pose_on_line(0), local_window(0)
+    for _ in range(40):
+        cmd, steer = step(ctrl, 'GB_TRACK', pose, w, 0.3)
+    assert cmd > 0 and ctrl.mpc_result.success
+    off = pose + np.array([[0.0, 2.0, 0.0]])
+    dv = ctrl.lateral_mpc.config.max_decel * DT
+    prev = cmd
+    for _ in range(ctrl.mpc_fallback_max_ticks):
+        cmd, s = step(ctrl, 'GB_TRACK', off, w, 0.3)
+        assert not ctrl.mpc_result.success
+        assert cmd == pytest.approx(max(0.0, prev - dv)) and s == steer
+        prev = cmd
+        if cmd == 0.0:
+            break
+    cmd, _ = step(ctrl, 'GB_TRACK', off, w, 0.3)
+    assert cmd == 0.0

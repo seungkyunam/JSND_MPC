@@ -625,3 +625,11 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 무변경: A 버튼 래치, joy 단절 보호, simple_mux TTC EStop, MPC 튜닝값.
 - reset_estop `no fresh wheel odometry` 거부: simple_mux 기동 52 ms 직후 요청(첫 odom 수신 전) → 코드 정상, 스택 기동 후 재호출.
 - 미확인: 5p0 자율주행 중 TTC EStop 17회 이상(±70°, 0.35 s) — `/scan` 미기록으로 오판 여부 판단 불가.
+
+## 단계 32 — 순간 버벅임 수정: 소프트 STOP + 이어쓰기 5틱 (JSND_INT `badf33a`, 실차 미구동)
+- 진단(19:44 3p0 실차 로그, 자율 4구간): MPC STOP 1틱마다 속도 명령 0 → VESC `Current braking engaged: target=0.00 actual=2.57` 후 20 ms 뒤 해제 = 순간 버벅임. STOP 틱마다 조향도 0 쪽으로 0.064 rad 복귀(코너 꺾임). 이어쓰기 ~330회 적용됐지만 deadline STOP 165회 잔존 — 최대 2틱이고 2번째 틱이 단계 경계(0.07 s)에서 거부됨.
+- 수정 1 (Controller.py): 주행 중 solver STOP → 속도 setpoint를 `max_decel`로 램프 감속 + 조향 유지, 최대 `mpc_fallback_max_s`(0.2 s), 이후 기존처럼 0·조향 복귀. TRAILING 대상 없음/미지원 상태/입력 오류 STOP은 즉시 0 유지.
+- 수정 2 (integrated_mpc.py): `MAX_CONTINUATION_TICKS` 2→5(100 ms, 계획 0.57 s), 단계 경계 거부 조건 제거(상태 일치·속도 상한·횡가속·추종오차 재검사 유지).
+- 무변경: A 래치, simple_mux TTC EStop(자율 중 79회, 거의 매 랩 — 별도 오판 확인 필요), 자율 미선택 0 강제, 최고속도 상한, OVERTAKE/상태머신.
+- 검증: `test_mpc_integration.py::test_solver_stop_while_moving_ramps_down_then_zero`(신규), `test_corner_stall.py::test_deadline_miss_continues_verified_plan_at_most_max_ticks` 포함 7건 통과. 기존 실패 3건(test_profile_refinement…, test_budget_miss_recovers_over_ticks, test_recovery_after_stop_from_standstill)은 수정 전에도 실패. controller만 빌드, 백업 `~/JSND_backups/step32_20261124_195839`.
+- 실차 확인: 로그 `Current braking engaged: target=0.00` 빈도. 튜닝: `mpc_fallback_max_s`(소프트 STOP 창), `mpc_r_rate`(코너 조향 부드러움).

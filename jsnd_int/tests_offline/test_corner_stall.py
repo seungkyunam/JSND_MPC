@@ -120,18 +120,19 @@ def _expected_state(first, ticks, c):
     return np.array([np.interp(t, nodes, first.predicted[:, k]) for k in range(4)])
 
 
-def test_deadline_miss_continues_verified_plan_at_most_two_ticks():
+def test_deadline_miss_continues_verified_plan_at_most_max_ticks():
     c = config()
     mpc, first = _solved_then_deadline(c)
     steer = first.steering
-    for tick in (1, 2):
+    ticks = mpc.MAX_CONTINUATION_TICKS
+    for tick in range(1, ticks+1):
         r = mpc.solve(_expected_state(first, tick, c), straight(), steer)
         assert r.success and r.status == 'plan_continuation:deadline_exceeded', r.status
         assert abs(r.steering-steer) <= c.max_steer_rate*c.dt+1e-9
         assert r.acceleration >= -c.max_decel-1e-9 and r.speed <= 2.25
         steer = r.steering
-    third = mpc.solve(_expected_state(first, 3, c), straight(), steer)
-    assert not third.success and third.status == 'deadline_exceeded'
+    last = mpc.solve(_expected_state(first, ticks+1, c), straight(), steer)
+    assert not last.success and last.status == 'deadline_exceeded'
 
 
 def test_no_continuation_when_state_left_the_plan_or_for_safety_failures():
