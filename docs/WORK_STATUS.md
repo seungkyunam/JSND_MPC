@@ -796,3 +796,20 @@ bag `5p0_20261124_205612`(258 s). 최종 mux 출력이 0이 된 이벤트 분류
 - 위치·방향 잡음은 필터/공분산 가중 없이 매 틱 입력에 직접 들어간다. 위치 잡음은 예측 시작 위치를 이동시키고 방향 잡음은 시작 yaw뿐 아니라 전진 예측의 cos/sin 방향도 바꾼다. 작은 각도 근사로 보상 이동의 횡오차 표준편차는 `v*0.1*0.08674`이며 v=6 m/s에서 약 0.052 m다(계산 예시, 측정 기여량 아님). 이어지는 MPC 미래 예측에도 yaw 오차가 전파된다. solver의 yaw unwrap/각도 정렬은 ±π 표현 처리를 위한 것이며 잡음 제거 필터가 아니다. 입력 tracking 허용 1 m, heading 허용 0.7 rad 및 비선형 예측 재검증은 유지됐다.
 - ROS manager `odom_cb`는 `/car_state/odom`에서 x/y와 quaternion→yaw, twist 속도를 읽어 전달한다. 이 callback 자체에는 자세 평활화가 없다. 실제 upstream PF/EKF의 융합 품질은 이번 실험으로 검증하지 않았다. offline harness는 manager callback을 통하지 않고 noisy pose를 직접 공급하며 local path 선택과 Frenet s/d, yaw rate는 ground truth를 사용한다.
 - 단일 seed·단일 실행 및 wall-clock deadline 변동 때문에 작은 랩타임/solver STOP 차이는 통계적 효과로 해석하지 않는다. 횡오차는 실제 상태 기준 전체 주행 평균/최대이며 복합 미완주의 60초 정체 구간과 완주의 약 18초 주행은 동일 시간 창이 아니다. 실차 지연 식별·타이어 슬립·시간 상관 잡음은 포함하지 않는다. 요청한 실험 결과·구조 분석만 저장하며 제어기 변경과 추가 테스트는 수행하지 않았다.
+
+## Step 45 — EKF 방향 입력·조향 이력 예측 및 Jetson 비교 준비 (기준 `7ecdc30`)
+- 구현·채택 근거·모든 비교표·Jetson 업데이트/빌드/PP·기존 MPC·개선 MPC 실행/복구 명령: [STEP45_JETSON_RUNBOOK.md](STEP45_JETSON_RUNBOOK.md).
+- 기존 EKF가 PF 자세와 보정 IMU yaw rate를 이미 융합하는 것을 확인했다. 새 EKF/저역통과 필터/원시 IMU 재융합 대신 같은 `/car_state/odom`의 timestamp와 yaw rate로 현재 방향을 전파하고 절대 자세 innovation만 제한한다. 정상 회전의 추가 샘플 대기는 없지만 큰 절대 보정에는 정착 시간이 생긴다. 기존 마지막 명령 기반 100 ms 예측은 실제 발행 명령 이력의 시간순 예측으로 대체하며 중복 적용하지 않는다.
+- 고정 4 variant × 2조건 8회 ablation 후, publish 이력 연결을 마무리한 최종 기존/결합 × 2조건 4회만 검증했다. 결과: `jsnd_int/tests_offline/step45_results.jsonl`, `step45_final_results.jsonl`; 재현: `compare_step45.py` (`--final`은 배포 두 모드만). 파라미터·seed 추가 탐색 없음. 방향 단독은 복합에서 미완주하여 ROS 사용을 차단했고 이력 예측과 결합한 개선 모드를 선택 기능으로 채택했다. 기본값은 두 기능 OFF다.
+
+| 최종 조건 | 버전 | 완료 랩 | 두 번째 랩(s) | 평균 / 최대 횡오차(m) | STOP 구간 / 틱 | Controller P99(ms) |
+|---|---|---:|---:|---:|---:|---:|
+| 정상 | 기존 | 2 | 8.56 | 0.074 / 0.279 | 2 / 2 | 11.714 |
+| 정상 | 개선 | 2 | 8.52 | 0.060 / 0.233 | 7 / 10 | 13.221 |
+| 복합 | 기존 | 0 | 미완주(60초) | 1.236 / 1.430 | 8 / 2591 | 8.016 |
+| 복합 | 개선 | 2 | 8.74 | 0.147 / 0.726 | 7 / 12 | 15.283 |
+
+- 복합 지속 tracking envelope 거부를 줄이고 완주했으나 정상 STOP/P99는 악화했다. 개선 복합에도 예측 tracking 9틱·OSQP runtime 3틱 실패가 남는다. 기존 복합 P99는 긴 입력 거부/정체 구간을 포함하므로 주행 중인 개선 P99와 계산량을 직접 비교하지 않는다. 실제 deadline 변동 때문에 최초 ablation의 기존 MPC는 완주했으며, 이 결과도 숨기지 않고 보존했다. 개선 결합은 두 실행 모두 완주했지만 실차/통계적 성공 판정은 아니다.
+- Kinematic LTV-MPC solver, N=12/50 Hz, 실차 물리 한계와 production 계획 계수 0.85, PP 제어, E-stop 코드는 무변경. Step 44의 실험 override는 오프라인에만 적용했다. 새 helper의 rate 입력은 offline ground truth이므로 실제 EKF rate 잡음/지연 재현은 아니다.
+- 입력/예측 연결·기존 STOP/odom·mux 보호·배포/복구 관련 **17 passed** (`step45_tests.xml`). XML 파싱 및 실행 shell 문법 확인. Jetson Jazzy 빌드는 실행하지 않았고 명령만 준비했다. 배포 도구는 기준 파일 해시 확인·5파일 백업/갱신/복구를 제공하며 맵·차량 설정·EKF·E-stop을 덮어쓰지 않는다. 실제 Jetson의 미확인 변경은 자동으로 강제 덮어쓰지 않는다.
+- 오늘 개발은 이 결과와 실행 준비로 종료. 실차 연결, 추가 튜닝·탐색 및 불필요한 테스트는 수행하지 않았다.

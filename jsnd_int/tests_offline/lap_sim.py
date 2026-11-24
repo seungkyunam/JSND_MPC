@@ -112,7 +112,9 @@ def build(ctrl, profile, overrides, rate):
                      mpc_speed_source=v_['mpc_speed_source'],
                      mpc_plan_lateral_accel_limit=v_['mpc_plan_lateral_accel_limit_mps2'],
                      mpc_fallback_max_ticks=max(1, round(v_['mpc_fallback_max_s'] * rate)),
-                     mpc_latency_comp_s=v_['mpc_latency_comp_s'])
+                     mpc_latency_comp_s=v_['mpc_latency_comp_s'],
+                     mpc_heading_robust=v_['mpc_heading_robust'],
+                     mpc_history_prediction=v_['mpc_history_prediction'])
     c = Controller(**kw, **extra, logger_info=lambda *a, **k: None, logger_warn=lambda *a, **k: None)
     return c, p
 
@@ -170,6 +172,7 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
     stops, stop_prev = 0, False
     statuses = collections.Counter()
     binding = collections.Counter()
+    c.pose_prediction.clock = lambda: t
     while t < t_max:
         s_arr, d_arr = conv.get_frenet([x], [y])
         s, d = float(s_arr[0]), float(d_arr[0])
@@ -186,6 +189,7 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
         pose = np.array([[xm, ym, yaw + yaw_sigma * rng.standard_normal()]])
         frenet = np.array([s, d, vm, 0.0])
         c.yaw_rate = v * np.tan(delta) / L
+        c.pose_prediction.observe(t, c.yaw_rate)
         out = c.main_loop('GB_TRACK', pose, wp, vm, None, frenet, acc_now, TRACK_LEN)
         spd, steer = float(out[0]), float(out[3])
         if ctrl == 'mpc':

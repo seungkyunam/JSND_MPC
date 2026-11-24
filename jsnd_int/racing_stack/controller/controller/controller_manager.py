@@ -119,6 +119,14 @@ class ControllerManager(Node):
         self.mpc_speed_source = str(mpc_values['mpc_speed_source'])
         if self.mpc_speed_source not in ('jsnd', 'integrated'):
             raise ValueError('mpc_speed_source must be jsnd or integrated')
+        if self.lateral_controller == 'MPC':
+            heading = mpc_values['mpc_heading_robust']
+            history = mpc_values['mpc_history_prediction']
+            if heading and not history:
+                raise ValueError('Step 45 heading-only variant failed validation; enable history too')
+            if (heading or history) and self.mpc_speed_source != 'integrated':
+                raise ValueError('Step 45 input improvements require mpc_speed_source=integrated')
+            self.get_logger().info(f'[Step 45] heading_robust={heading} history_prediction={history}')
         if self.lateral_controller == 'MPC' and self.mpc_speed_source == 'jsnd':
             # Step 23: JSND speed pipeline (unchanged) + steering-only MPC.
             from controller.mpc.steering_mpc import SteeringMPC  # imports OSQP
@@ -266,9 +274,12 @@ class ControllerManager(Node):
             mpc_plan_lateral_accel_limit=float(self.mpc_values['mpc_plan_lateral_accel_limit_mps2']),
             mpc_fallback_max_ticks=max(1, int(round(float(self.mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
             mpc_latency_comp_s=float(self.mpc_values['mpc_latency_comp_s']),
+            mpc_heading_robust=bool(self.mpc_values['mpc_heading_robust']),
+            mpc_history_prediction=bool(self.mpc_values['mpc_history_prediction']),
             mpc_static_approach_decel_mps2=self.mpc_static_approach_decel_mps2,
             mpc_envelope_recovery_speed_mps=self.mpc_envelope_recovery_speed_mps,
         )
+        self.controller.pose_prediction.clock = lambda: self.get_clock().now().nanoseconds * 1e-9
         self.controller.speed_now = self.speed_now
         self.controller.yaw_rate = self.yaw_rate
         self.get_logger().info(f"[{self.name}] initialized FrenetConverter + Controller. Ready!")
@@ -371,6 +382,13 @@ class ControllerManager(Node):
         self.position_in_map = np.array([x, y, theta])[np.newaxis]
         if self.controller is not None:
             self.controller.speed_now = self.speed_now
+            # EKF already fuses bias-corrected gyro in base_link. Do not fuse the
+            # legacy /imu/data sign-flipped rate or AHRS orientation a second time.
+            stamp = data.header.stamp.sec + data.header.stamp.nanosec * 1e-9
+            rate = data.twist.twist.angular.z
+            if data.twist.covariance[35] < 0:
+                rate = float('nan')
+            self.controller.pose_prediction.observe(stamp, rate)
         self.ftg_controller.set_vel(data.twist.twist.linear.x)
 
     def vesc_odom_cb(self, data: Odometry):

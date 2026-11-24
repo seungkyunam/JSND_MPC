@@ -1,0 +1,23 @@
+{
+  "base_commit": "7ecdc30",
+  "python": "3.10.12 (main, Aug 31 2026, 10:18:17) [GCC 11.4.0]",
+  "platform": "Linux-6.8.0-149-generic-x86_64-with-glibc2.35",
+  "numpy": "1.26.4",
+  "scipy": "1.15.3",
+  "osqp": "1.1.3",
+  "pyyaml": "5.4.1",
+  "OPENBLAS_NUM_THREADS": 1,
+  "source_sha256": {
+    "jsnd_int/racing_stack/controller/controller/combined/src/Controller.py": "d09b57c9eacb9c44fe7476c538abf0de953e0b8f8e9b2bc659ca09c9b573fbc2",
+    "jsnd_int/racing_stack/controller/controller/controller_manager.py": "f5f42968612d4fc2d6c2021f89453060861d99c019e47c0cbbbf3ca54625d7bc",
+    "jsnd_int/racing_stack/controller/controller/mpc/configuration.py": "58a185bf456fe5c000ae7159bae16949fd229c76d4a27c234f71f2141deaf23a",
+    "jsnd_int/racing_stack/controller/controller/mpc/pose_prediction.py": "703952dade11952f155b4e9fa6f98f672fcd3acbedd42fd04d5880c30da85f53",
+    "jsnd_int/racing_stack/stack_master/launch/race.launch.xml": "092ffc81fd77301bb604a7fe150983eda12c587e262b7ee77c942fdc96dacb55",
+    "jsnd_int/racing_stack/controller/controller/mpc/integrated_mpc.py": "e6d7837c99151e8716b115245d02e58695b839e5e4a5fb258335adb6225845f1",
+    "jsnd_int/tests_offline/lap_sim.py": "6a8da3d311ff150c7211b19ca2f20191af87e93fbc7444f8ca13161cce62ed33",
+    "jsnd_int/tests_offline/compare_step45.py": "f743465d270e87be148f2cb8c2c8b00c0a4359907a6f023785b82c8c3ab0e264",
+    "stack_master/maps/test0/global_waypoints.json": "2a957a86a1269e1ece1813ecb18d38401d849b097ec267ef7c717dd21eca1741",
+    "stack_master/maps/test0/speed_scaling.yaml": "d010c68c323f4fa021cc69a97d9b10b7ded356d4b13a8e1c9d6d378b3828cda5"
+  },
+  "note": "Hashes describe final-code validation; ablation preceded publish-only history wiring. No Jetson connection/build performed."
+}

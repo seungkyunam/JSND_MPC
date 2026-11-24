@@ -1,0 +1,25 @@
+{
+  "base_commit": "7ecdc30",
+  "files": {
+    "controller/controller/combined/src/Controller.py": {
+      "base_sha256": "c9c6c97283805fdb1002f6611266a154369f141a10253424933a3ce1bb1e986a",
+      "new_sha256": "d09b57c9eacb9c44fe7476c538abf0de953e0b8f8e9b2bc659ca09c9b573fbc2"
+    },
+    "controller/controller/controller_manager.py": {
+      "base_sha256": "4bd8e5afdde562b6b8b6eb0fb60e202912c797fa60d789bacddf64f07a01bb38",
+      "new_sha256": "f5f42968612d4fc2d6c2021f89453060861d99c019e47c0cbbbf3ca54625d7bc"
+    },
+    "controller/controller/mpc/configuration.py": {
+      "base_sha256": "6249614cad34f69e2b178114d74cb2205aaa738d0aefd87e3e21fbaac25dda0e",
+      "new_sha256": "58a185bf456fe5c000ae7159bae16949fd229c76d4a27c234f71f2141deaf23a"
+    },
+    "controller/controller/mpc/pose_prediction.py": {
+      "base_sha256": null,
+      "new_sha256": "703952dade11952f155b4e9fa6f98f672fcd3acbedd42fd04d5880c30da85f53"
+    },
+    "stack_master/launch/race.launch.xml": {
+      "base_sha256": "fbd7a640b0c9e4f5e7eb02000bd1e3734fd687f69dd95a15f8af95841e359a9a",
+      "new_sha256": "092ffc81fd77301bb604a7fe150983eda12c587e262b7ee77c942fdc96dacb55"
+    }
+  }
+}

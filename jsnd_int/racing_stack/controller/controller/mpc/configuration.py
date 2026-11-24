@@ -48,10 +48,17 @@ MPC_DEFAULTS = {
     # Envelope violations (path/heading) STOP immediately.
     'mpc_fallback_max_s': .2,
     'mpc_latency_comp_s': 0.,
+    'mpc_heading_robust': False,
+    'mpc_history_prediction': False,
 }
 
 
 def _check(values, wheelbase_explicit):
+    for key in ('mpc_heading_robust', 'mpc_history_prediction'):
+        if type(values[key]) is not bool:
+            raise ValueError(key + ' must be boolean')
+    if not np.isfinite(values['mpc_latency_comp_s']) or not 0 <= values['mpc_latency_comp_s'] <= 1.0:
+        raise ValueError('mpc_latency_comp_s must be finite and between 0 and 1 s')
     if values['mpc_geometry_confirmed'] is not True or not wheelbase_explicit:
         raise ValueError('MPC requires explicit wheelbase and mpc_geometry_confirmed=true; '
                          'confirm pose reference, steering units/sign and measured limits first')

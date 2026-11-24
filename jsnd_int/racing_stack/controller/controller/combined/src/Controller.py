@@ -9,6 +9,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from controller.mpc.lateral_mpc import MPCResult, SafetyRequest
 from controller.mpc.steering_mpc import ENVELOPE_REASONS
+from controller.mpc.pose_prediction import PosePrediction
 
 
 class Controller:
@@ -80,6 +81,8 @@ class Controller:
                 mpc_plan_lateral_accel_limit=4.5,
                 mpc_fallback_max_ticks=10,
                 mpc_latency_comp_s=0.0,
+                mpc_heading_robust=False,
+                mpc_history_prediction=False,
                 mpc_static_approach_decel_mps2=1.5,
                 mpc_envelope_recovery_speed_mps=0.5,
             ):
@@ -186,6 +189,9 @@ class Controller:
         self.mpc_fallback_max_ticks = int(mpc_fallback_max_ticks)
         # Pose/actuation dead time the MPC state is predicted over (PP: future_constant).
         self.mpc_latency_comp_s = max(0.0, float(mpc_latency_comp_s))
+        self.mpc_heading_robust = bool(mpc_heading_robust)
+        self.mpc_history_prediction = bool(mpc_history_prediction)
+        self.pose_prediction = PosePrediction()
         self.mpc_fallback_ticks = 0
         self.mpc_stop_ticks = 0           # integrated: consecutive STOP ticks (soft-stop window)
         self.mpc_lat_cap_active = False   # physical a_lat check bound the plan speed this tick
@@ -199,13 +205,15 @@ class Controller:
         """Next MPC command restarts from the measured speed (stop, FTG, input loss)."""
         self.mpc_speed_cmd = None
 
-    def record_applied_steering(self, steering):
+    def record_applied_steering(self, steering, published=True):
         """Manager feedback of the steering actually published (FTG / input-loss stop)."""
         if self.lateral_controller == "MPC" and np.isfinite(steering):
             limit = self.lateral_mpc.config.max_steer
             self.curr_steering_angle = float(np.clip(steering, -limit, limit))
             self.current_steer_command = self.curr_steering_angle
             self.curr_applied_steering = self.curr_steering_angle
+            if self.mpc_history_prediction and published:
+                self.pose_prediction.record(self.curr_steering_angle)
 
     def _report_mpc_result(self):
         if self.mpc_result.status != self._mpc_last_status:
@@ -316,11 +324,16 @@ class Controller:
                 raise ValueError('invalid_or_reverse_speed')
             measured = max(0.0, measured)  # clamp only standstill odom jitter
             rear = position[0].copy()
+            if self.mpc_heading_robust:
+                rear[2] = self.pose_prediction.condition_heading(rear)
             rear[:2] += self.pose_to_rear_axle_m * np.array([np.cos(rear[2]), np.sin(rear[2])])
             cfg = self.lateral_mpc.config
-            for _ in range(int(round(self.mpc_latency_comp_s / cfg.dt))):
-                rear += cfg.dt * measured * np.array([np.cos(rear[2]), np.sin(rear[2]),
-                                                      np.tan(self.curr_applied_steering)/cfg.wheelbase])
+            if self.mpc_history_prediction:
+                rear = self.pose_prediction.predict(rear, measured, cfg.wheelbase, self.mpc_latency_comp_s)
+            else:
+                for _ in range(int(round(self.mpc_latency_comp_s / cfg.dt))):
+                    rear += cfg.dt * measured * np.array([np.cos(rear[2]), np.sin(rear[2]),
+                                                          np.tan(self.curr_applied_steering)/cfg.wheelbase])
             if state == 'TRAILING':
                 cap = self._mpc_trailing_cap(opponent, frenet, measured, track_length)
                 self.mpc_trailing_cap = cap
@@ -360,7 +373,7 @@ class Controller:
         self.mpc_stop_ticks = 0 if result.success else self.mpc_stop_ticks + 1
         if recovery:
             steering = self._envelope_recovery_steering(rear, waypoints)
-            self.record_applied_steering(steering)
+            self.record_applied_steering(steering, published=False)
             self.reset_mpc_speed_command()   # MPC restarts from the measured speed
             return (self.mpc_envelope_recovery_speed_mps, 0., 0., steering, rear[:2], 0., 0, 0.,
                     rear.reshape(1, 3))
@@ -370,7 +383,7 @@ class Controller:
             steering = float(self.curr_steering_angle)  # hold during the soft-stop ramp (no corner jolt)
         else:
             steering = self._mpc_recenter_steering()
-        self.record_applied_steering(steering)
+        self.record_applied_steering(steering, published=False)
         speed_cmd = self._mpc_speed_command(result, measured)
         if self.mpc_trailing_cap is not None:
             speed_cmd = min(speed_cmd, self.mpc_trailing_cap)
@@ -469,7 +482,7 @@ class Controller:
                                  f"latency_comp={self.mpc_latency_comp_s:.2f}s")
         self.mpc_result = result
         self._report_mpc_result()
-        self.record_applied_steering(steering)
+        self.record_applied_steering(steering, published=False)
         out[0], out[3] = speed, steering
         return tuple(out)
 
