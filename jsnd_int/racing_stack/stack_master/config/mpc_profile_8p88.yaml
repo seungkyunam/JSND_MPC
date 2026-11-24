@@ -1,0 +1,6 @@
+# Step 39: opt-in test0 offline comparison with unchanged PP (peak 8.878 m/s).
+# Only the operator ceiling changes from 5p0. All physical and safety limits remain.
+# Simulation result is not a validation of the real car at this speed.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 8.88

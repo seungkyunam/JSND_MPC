@@ -16,14 +16,15 @@ import argparse
 import collections
 import inspect
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import yaml
 
-ROOT = Path.home() / 'JSND_INT/src/racing_stack/stack_master'
+ROOT = Path(os.environ.get('JSND_LAP_STACK_ROOT', Path.home() / 'JSND_INT/src/racing_stack/stack_master'))
 CFG = ROOT / 'config'
-MAP = ROOT / 'maps/11_18_6'
+MAP = Path(os.environ.get('JSND_LAP_MAP_ROOT', ROOT / 'maps/11_18_6'))
 
 # ---- actuator assumptions (same for PP and MPC) ----
 SERVO_RATE = 6.0       # rad/s  (typical hobby servo ~0.1 s/60deg; NOT measured)
@@ -34,6 +35,8 @@ REAL_DEADLINES = False
 
 
 def params(path):
+    if not Path(path).exists() and 'JSND_LAP_BASE_CONFIG' in os.environ:
+        path = Path(os.environ['JSND_LAP_BASE_CONFIG']) / Path(path).name
     return yaml.safe_load(Path(path).read_text())['controller_manager']['ros__parameters']
 
 
