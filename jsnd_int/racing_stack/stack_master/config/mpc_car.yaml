@@ -67,8 +67,13 @@ controller_manager:
     # "osqp: maximum iterations reached" lock (standstill QPs need 500-3300 ADMM
     # iterations from a cold start, ~2 us each). The wall-clock time limit is the
     # real budget now; deadline <= 1/control_loop_rate_hz is enforced at startup.
-    mpc_horizon: 10
-    mpc_preview_dt: 0.1
+    # 2026-11-24 step 30 (integrated): 10 x 0.1 s -> 12 x 0.05 s (0.02 + 11 x 0.05 = 0.57 s),
+    #   50 Hz control kept. Offline 11_18_6 5p0 (2 cm pose / 0.05 m/s noise, 60 ms servo delay,
+    #   race.launch budgets): STOP 1 -> 0, flying-lap max |d| 0.162 -> 0.089 m, MPC p99
+    #   11.4 -> 8.5 ms. 15 x 0.1 s / 20 x 0.05 s exceed the 7.9 m local window or the budget.
+    #   r_rate 1/2/4/8 compared: 2.0 kept (8.0 = fewer steering reversals, +0.02 m error).
+    mpc_horizon: 12
+    mpc_preview_dt: 0.05
     mpc_max_iter: 4000
     mpc_solver_time_limit_s: 0.004
     mpc_deadline_s: 0.008

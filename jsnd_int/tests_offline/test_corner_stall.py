@@ -44,9 +44,9 @@ def straight(n=70, step=.05, speed=2.25):
     return np.column_stack((x, np.zeros(n), np.full(n, speed)))
 
 
-def test_config_is_2p25_50hz_n10():
+def test_config_is_2p25_50hz_n12():
     c = config()
-    assert (c.max_speed, c.horizon, c.dt) == (2.25, 10, 1/RATE)
+    assert (c.max_speed, c.horizon, c.dt) == (2.25, 12, 1/RATE)
 
 
 def test_profile_refinement_removes_profile_stops_without_relaxing_the_check():

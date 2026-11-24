@@ -609,3 +609,10 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - **주의 1**: VESC `speed_max` 23250 ERPM / 4614 = **5.04 m/s 하드웨어 상한**(무변경) → 6/7 명령은 모터에서 포화.
 - **주의 2**: 11_18_6 iqp 참조 속도 최대 3.87 m/s(s≈0), 코너 2.07~2.25 → 이 맵에서는 5p0/6p0/7p0 실주행 최고속도 차이가 작을 것으로 예상.
 - 5p0 코너 반복 정지(`race_mpc5p0_integrated_20261124_190832.log`, 352 s, STOP 216): ego_s 매칭 결과 **s≈9~11에 131회(61%)**(곡률 0.53~0.86, 두 번째 헤어핀 진입: outside_envelope·heading·osqp inaccurate), **s≈3에 26회**(곡률 0.9: deadline·braking_envelope). 원인 후보 = 고곡률 진입 시 QP 수렴 실패/계산 시간 초과 + 비선형 예측 envelope 이탈. 수정은 사용자 결정 대기.
+
+## 단계 30 — 통합 MPC 코너 예측 개선 (JSND_INT `6530872`, 실차 미구동)
+- 예측: 10×0.1 s → 12×0.05 s(0.02+11×0.05 = 0.57 s), 제어 50 Hz 유지. 로컬 창 80점≈7.9 m라 15×0.1 s·20×0.05 s는 경로 부족/예산 초과.
+- OSQP 미수렴 해(solved inaccurate/max iter/time limit)는 기존 제약·비선형 envelope 검사를 모두 통과할 때만 채택(status `*_inexact_verified`), 실패 시 기존대로 계획 이어쓰기/STOP. 비상정지·프로파일 무변경.
+- 오프라인 11_18_6 5p0(잡음 2 cm·0.05 m/s, 서보 60 ms, race.launch 예산): STOP 1→0, 횡오차 최대 0.162→0.089 m, MPC p99 11.4→8.5 ms, 랩 5.32→5.30 s. 6p0/7p0 STOP 0~1. r_rate 1/2/4/8 비교 → 2.0 유지.
+- 비교 명령: `python3 jsnd_int/tests_offline/corner_sweep.py --real --noise "" mpc_horizon=10,mpc_preview_dt=0.1`.
+- 알려진 차이: test_stabilization budget_miss(구형 max_iter 200)에서 정지 복구 7틱(실제 4000회 설정은 0~2틱).

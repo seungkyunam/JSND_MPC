@@ -74,6 +74,8 @@ class IntegratedMPC:
     # profile, infeasibility and input failures are never continued: they STOP.
     CONTINUATION_REASONS = ('deadline_exceeded', 'osqp:run time limit reached',
                             'osqp:maximum iterations reached', 'osqp:solved inaccurate')
+    ACCEPT_VERIFIED_INEXACT = True
+    INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
     MAX_CONTINUATION_TICKS = 2          # at most 2 consecutive ticks (40 ms at 50 Hz)
     CONTINUATION_TOL = (.10, .15, .30)  # measured vs planned: position m, heading rad, speed m/s
     PROFILE_REFINEMENTS = 2             # bounded geometry-envelope refinement
@@ -513,7 +515,13 @@ class IntegratedMPC:
                 else:
                     self.solver.warm_start(x=self.previous, y=self.previous_dual)
                 sol = self.solver.solve(raise_error=False)
-                if sol.info.status_val != 1:
+                # Budget-limited ADMM iterate (hairpin QPs): accepted only if it passes the
+                # SAME constraint and nonlinear-envelope checks as a converged solution below;
+                # a failing iterate keeps the original osqp:<status> reason (continuation/STOP).
+                inexact = (sol.info.status_val != 1 and self.ACCEPT_VERIFIED_INEXACT
+                           and sol.info.status in self.INEXACT_STATUSES and sol.x is not None
+                           and np.isfinite(sol.x).all() and sol.y is not None and np.isfinite(sol.y).all())
+                if sol.info.status_val != 1 and not inexact:
                     result = self._fail('osqp:'+sol.info.status, previous_steering, started)
                     # Still not accepted this tick, but continue from OSQP's last iterate next
                     # tick instead of from zero: an iteration/time budget miss then converges
@@ -526,6 +534,10 @@ class IntegratedMPC:
                 u = sol.x
                 au = matrix@u
                 if not np.isfinite(u).all() or np.any(au < lo-1e-4) or np.any(au > hi+1e-4):
+                    if inexact:
+                        result = self._fail('osqp:'+sol.info.status, previous_steering, started)
+                        self.previous, self.previous_dual = np.array(sol.x), np.array(sol.y)
+                        return result
                     return self._fail('constraint_violation', previous_steering, started)
                 controls = u.reshape(n, 2).copy()
                 controls[:, 0] = np.clip(controls[:, 0], self.box_accel_lo, self.box_accel_hi)
@@ -571,6 +583,10 @@ class IntegratedMPC:
                           ('heading', np.max(abs(heading_err)) > c.max_heading_error))
                 bad = [name for name, failed in checks if failed]
                 if bad:
+                    if inexact:
+                        result = self._fail('osqp:'+sol.info.status, previous_steering, started)
+                        self.previous, self.previous_dual = np.array(sol.x), np.array(sol.y)
+                        return result
                     return self._fail('nonlinear_prediction_outside_envelope:'+','.join(bad), previous_steering, started)
                 actual_caps = np.minimum((1-alpha)*seg_v0[indices] + alpha*seg_v1[indices], c.max_speed)
                 if braking_recovery:
@@ -601,7 +617,8 @@ class IntegratedMPC:
                          'caps': caps.copy(), 'steer_bounds': steer_bounds.copy()}
             return IntegratedResult(float(controls[0, 1]), max(0., float(predicted[1, 3])),
                                     float(controls[0, 0]), SafetyRequest.NONE,
-                                    'braking_recovery' if braking_recovery else 'solved', elapsed,
+                                    ('braking_recovery' if braking_recovery else 'solved')
+                                    + ('_inexact_verified' if inexact else ''), elapsed,
                                     sol.info.run_time, sol.info.iter, ref, predicted, controls)
         except Exception as exc:
             self.solver = None
