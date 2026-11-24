@@ -274,15 +274,18 @@ class Controller:
             measured = max(0.0, measured)  # clamp only standstill odom jitter
             rear = position[0].copy()
             rear[:2] += self.pose_to_rear_axle_m * np.array([np.cos(rear[2]), np.sin(rear[2])])
+            cfg = self.lateral_mpc.config
+            for _ in range(int(round(self.mpc_latency_comp_s / cfg.dt))):
+                rear += cfg.dt * measured * np.array([np.cos(rear[2]), np.sin(rear[2]),
+                                                      np.tan(self.curr_applied_steering)/cfg.wheelbase])
             if state == 'TRAILING':
                 cap = self._mpc_trailing_cap(opponent, frenet, measured, track_length)
                 self.mpc_trailing_cap = cap
                 if cap is None:
                     result = self.lateral_mpc.reject('trailing_without_target', self.curr_steering_angle)
                 else:
-                    capped = waypoints.copy()
-                    capped[:, 2] = np.minimum(capped[:, 2], cap)
-                    result = self.lateral_mpc.solve(np.r_[rear, measured], capped, self.curr_steering_angle)
+                    result = self.lateral_mpc.solve(np.r_[rear, measured], waypoints,
+                                                    self.curr_steering_angle, safety_speed_cap=cap)
             else:
                 self.mpc_trailing_cap = None
                 self.i_gap = 0
@@ -301,6 +304,9 @@ class Controller:
         steering = result.steering if result.success else self._mpc_recenter_steering()
         self.record_applied_steering(steering)
         speed_cmd = self._mpc_speed_command(result, measured)
+        if self.mpc_trailing_cap is not None:
+            speed_cmd = min(speed_cmd, self.mpc_trailing_cap)
+            self.mpc_speed_cmd = speed_cmd
         point = result.reference[-1, :2] if result.success else rear[:2]
         nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
         return (speed_cmd, result.acceleration, 0., steering,

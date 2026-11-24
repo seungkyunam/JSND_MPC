@@ -25,6 +25,7 @@
        description="pp: legacy Pure-Pursuit + speed control (default). mpc: integrated speed+steering MPC (config/mpc_car.yaml). Any other value starts no controller."/>
   <arg name="mpc_profile" default="lowspeed"
        description="controller:=mpc only: loads config/mpc_profile_&lt;name&gt;.yaml after mpc_car.yaml. lowspeed = 1.0 m/s (real car). exp2mps = 2.0 m/s (wheels-lifted bench experiment only)."/>
+  <arg name="mpc_speed_source" default="jsnd" description="jsnd: preserved steering MPC; integrated: geometry-only joint MPC v2."/>
   <arg name="mpc_rate_hz" default="50"
        description="controller:=mpc only: control loop rate (MPC solved every tick). 50 default since 2026-11-22 step 14: the full real-car stack reached only ~89 Hz at 100 (MPC p99 11 ms). MPC deadline = 0.8/rate, OSQP time limit = 0.4/rate (100 Hz -> 8/4 ms as before, 50 Hz -> 16/8 ms)."/>
   <arg name="mpc_monitor" default="false"
@@ -214,6 +215,7 @@
     <param from="$(find-pkg-share stack_master)/config/mpc_car.yaml"/>
     <!-- speed profile overlay: config/mpc_profile_<mpc_profile>.yaml (unknown name -> launch fails) -->
     <param from="$(find-pkg-share stack_master)/config/mpc_profile_$(var mpc_profile).yaml"/>
+    <param name="mpc_speed_source" value="$(var mpc_speed_source)" type="str"/>
     <param name="control_loop_rate_hz" value="$(var mpc_rate_hz)" type="int"/>
     <param name="mpc_deadline_s" value="$(eval '0.8 / $(var mpc_rate_hz)')" type="float"/>
     <param name="mpc_solver_time_limit_s" value="$(eval '0.4 / $(var mpc_rate_hz)')" type="float"/>

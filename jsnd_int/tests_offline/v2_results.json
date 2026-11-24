@@ -1,0 +1,60 @@
+{
+  "base": "b1e130f6",
+  "scope": "offline x86 host, not Jetson or real vehicle; synthetic circle, not 11_18_6",
+  "comparison": [
+    {
+      "mode": "pp",
+      "scope": "synthetic_R3_circle_1mps_ceiling_not_11_18_6",
+      "laps": 2,
+      "flying_lap_s": 18.62,
+      "max_error_m": 0.037209556396616605,
+      "rms_error_m": 0.03558453888504459,
+      "stops": 0,
+      "p99_ms": 0.46546144010790125,
+      "max_ms": 1.2644600001294748,
+      "over20ms": 0,
+      "statuses": {}
+    },
+    {
+      "mode": "steering",
+      "scope": "synthetic_R3_circle_1mps_ceiling_not_11_18_6",
+      "laps": 2,
+      "flying_lap_s": 18.840000000000003,
+      "max_error_m": 0.0008827296234321658,
+      "rms_error_m": 0.0008635211646250925,
+      "stops": 0,
+      "p99_ms": 1.6064541695959633,
+      "max_ms": 3.6853460005659144,
+      "over20ms": 0,
+      "statuses": {
+        "solved": 1890
+      }
+    },
+    {
+      "mode": "integrated",
+      "scope": "synthetic_R3_circle_1mps_ceiling_not_11_18_6",
+      "laps": 2,
+      "flying_lap_s": 18.800000000000004,
+      "max_error_m": 0.006754761043223478,
+      "rms_error_m": 0.006569641697033313,
+      "stops": 0,
+      "p99_ms": 1.6613882496585575,
+      "max_ms": 2.8052810002918704,
+      "over20ms": 0,
+      "statuses": {
+        "solved": 1926
+      }
+    }
+  ],
+  "bench_replay": {
+    "ticks": 611,
+    "solved": 593,
+    "braking_envelope_infeasible": 18,
+    "p99_ms": 2.443181
+  },
+  "build": "ROS2 Humble: controller and stack_master passed; Jazzy/Jetson not tested",
+  "readiness": "NOT approved for real-car driving: missing 11_18_6 map, bench replay rejects, unmeasured actuator and latency, no full ROS safety replay",
+  "baseline_regression_tests": 77,
+  "v2_and_lateral_tests": 40,
+  "total_tests_passed": 117
+}
