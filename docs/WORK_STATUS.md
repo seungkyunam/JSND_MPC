@@ -757,3 +757,42 @@ bag `5p0_20261124_205612`(258 s). 최종 mux 출력이 0이 된 이벤트 분류
 - **해석 범위**: 잡음·heading·지연을 함께 변경한 1개 조건/seed이므로 각각의 인과 기여나 Step 38 실차 원인을 확정할 수 없음. PF 정체·점프, 시간 상관 잡음, 타이어/슬립, 맵·장애물은 미모사. 기존 시뮬레이터는 local path 선택과 Frenet s/d에 ground truth를 쓰며 noisy pose만 Controller에 전달하고 yaw rate도 ground truth임. 따라서 완전한 센서/위치추정 재현이 아님. E-stop 전체 ROS 체인은 구동하지 않았으며 관련 코드는 무변경.
 - 횡오차는 잡음이 섞인 측정값이 아닌 실제 시뮬레이션 상태 기준. 미완주 MPC의 평균은 정체 구간을 포함한 60초 전체이고, 완주 사례는 2랩 구간이므로 동일 시간 창의 평균 비교가 아님. STOP은 PP에서는 speed<=0 구간, MPC에서는 solver 실패 구간으로 집계되는 기존 정의이며 물리적 정차 횟수/비상정지 횟수가 아님. 정상 MPC 1틱 OSQP STOP은 실제 deadline의 실행 환경 변동 가능성이 있어 Step 42 대비 코드 성능 퇴행으로 단정하지 않음.
 - 정상/오차 × PP/MPC의 4회만 실행. 별도 테스트·대규모 탐색·실차/SSH 접속 없음. 실차 기본 설정, production MPC 계수, 안전 기능 변경 없음.
+
+## Step 44 — 위치·방향 잡음 및 조향 지연 단독 비교 (기준 `7099aa3`)
+- 재현 스크립트: `jsnd_int/tests_offline/compare_step44.py`; 결과: `jsnd_int/tests_offline/step44_results.jsonl`. 정상·복합 오차 4개 결과는 `step43_results.jsonl`을 그대로 재사용했고 재실행하지 않았다. 새 실험은 세 조건 × PP/MPC 각 1회, 총 6회 완료. 제어기·기존 시뮬레이터·YAML 수정 없음.
+- Step 43과 동일한 test0/글로벌 경로, 50 Hz, seed=0, 최대 2랩/60초, N=12, preview_dt=0.05, 실제 deadline 16 ms/OSQP 8 ms. MPC 최고속도 8.88 m/s, 종방향 6/6 m/s², 횡방향 8 m/s², 프로세스 내 계획 계수 1.0, 기존 지연 보상 0.1 s 유지. production 계획 계수는 0.85 그대로다.
+- 위치만: x/y 독립 Gaussian sigma=0.0367685084 m(방사 p95=0.09 m), yaw sigma=0을 명시해 기존 위치 연동 yaw 잡음을 차단. 방향만: yaw Gaussian sigma=0.0867362877 rad(절댓값 p95=0.17 rad), 위치 잡음 0. 두 조건의 조향 큐는 정상 1틱(20 ms). 조향 지연만: 총 5.5틱(110 ms), 위치·방향 잡음 0. 속도 잡음은 모두 0, 추가 pose delay 없음. 플랜트 +4/-6 m/s², 속도루프 tau=0.12 s, 서보 rate=6 rad/s 유지.
+- 실행: `OPENBLAS_NUM_THREADS=1 /tmp/jsnd-step39-venv/bin/python jsnd_int/tests_offline/compare_step44.py`. 최초 시스템 Python 실행은 위치-only PP 완료 후 MPC 생성 시 OSQP 미설치로 중단됐다(해당 MPC 주행 시작 전). 완료 결과를 보존하고 기존 Step 39 venv에서 `--resume jsnd_int/tests_offline/step44_results.jsonl` 및 `>>`로 나머지 5회를 실행했다. 양쪽 Python 3.10.12, NumPy 1.26.4, SciPy 1.15.3, PyYAML 5.4.1로 동일하며 venv OSQP는 1.1.3. 추가 설치·재주행·별도 테스트는 하지 않았다.
+
+| 조건 | 제어기 | 완료 랩 | 1랩 / 2랩 (s) | 평균 / 최대 횡오차 (m) | STOP 구간 / 틱 |
+|---|---|---:|---:|---:|---:|
+| 정상 (Step 43 재사용) | PP | 2 | 9.10 / 8.56 | 0.164 / 0.327 | 0 / 0 |
+| 정상 (Step 43 재사용) | MPC | 2 | 9.56 / 8.58 | 0.079 / 0.300 | 1 / 1 |
+| 위치 잡음만 | PP | 2 | 9.10 / 8.56 | 0.162 / 0.326 | 0 / 0 |
+| 위치 잡음만 | MPC | 2 | 9.54 / 8.52 | 0.066 / 0.273 | 3 / 3 |
+| 방향 잡음만 | PP | 2 | 9.16 / 8.58 | 0.157 / 0.350 | 0 / 0 |
+| 방향 잡음만 | MPC | 2 | 9.54 / 8.60 | 0.093 / 0.544 | 4 / 7 |
+| 조향 지연만 | PP | 2 | 9.18 / 8.64 | 0.164 / 0.353 | 0 / 0 |
+| 조향 지연만 | MPC | 2 | 9.72 / 8.74 | 0.127 / 0.520 | 1 / 1 |
+| 복합 오차 (Step 43 재사용) | PP | 2 | 9.24 / 8.66 | 0.151 / 0.380 | 0 / 0 |
+| 복합 오차 (Step 43 재사용) | MPC | 0 | 미완주 (60초) | 1.176 / 1.357 | 6 / 2595 |
+
+- **영향 순위**: MPC 랩타임과 평균 횡오차에는 **조향 지연**이 가장 컸다. 정상 대비 2랩 +0.16 s(+1.9%), 평균 +0.048 m(+60.8%), 최대 +0.220 m. **방향 잡음**은 최대 횡오차 0.544 m(정상 대비 +0.244 m)와 STOP 7틱으로 가장 나빴다. 평균 +0.014 m, 랩타임 +0.02 s. 위치 잡음은 완주/횡오차 악화가 관찰되지 않았으며 -0.06 s를 잡음의 성능 개선 효과로 해석하지 않는다. PP는 모두 완주·STOP 0이며 2랩 증가도 지연 +0.08 s가 최대였다.
+- **핵심 결론**: 우선 조사할 원인은 조향 지연과 방향 입력의 결합이다. 단독 세 조건 모두 완주했으므로 복합 오차의 미완주를 어느 한 원인만으로 설명할 근거는 없다. 단독 결과상 위치 잡음의 영향은 작지만 복합 조건에서의 기여까지 배제할 수 없다. 지연×방향 등 2요인 조합이나 보상 on/off는 요청 범위 밖이므로 실행하지 않았으며, 상호작용의 크기나 보상 구조의 인과적 기여는 확정하지 않는다.
+
+### STOP 세부 원인
+- 원본 결과에 `stop_causes_full`과 `stop_episodes`를 추가했다. 기존 결과의 축약 `status`와 달리 콜론 뒤 세부 이유를 보존하며, 각 연속 실패 구간의 시작 tick/시각/실제 횡오차/첫 사유/길이를 기록한다. tick은 0부터, 시작 시각은 제어 호출 직전 기준이다. 후처리만 추가하여 solver 실행 중 계측 부하는 없다.
+- 위치만: `osqp:run time limit reached` 2틱, `osqp:solved inaccurate` 1틱. t=8.36/16.94/16.98 s에서 각각 1틱. 지속적인 추종 envelope 이탈은 없었다.
+- 방향만: `nonlinear_braking_envelope_violation` 1틱(t=12.72 s), `osqp:solved inaccurate` 1틱(t=15.98 s), `nonlinear_prediction_outside_envelope:tracking` 5틱(t=16.38 s 1틱, 16.46 s부터 4틱). 예측 경로 tracking 위반이며 현재 차량이 1 m 밖이라는 뜻은 아니다. 해당 두 구간 시작 실제 횡오차는 -0.034/-0.074 m이고 전체 최대도 0.544 m다. 방향 잡음이 단순 heading 허용치 초과가 아니라 미래 횡위치 예측과 제약 검증을 통해 실패를 만들 수 있음을 보여준다.
+- 지연만: `osqp:primal infeasible` 1틱(t=16.92 s), 시작 실제 횡오차 +0.00985 m. 한 틱의 infeasible만으로 어떤 QP 제약 조합이 지배했는지 단정할 수 없다.
+- 기존 정상 MPC는 축약 OSQP 1틱, 복합 MPC는 ValueError 2565틱·nonlinear_prediction_outside_envelope 27틱·OSQP 3틱. 기존 파일에는 세부 사유와 시계열이 없어 복합 오차의 최초 실패나 ValueError 전체를 tracking 원인으로 확정할 수 없다. 총 STOP 시간은 복합 51.90 s, 위치 0.06 s, 방향 0.14 s, 지연 0.02 s다.
+- STOP은 MPC의 `not result.success` 구간/틱이며 실제 완전 정차·E-stop 횟수가 아니다. 기존 soft-stop은 이동 중 제한된 실패 구간에서 속도 명령을 감속하고 조향을 유지한다. 이후에는 0속도/조향 복귀 경로를 따른다. 저속 heading envelope 복귀 분기도 있지만 tracking envelope 복귀에는 적용되지 않는다. 이번 단독 실행에는 해당 recovery 상태가 없었다.
+
+### 지연 보상과 자세 입력 구조 확인
+- **실제 실행 소스**는 `jsnd_int/racing_stack/controller/controller/combined/src/Controller.py`와 그 아래 `mpc/integrated_mpc.py`다. `compare_step39.py`가 해당 경로를 우선 import한다. 저장소 루트 `controller/controller/mpc/integrated_mpc.py`의 구형 구현과 혼동하지 않는다.
+- `integrated_loop`는 `[x,y,yaw]`를 복사하고 rear-axle offset(현재 0 m)을 적용한 뒤, `round(0.1/0.02)=5`단계 동안 측정 속도와 `curr_applied_steering`을 고정한 기구학 모델로 x/y/yaw를 전진시킨다. 이 예측 자세와 현재 측정 속도를 `[x,y,yaw,v]`로 solver에 전달한다. PP 자세/속도 전처리와 IMU yaw-rate 융합은 이 integrated 경로에서 사용하지 않는다.
+- **`curr_applied_steering`은 실제 바퀴각이 아니다.** `record_applied_steering`은 마지막 발행 명령을 저장하며, 시뮬레이터 역시 지연 큐와 rate limiter를 통과하기 전 명령을 전달한다. 실제 플랜트 `delta`나 대기 중인 5/6틱 명령 이력을 보상기에 주지 않는다. MPC 상태도 `[x,y,yaw,v]`뿐이므로 액추에이터 지연 상태나 명령 큐가 없다. 따라서 100 ms pose 전진 예측을 110 ms 조향 지연의 정확한 보상으로 해석할 수 없다. 조향 전환 때 아직 적용되지 않은 명령을 이미 적용된 조향으로 예측할 수 있다.
+- 이번 환경의 pose에는 측정 지연 큐가 없는데 고정 100 ms 전진 보상은 정상·단독·복합 모두 켜져 있다. 실제 pose timestamp/age에 맞춰 보상 시간을 조정하지 않는다. 이는 Step 43 조건을 유지한 구조적 모델 불일치이며, 보상값을 바꿔 검증한 결과는 아니다.
+- 위치·방향 잡음은 필터/공분산 가중 없이 매 틱 입력에 직접 들어간다. 위치 잡음은 예측 시작 위치를 이동시키고 방향 잡음은 시작 yaw뿐 아니라 전진 예측의 cos/sin 방향도 바꾼다. 작은 각도 근사로 보상 이동의 횡오차 표준편차는 `v*0.1*0.08674`이며 v=6 m/s에서 약 0.052 m다(계산 예시, 측정 기여량 아님). 이어지는 MPC 미래 예측에도 yaw 오차가 전파된다. solver의 yaw unwrap/각도 정렬은 ±π 표현 처리를 위한 것이며 잡음 제거 필터가 아니다. 입력 tracking 허용 1 m, heading 허용 0.7 rad 및 비선형 예측 재검증은 유지됐다.
+- ROS manager `odom_cb`는 `/car_state/odom`에서 x/y와 quaternion→yaw, twist 속도를 읽어 전달한다. 이 callback 자체에는 자세 평활화가 없다. 실제 upstream PF/EKF의 융합 품질은 이번 실험으로 검증하지 않았다. offline harness는 manager callback을 통하지 않고 noisy pose를 직접 공급하며 local path 선택과 Frenet s/d, yaw rate는 ground truth를 사용한다.
+- 단일 seed·단일 실행 및 wall-clock deadline 변동 때문에 작은 랩타임/solver STOP 차이는 통계적 효과로 해석하지 않는다. 횡오차는 실제 상태 기준 전체 주행 평균/최대이며 복합 미완주의 60초 정체 구간과 완주의 약 18초 주행은 동일 시간 창이 아니다. 실차 지연 식별·타이어 슬립·시간 상관 잡음은 포함하지 않는다. 요청한 실험 결과·구조 분석만 저장하며 제어기 변경과 추가 테스트는 수행하지 않았다.
