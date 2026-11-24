@@ -63,7 +63,10 @@ def legacy_module():
 # Legacy bench configuration (what ran at 12:37-12:48): 40 Hz, 400 iterations, 12 ms.
 LEGACY = {'mpc_max_iter': 400, 'mpc_solver_time_limit_s': 0.012, 'mpc_deadline_s': 0.020,
           'mpc_max_steer_rad': 0.15,   # steer limit in force at the 2026-11-22 bench (step 12 raised it to 0.4)
-          'mpc_max_steer_rate_radps': 0.3}   # rate in force then (step 23 raised it to 3.2)
+          'mpc_max_steer_rate_radps': 0.3,   # rate in force then (step 23 raised it to 3.2)
+          # integrated limits in force then (step 26 moved mpc_car.yaml to ggv 5.0/5.0/4.5, beta 1.0)
+          'mpc_max_accel_mps2': 1.0, 'mpc_max_decel_mps2': 2.0,
+          'mpc_max_lateral_accel_mps2': 2.0, 'mpc_braking_preview_ratio': 0.3}
 
 
 def replay(mpc, idx, sequential=True):

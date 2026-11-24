@@ -23,7 +23,9 @@ def test_speed_columns_independent():
     outputs = []
     for speed in [0., .01, 100., np.nan, -10.]:
         p = path.copy(); p[:,2] = speed
-        r = IntegratedMPC(config()).solve(state, p, 0.)
+        # cold solve of this config needs ~2200 ADMM iterations (~19 ms on the Jetson
+        # Orin CPU): give the timing budget room, the test is about speed columns
+        r = IntegratedMPC(config(dt=.05, solver_time_limit=.04, deadline=.05)).solve(state, p, 0.)
         assert r.success, r.status
         outputs.append(r.controls)
     for u in outputs[1:]: np.testing.assert_allclose(u, outputs[0], atol=1e-10)
@@ -48,7 +50,8 @@ def test_terminal_braking_and_short_path():
     m=IntegratedMPC(config()); p=np.c_[np.linspace(0,2,100),np.zeros(100)]
     arc,cap=m._geometry_caps(p,np.inf)
     assert cap[-1]==0
-    assert np.all(np.diff(cap**2)>=-2*m.config.braking_preview_ratio*m.config.max_decel/np.sqrt(2)*np.diff(arc)-1e-10)
+    # step 26: full braking on the friction ellipse (straight path: a_y = 0 -> beta*D)
+    assert np.all(np.diff(cap**2)>=-2*m.config.braking_preview_ratio*m.config.max_decel*np.diff(arc)-1e-10)
     assert not m.solve([1.95,0,0,1.],p,0).success
 
 
@@ -227,3 +230,48 @@ def test_continuation_cannot_skip_over_control_stage(monkeypatch):
     monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: then)
     monkeypatch.setattr(m, '_solve', lambda *args: m._fail('deadline_exceeded', 0.))
     assert not m.solve(r.predicted[1], p, r.steering).success
+
+
+# ---- step 26 (2026-11-24): constraint revision for lap time ----
+def car_config(**kw):
+    """Real-car integrated limits (mpc_car.yaml step 26: ggv ax 5.0 / ay 4.5, beta 1.0)."""
+    return config(max_speed=5., max_accel=5., max_decel=5., max_lateral_accel=4.5,
+                  braking_preview_ratio=1., **kw)
+
+
+def test_step26_lateral_cap_uses_plan_fraction_of_full_y():
+    m = IntegratedMPC(car_config()); r = 2.
+    t = np.linspace(0, 2.5, 120); p = np.c_[r*np.sin(t), r*(1-np.cos(t))]
+    _, cap = m._geometry_caps(p, np.inf)
+    v_lat = np.sqrt(m.LATERAL_PLAN_FRACTION*4.5*r)
+    assert np.allclose(cap[5:40], v_lat, rtol=2e-2)      # no Y/sqrt(2), single margin
+    assert cap[-1] == 0.
+
+
+def test_step26_standstill_far_behind_reference_is_not_stop():
+    # Previously the 'tracking' check measured distance to the time-indexed reference
+    # sample and STOPped a car that merely accelerated slower than the reference.
+    p = virtual_path('straight'); m = IntegratedMPC(car_config())
+    for _ in range(3):
+        r = m.solve([0., 0., 0., 0.], p, 0.)
+        assert r.success, r.status
+
+
+def test_step26_braking_recovery_small_overshoot_brakes_large_stops():
+    # Speed slightly above an (obstacle) cap the full deceleration cannot meet in
+    # 20 ms: brake as hard as feasible while tracking instead of STOP.
+    p = virtual_path('straight')
+    r = IntegratedMPC(car_config()).solve([0., 0., 0., 1.2], p, 0., safety_speed_cap=1.)
+    assert r.success and r.status == 'braking_recovery', r.status
+    assert r.acceleration <= -5.+1e-2           # caps carry +1e-4 m/s numerical slack
+    # Overshoot beyond the continuation speed tolerance (0.30 m/s) still STOPs.
+    r = IntegratedMPC(car_config()).solve([0., 0., 0., 2.], p, 0., safety_speed_cap=1.)
+    assert not r.success and r.status == 'braking_envelope_infeasible'
+
+
+def test_step26_stacked_matrix_equals_vstack():
+    m = IntegratedMPC(car_config()); rng = np.random.default_rng(3)
+    for _ in range(10):
+        v = rng.uniform(0, 5, 10); b = rng.uniform(.05, .4, 10)
+        np.testing.assert_array_equal(m._stacked_matrix(v, b).toarray(),
+                                      m.sparse.vstack((m.matrix, m._friction_rows(v, b))).toarray())

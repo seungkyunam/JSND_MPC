@@ -30,6 +30,7 @@ SERVO_RATE = 6.0       # rad/s  (typical hobby servo ~0.1 s/60deg; NOT measured)
 SERVO_LIMIT = 0.49     # rad    (servo 0..1 <=> +0.492/-0.518 rad, vehicle_config)
 VESC_TAU = 0.12        # s      speed-loop first-order time constant (assumed)
 VESC_ACC, VESC_DEC = 4.0, 6.0   # m/s^2 saturation (raceline ax spans -3.2..+3.6)
+REAL_DEADLINES = False
 
 
 def params(path):
@@ -82,8 +83,10 @@ def build(ctrl, profile, overrides, rate):
         p.update(overrides)
         vals = {k: p.get(k, v) for k, v in MPC_DEFAULTS.items()}
         # offline: do not let Jetson-independent wall-clock jitter decide the result
-        vals['mpc_deadline_s'] = 1.0 / rate
-        vals['mpc_solver_time_limit_s'] = 1.0 / rate
+        # (REAL_DEADLINES=True keeps race.launch's 0.8/0.4 x period budgets)
+        if not REAL_DEADLINES:
+            vals['mpc_deadline_s'] = 1.0 / rate
+            vals['mpc_solver_time_limit_s'] = 1.0 / rate
         if vals['mpc_speed_source'] == 'jsnd':
             lateral_mpc = SteeringMPC(make_steering_config(vals, p['wheelbase'], True, rate))
         else:
@@ -179,6 +182,8 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
         if ctrl == 'mpc':
             r = c.mpc_result
             statuses[r.status.split(':')[0] if not r.success else r.status] += 1
+            rec['status'].append(r.status)
+            rec['elapsed_ms'].append(1e3 * r.elapsed_s)
             if spd <= 0.0:
                 c.reset_mpc_speed_command()       # controller_manager.mpc_output_guard
             c.record_applied_steering(steer)
@@ -223,8 +228,9 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
         rec['ay'].append(v * v * abs(np.tan(delta)) / L)
         if log_every and len(rec['t']) % log_every == 0:
             print(f"t={t:5.2f} s={s:5.2f} v={v:4.2f} cmd={spd:4.2f} plan={wp[0,2]:4.2f} d={d:+.3f} steer={steer:+.3f}")
-    R = {k: np.asarray(v_) for k, v_ in rec.items()}
-    res = {'ctrl': ctrl, 'laps_done': len(lap_marks), 'lap_times': [round(lap_marks[0], 2)] +
+    R = {k: np.asarray(v_) for k, v_ in rec.items() if k != 'status'}
+    R_status = rec.get('status', [])
+    res = {'ctrl': ctrl, 'laps_done': len(lap_marks), 'lap_times': [round(lap_marks[0], 2) for _ in lap_marks[:1]] +
            [round(b - a_, 2) for a_, b in zip(lap_marks, lap_marks[1:])],
            'avg_speed': round(float(R['v'].mean()), 3), 'max_speed': round(float(R['v'].max()), 3),
            'lat_err_mean': round(float(abs(R['d']).mean()), 3), 'lat_err_max': round(float(abs(R['d']).max()), 3),
@@ -232,18 +238,22 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
            'sim_time': round(t, 2)}
     if len(lap_marks) >= 2:
         m = R['t'] > lap_marks[0]
+        res['flying_lap_max_speed'] = round(float(R['v'][m].max()), 3)
         res['flying_lap_avg_speed'] = round(float(R['v'][m].mean()), 3)
         res['flying_lap_lat_err_max'] = round(float(abs(R['d'][m]).max()), 3)
     if ctrl == 'mpc':
         res['status'] = dict(statuses.most_common())
         res['speed_source'] = c.mpc_speed_source
+        el = R['elapsed_ms']
+        res['mpc_ms_mean_p99_max'] = [round(float(el.mean()), 2), round(float(np.percentile(el, 99)), 2), round(float(el.max()), 2)]
         tot = sum(binding.values()) or 1
         res['binding_layer_pct'] = {k: round(100 * n / tot, 1) for k, n in binding.most_common()}
+    res['_status_seq'] = R_status
     return res, R
 
 
 def main():
-    global VESC_TAU
+    global VESC_TAU, REAL_DEADLINES
     ap = argparse.ArgumentParser()
     ap.add_argument('--ctrl', default='both')
     ap.add_argument('--profile', default='5p0')
@@ -252,6 +262,8 @@ def main():
     ap.add_argument('--set', nargs='*', default=[])
     ap.add_argument('--log', type=int, default=0)
     ap.add_argument('--save', default='')
+    ap.add_argument('--transitions', action='store_true')
+    ap.add_argument('--real-deadlines', action='store_true', help='race.launch 0.8/0.4 x period MPC budgets')
     ap.add_argument('--servo-delay', type=int, default=1)
     ap.add_argument('--tau', type=float, default=0.12)
     ap.add_argument('--noise-pos', type=float, default=0.0)
@@ -259,6 +271,7 @@ def main():
     ap.add_argument('--offset-d', type=float, default=0.0)
     ap.add_argument('--offset-yaw', type=float, default=0.0)
     a = ap.parse_args()
+    REAL_DEADLINES = a.real_deadlines
     ov = {}
     for kv in a.set:
         k, v_ = kv.split('=')
@@ -268,6 +281,13 @@ def main():
         VESC_TAU = a.tau
         res, R = simulate(ctrl, a.profile, ov, a.rate, a.laps, log_every=a.log, servo_delay_ticks=a.servo_delay,
                           noise_pos=a.noise_pos, noise_v=a.noise_v, offset_d=a.offset_d, offset_yaw=a.offset_yaw)
+        seq = res.pop('_status_seq')
+        if a.transitions:
+            prev = None
+            for i, st in enumerate(seq):
+                if st != prev:
+                    print(f'  t={(i+1)/a.rate:6.2f} {st}')
+                prev = st
         print(json.dumps(res, ensure_ascii=False))
         out[ctrl] = R
     if a.save:

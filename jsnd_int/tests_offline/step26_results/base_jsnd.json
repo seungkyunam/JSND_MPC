@@ -1,0 +1,1 @@
+{"ctrl": "mpc", "laps_done": 2, "lap_times": [7.28, 6.84], "avg_speed": 1.972, "max_speed": 3.7, "lat_err_mean": 0.012, "lat_err_max": 0.024, "stops": 0, "stop_ticks": 0, "ay_max": 3.67, "sim_time": 14.12, "flying_lap_avg_speed": 2.025, "flying_lap_lat_err_max": 0.024, "status": {"solved": 706}, "speed_source": "jsnd", "binding_layer_pct": {"jsnd_plan": 100.0}}

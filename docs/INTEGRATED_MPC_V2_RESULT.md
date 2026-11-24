@@ -297,3 +297,65 @@ python3 -m pytest -q jsnd_int/tests_offline/test_integrated_v2.py
 python3 -m pytest -q controller/test/test_lateral_mpc.py controller/test/test_integrated_mpc.py controller/test/test_controller_integration.py
 python3 jsnd_int/tests_offline/validate_v2_readiness.py
 ```
+
+## 10. 단계 26: 랩타임 개선 (2026-11-24, Jetson, JSND_INT `7734321`)
+
+기준 `c3ddd05` 3파일을 JSND_INT에 반입(`03709b4`, 로컬 미커밋 변경 없음·충돌 없음) 후 `integrated_mpc.py`와 `mpc_car.yaml`(integrated 전용 키)만 수정. PP·조향 전용 MPC·Controller.py·launch·안전 코드는 변경 없음.
+
+### 제약조건 변경
+| 항목 | 이전 | 이후 / 근거 |
+|---|---|---|
+| A / D / Y | 1.0 / 2.0 / 2.0 (실측 없는 bench 값) | 5.0 / 5.0 / 4.5 = `CAR/veh_dyn_info` ggv (기존 raceline·PP가 쓰는 차량 모델) |
+| 횡가속 배분 Y/√2 (곡률 상한·조향 상한·복귀 상한·이어쓰기) | 적용 | 제거 (연계 16각형이 결합 담당) |
+| 사전 제동 β·D/√2 (β=0.3) | 0.42 m/s² | 마찰타원 후방 계산 D·√(1−(a_y/Y)²), β=1.0 |
+| 곡률 상한 계수 0.85 | 0.85·(Y/√2) | 0.85·Y 유지: 코너 조향 여유 (1.0이면 횡오차 0.36~0.40 m, 트랙 반폭 0.37 m) |
+| 조향 상한 속도 | 속도 상한(cap) | min(cap, v0+A·t) (정확한 상계) |
+| tracking/heading 검사 | 시간 기준 참조점과 거리 → 정지 시 영구 STOP | 경로 횡거리·경로 방위 |
+| 1단계 제동 사전판정 | 순수 D | 조향 잔류분 결합 감속 (primal infeasible 제거) |
+| 제동 상한 소폭 초과 | STOP | ≤0.30 m/s(기존 이어쓰기 속도 허용치)면 최대 감속+경로추종 `braking_recovery`, 초과 시 STOP |
+| 유지 | | 운용 상한(profile), 종단 정지(로컬 경로 7.9 m, D=5에서 비구속), 조향 0.4 rad/3.2 rad/s, lead 0.5 m/s(1.0과 결과 동일=비구속), 연계 16각형, 비선형 재검증, 2틱 이어쓰기, E-STOP/TTC/watchdog/VESC |
+
+목적함수(위치·방위 추종 + 입력/조향변화 비용 − q_s·진행량) 식·가중치 변경 없음. 선형화 기준 속도만 cap → 도달 가능 속도열로 변경.
+
+### 11_18_6 실제 맵 폐루프 (`tests_offline/lap_sim.py`, 동일 차량모델, 5p0, 실차 예산 16/8 ms, Jetson)
+| 제어기 | 플라잉랩(s) | 평균/최고 속도(m/s) | 최대 횡오차(m) | STOP | 계산 mean/p99(ms) |
+|---|---:|---:|---:|---:|---:|
+| PP | 6.42 | 2.05 / 3.70 | 0.188 | 0 | – |
+| 조향 전용 MPC | 6.82 | 2.03 / 3.70 | 0.024 | 0 | 1.6 / 2.0 |
+| 통합 v2 원본 (c3ddd05) | 9.00 | 1.53 / 2.00 | 0.037 | 0 | – |
+| **통합 단계 26 (Y=4.5)** | **5.20** | 2.59 / 3.35 | 0.148 | 2 (1틱 osqp) | 5.5 / 10.9 |
+| 통합 단계 26 (Y=3.3) | 5.92 | 2.27 / 3.07 | 0.109 | 1 | 5.5 / 9.1 |
+| 통합 Y=4.5 + 잡음 2 cm/0.05 m/s + 서보지연 60 ms | 5.32 | 2.56 / 3.36 | 0.163 | 2 | 5.6 / 12.1 |
+
+실차 참고 랩 약 7.5 s(PP)는 위 시뮬 수치와 별개. 원본 결과 JSON: `tests_offline/step26_results/`. 계산시간 최적화(희소 구조 재사용·상한 캐시)는 결과 동일성 검증 후 평균 5.35 → 3.81 ms(단독 실행).
+
+### 테스트
+- `test_integrated_v2.py`: 37 통과(기존 33 + 단계 26 4). 수정 2건: 제동식을 β·D로, 속도열 독립 시험의 콜드 계산 시간 예산 완화(Jetson에서 이 설정 콜드 2200 반복 ≈19 ms).
+- JSND_INT `tests_offline`: 50 통과/5 실패. v2 반입 시점 6 실패(이전 통합 MPC 전제: trailing 2, drive_windows 레거시 동등성, 100 Hz 예산, standstill 복구). 이번 변경으로 새로 실패한 2건:
+  - `test_lockup_is_iteration_budget_not_infeasibility`: **시험 조건 불일치** — 11-22 레거시 기록 시험이 현재 `mpc_car.yaml`의 A/D/Y를 읽음. 당시 값(1/2/2/0.3)을 기록 시험에 고정해 통과.
+  - `test_profile_refinement_removes_profile_stops_without_relaxing_the_check`: **시험 조건 불일치** — 예측 속도 ≤ 웨이포인트 속도열을 요구하나 v2는 설계상 속도열 독립. 제어기 결함 아님, 미수정.
+
+### Jetson 빌드·bench (래치 유지)
+- `colcon build --packages-select controller stack_master` 성공, 설치본=소스 일치, `~/JSND_INT/install` 활성.
+- `race_mpc.sh 5p0 11_18_6 integrated`: `mpc_speed_source=integrated`, max_speed 5.0, A/D/Y 5.0/5.0/4.5, 50 Hz 로드 확인. 30 s 동안 estop `latched`, `/vesc/ackermann_cmd` 속도 0(2999/2999). 확인 후 스택 종료.
+- **미검증**: Hokuyo 연결 실패(`Error connecting to Hokuyo`)로 PF 자세 없음 → MPC 미계산, 실차 50 Hz/계산시간 측정 불가.
+
+### 미해결
+- 실차 50 Hz·계산시간(오프라인 p99 11~12 ms, 예산 16 ms; 실차 스택 부하 시 증가 예상). 콜드 계산(STOP 직후) ~10 ms.
+- Y=4.5는 차량 모델 값. 실차 PP가 보인 횡가속은 약 3.3(비스케일 섹터) → 미끄러지면 `mpc_max_lateral_accel_mps2: 3.3`.
+- 실제 A/D·VESC 속도 추종·서보 속도 미측정. 오프라인 1틱 osqp STOP 1~2회/3랩 잔존.
+
+### 실행 (각각 단독, 이전 스택 종료 후)
+```bash
+# PP
+source /opt/ros/jazzy/setup.bash; source ~/JSND/install/local_setup.bash; source ~/JSND_INT/install/local_setup.bash
+export ROS_DOMAIN_ID=173 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI=file://$HOME/JSND/src/racing_stack/cyclonedds.xml
+ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=pp use_estop:=true
+# 조향 전용 MPC / 통합 MPC (tmux race, 로그 ~/bench_logs)
+bash ~/JSND_INT/run/race_mpc.sh 5p0 11_18_6 jsnd
+bash ~/JSND_INT/run/race_mpc.sh 5p0 11_18_6 integrated
+```
+속도 프로파일: 1번째 인자 `lowspeed|1p5|2p25|3p0|4p0|5p0`(= `mpc_max_speed_mps` 1.0~5.0). 가감속/횡가속은 `stack_master/config/mpc_car.yaml`의 `mpc_max_accel_mps2/decel/lateral_accel/braking_preview_ratio`(integrated 전용) 수정 후 `colcon build --packages-select stack_master`.
+
+### 복구
+`tar -C ~/JSND_INT/src/racing_stack -xzf ~/JSND_backups/pre_v2_20261124_174250/three_files.tgz` + `git -C ~/JSND_INT/src/racing_stack checkout f3326a1 -- stack_master/config/mpc_car.yaml controller/controller/mpc/integrated_mpc.py` 후 controller·stack_master 재빌드(설치본 백업도 같은 폴더). Git: JSND_INT `f3326a1`(단계 24/25), v2 반입 `03709b4`.

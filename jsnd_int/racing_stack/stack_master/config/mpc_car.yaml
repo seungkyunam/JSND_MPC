@@ -52,10 +52,16 @@ controller_manager:
     # 0.6-scaled sectors), so 4p0/5p0 never bind there. Keys below up to braking_preview are
     # used only by mpc_speed_source: integrated.
     mpc_max_speed_mps: 1.0            # profile overlay sets the active value (2.0 only in mpc_profile_exp2mps.yaml)
-    mpc_max_accel_mps2: 1.0
-    mpc_max_decel_mps2: 2.0
-    mpc_max_lateral_accel_mps2: 2.0
-    mpc_braking_preview_ratio: 0.3
+    # 2026-11-24 step 26 (integrated only): vehicle g-g limits of this car = CAR/veh_dyn_info
+    #   ggv.csv / ax_max_machines / b_ax_max_machines (ax 5.0, ay 4.5), the model the 11_18_6
+    #   raceline that PP drives is optimised with (was 1.0/2.0/2.0 bench values, no measurement).
+    #   Braking preview 0.3 -> 1.0 (full D on the friction ellipse, no extra reduction).
+    #   Real-car demonstrated ay (PP, unscaled sectors) ~3.3: lower max_lateral_accel to 3.3 if
+    #   the car slides. VESC/servo hardware limits are NOT changed by these keys.
+    mpc_max_accel_mps2: 5.0
+    mpc_max_decel_mps2: 5.0
+    mpc_max_lateral_accel_mps2: 4.5
+    mpc_braking_preview_ratio: 1.0
     # --- solver budget ---
     # 2026-11-22 bench: max_iter 400 was the cause of the permanent
     # "osqp: maximum iterations reached" lock (standstill QPs need 500-3300 ADMM

@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/jsnd/JSND_INT/tests_offline/lap_sim.py", line 278, in <module>
+    main()
+  File "/home/jsnd/JSND_INT/tests_offline/lap_sim.py", line 269, in main
+    res, R = simulate(ctrl, a.profile, ov, a.rate, a.laps, log_every=a.log, servo_delay_ticks=a.servo_delay,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jsnd/JSND_INT/tests_offline/lap_sim.py", line 227, in simulate
+    res = {'ctrl': ctrl, 'laps_done': len(lap_marks), 'lap_times': [round(lap_marks[0], 2)] +
+                                                                          ~~~~~~~~~^^^
+IndexError: list index out of range
