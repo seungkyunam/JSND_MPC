@@ -647,3 +647,10 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 가속 구조: MPC A=5.0이지만 setpoint는 측정속도+0.5 m/s(`mpc_cmd_max_lead_mps`) 이내, 이전 setpoint에 a·dt 누적. PP는 0.25 s 앞 레이싱라인 vx를 계단 명령. 실제 가속도는 미기록.
 - 우선순위: ① TTC EStop(랩당 ~3회, PP와 설정 동일 여부 확인) ② 계산 실패 STOP + Step 32 소프트 STOP(틱당 0.1 m/s, 최대 1.0 m/s 하강 후 낮은 setpoint에서 재가속; 3p0 랩 Step 31→32 약 +1.3 s, 세션 차이 있어 '유력') ③ lead 0.5 m/s 누적 방식의 가속 제약 ④ 코너 불안정(예측 0.57 s, r_rate 2.0, 미측정 지연) ⑤ 곡률 제한(주원인 아님).
 - 다음: 코드 수정 없이 `speed_rec.sh`로 주행 bag 1회(조향·속도 명령, odom, frenet, mpc_status, elapsed, IMU, /scan) → 3~5번 정량화 후 튜닝. OVERTAKE·상태머신 무변경(로그 상태 GB_TRACK만).
+
+## Step 34 (JSND_INT `5e69a81`, controller만 빌드, 실차 미구동)
+- 누적 감속 수정: Step 32 소프트 STOP 램프가 속도 설정값 기준(`mpc_speed_cmd`)을 낮춘 채 남겨, 해가 돌아와도 max_accel로만 회복 → 실패마다 속도 손실 누적(Step 31 5.95~6.7 s → Step 32 7.4~7.9 s). 기준을 `measured - mpc_cmd_max_lead_mps` 이상으로 클램프(대칭 anti-windup). MPC 자체 감속(a·dt)은 그대로.
+- deadline: 검증 통과 해가 deadline(16 ms)만 넘고 제어주기(20 ms) 안이면 버리지 않고 사용(`solved_late`). 주기 초과는 기존대로 이어쓰기/STOP.
+- 예측시간·조향변화 가중치·가속 제한: 주행 bag 실측이 없어 무변경. 차량 모델·지연 무변경.
+- N=30 실험(오프라인 무부하, bench 입력 363틱, preview_dt 0.05 유지): N=12 p99 5.6 ms / N=30 p99 11.7 ms(2.1배), N=30에서 `outside_envelope` STOP 7건 신규. 실차 전체 스택은 오프라인 대비 약 2배(Step 13) → N=30 p99 약 23 ms로 50 Hz 미달 추정. 기본값 N=12 유지, N=30은 yaml만 바꿔 실차 실험 가능.
+- test_corner_stall: 6 passed, 2 failed(test_profile_refinement, test_unwinding — 수정 전부터 실패). deadline 강제 테스트는 `ACCEPT_VERIFIED_LATE=False`로 주기 초과를 모사, `solved_late` 테스트 추가.

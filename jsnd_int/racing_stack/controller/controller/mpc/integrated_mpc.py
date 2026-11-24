@@ -75,6 +75,7 @@ class IntegratedMPC:
     CONTINUATION_REASONS = ('deadline_exceeded', 'osqp:run time limit reached',
                             'osqp:maximum iterations reached', 'osqp:solved inaccurate')
     ACCEPT_VERIFIED_INEXACT = True
+    ACCEPT_VERIFIED_LATE = True   # step 34: verified solve late vs deadline but within dt is served
     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
     MAX_CONTINUATION_TICKS = 5          # at most 5 consecutive ticks (100 ms at 50 Hz; plan spans 0.57 s)
     CONTINUATION_TOL = (.10, .15, .30)  # measured vs planned: position m, heading rad, speed m/s
@@ -622,7 +623,11 @@ class IntegratedMPC:
                 caps = tightened
                 self.previous, self.previous_dual = np.array(u), np.array(sol.y)
             elapsed = perf_counter()-started
-            if elapsed > c.deadline:
+            # Step 34: a fully verified solution that is late only against the soft
+            # deadline but still inside the control period is fresher than any plan
+            # continuation: serve it (status suffix _late) instead of discarding it.
+            late = self.ACCEPT_VERIFIED_LATE and c.deadline < elapsed <= c.dt
+            if elapsed > c.deadline and not late:
                 result = self._fail('deadline_exceeded', previous_steering, started)
                 # The late solution is valid, only late: keep it as the next warm start.
                 self.previous, self.previous_dual = u.copy(), np.array(sol.y, copy=True)
@@ -635,7 +640,7 @@ class IntegratedMPC:
             return IntegratedResult(float(controls[0, 1]), max(0., float(predicted[1, 3])),
                                     float(controls[0, 0]), SafetyRequest.NONE,
                                     ('braking_recovery' if braking_recovery else 'solved')
-                                    + ('_inexact_verified' if inexact else ''), elapsed,
+                                    + ('_inexact_verified' if inexact else '') + ('_late' if late else ''), elapsed,
                                     sol.info.run_time, sol.info.iter, ref, predicted, controls)
         except Exception as exc:
             self.solver = None

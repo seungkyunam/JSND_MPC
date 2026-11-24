@@ -111,7 +111,19 @@ def _solved_then_deadline(c):
     late = dataclasses.replace(c)
     object.__setattr__(late, 'deadline', 1e-9)  # every later solve misses the deadline (test only)
     mpc.config = late
+    mpc.ACCEPT_VERIFIED_LATE = False  # simulate a miss beyond the control period
     return mpc, first
+
+
+def test_late_within_period_serves_fresh_verified_solve():
+    c = config()
+    mpc = im.IntegratedMPC(c)
+    first = mpc.solve(np.array([0., 0., 0., 1.0]), straight(), 0.)
+    late = dataclasses.replace(c)
+    object.__setattr__(late, 'deadline', 1e-9)
+    mpc.config = late
+    r = mpc.solve(_expected_state(first, 1, c), straight(), first.steering)
+    assert r.success and r.status == 'solved_late', r.status
 
 
 def _expected_state(first, ticks, c):
@@ -166,12 +178,12 @@ def test_slid_local_window_keeps_continuation_changed_path_drops_it():
     mpc = im.IntegratedMPC(c)
     first = mpc.solve(np.array([0., 0., 0., 1.0]), long[:70], 0.)
     assert first.status == 'solved'
-    late = dataclasses.replace(c); object.__setattr__(late, 'deadline', 1e-9); mpc.config = late
+    late = dataclasses.replace(c); object.__setattr__(late, 'deadline', 1e-9); mpc.config = late; mpc.ACCEPT_VERIFIED_LATE = False
     r = mpc.solve(_expected_state(first, 1, c), long[1:71], first.steering)   # window slid 1 point
     assert r.success and r.status == 'plan_continuation:deadline_exceeded', r.status
     # a changed path (lateral offset, e.g. avoidance) still drops the plan -> STOP
     mpc = im.IntegratedMPC(c)
     first = mpc.solve(np.array([0., 0., 0., 1.0]), long[:70], 0.)
-    mpc.config = late
+    mpc.config = late; mpc.ACCEPT_VERIFIED_LATE = False
     moved = long[1:71].copy(); moved[:, 1] += .05
     assert mpc.solve(_expected_state(first, 1, c), moved, first.steering).status == 'deadline_exceeded'

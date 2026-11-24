@@ -236,6 +236,11 @@ class Controller:
             self.reset_mpc_speed_command()
             return 0.0
         base = measured if self.mpc_speed_cmd is None else self.mpc_speed_cmd
+        # Step 34: symmetric anti-windup. A soft-STOP ramp (or a lagging setpoint) must
+        # not leave the base far below the measured speed: otherwise every solver miss
+        # is a permanent speed loss recovered only at max_accel (cumulative slowdown
+        # seen in step 32 vs 31). The MPC's own braking still acts through a*dt.
+        base = max(base, measured - self.mpc_cmd_max_lead_mps)
         command = base + result.acceleration * self.lateral_mpc.config.dt
         upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
