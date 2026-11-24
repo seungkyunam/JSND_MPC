@@ -107,6 +107,7 @@ class ControllerManager(Node):
         self.mpc_values = mpc_values  # also read later in global_wpnts_cb (Controller construction)
         self.pose_to_rear_axle_m = mpc_values['mpc_pose_to_rear_axle_m']
         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
+        self.mpc_static_approach_decel_mps2 = float(self._get_param('mpc_static_approach_decel_mps2', 1.5))
         self.mpc_odom_timeout_s = float(self._get_param('mpc_odom_timeout_s', 0.2))
         self.last_odom_time = None
         # MPC holds 0 speed unless simple_mux has autodrive selected (fresh status).
@@ -264,6 +265,7 @@ class ControllerManager(Node):
             mpc_plan_lateral_accel_limit=float(self.mpc_values['mpc_plan_lateral_accel_limit_mps2']),
             mpc_fallback_max_ticks=max(1, int(round(float(self.mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
             mpc_latency_comp_s=float(self.mpc_values['mpc_latency_comp_s']),
+            mpc_static_approach_decel_mps2=self.mpc_static_approach_decel_mps2,
         )
         self.controller.speed_now = self.speed_now
         self.controller.yaw_rate = self.yaw_rate

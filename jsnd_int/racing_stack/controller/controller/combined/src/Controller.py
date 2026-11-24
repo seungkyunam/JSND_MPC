@@ -79,6 +79,7 @@ class Controller:
                 mpc_plan_lateral_accel_limit=4.5,
                 mpc_fallback_max_ticks=10,
                 mpc_latency_comp_s=0.0,
+                mpc_static_approach_decel_mps2=1.5,
             ):
 
         # Parameters from manager
@@ -169,6 +170,7 @@ class Controller:
         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
         self.mpc_result = None
         self.mpc_trailing_cap = None
+        self.mpc_static_approach_decel_mps2 = float(mpc_static_approach_decel_mps2)
         self.curr_applied_steering = 0.0
         self._mpc_last_status = None
         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
@@ -277,8 +279,23 @@ class Controller:
         self.position_in_map_frenet = frenet
         self.speed_now = max(0.0, float(speed))
         self.track_length = track_length
-        cap = float(self.trailing_controller(self.lateral_mpc.config.max_speed))
-        return cap if np.isfinite(cap) else 0.0
+        max_speed = self.lateral_mpc.config.max_speed
+        cap = float(self.trailing_controller(max_speed))
+        if not np.isfinite(cap):
+            return 0.0
+        if opponent[3] and not self.static_stop_latched and self.mpc_static_approach_decel_mps2 > 0.0:
+            # Static target (step 36, lowspeed 20:44 bag): the PP rule above returns the
+            # 0.2 m/s crawl as soon as the obstacle enters TRAILING, even 2.5 m away. As
+            # a flat cap that is a 1.0 -> 0.2 step in one tick -> VESC current braking
+            # (wheel speed to 0.06) every lap at s~1.1-1.9, while the avoidance path
+            # arrives 1-45 ticks later. Only the standoff is a collision limit, so cap
+            # by the speed from which the crawl is reachable at the standoff with a
+            # moderate deceleration; the 0 latch at the standoff is unchanged.
+            room = max(0.0, float(self.gap_actual) - self.static_min_standoff_m)
+            envelope = np.sqrt(self.static_crawl_speed_mps ** 2
+                               + 2.0 * self.mpc_static_approach_decel_mps2 * room)
+            cap = max(cap, min(float(envelope), max_speed))
+        return cap
 
     def integrated_loop(self, state, position, waypoints, speed, opponent=None, frenet=None, track_length=None):
         # Entire PP speed/steering preprocessing is bypassed. Unsupported behavior

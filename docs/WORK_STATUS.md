@@ -664,3 +664,14 @@ bag `3p0_20261124_203250`(97 s, 자율 4랩), 로그 `race_mpclowspeed_integrate
 - **MPC 계산시간**(자율 이동 중만): p50 4.4 / p99 16.8 / max 33.0 ms(87.5 ms는 정지 중). `deadline_exceeded` STOP 3틱.
 - **집계 정정(speed_report.py)**: non-tracking이 `startswith('tracking')`로 집계돼 항상 100%(4763/4763) → 실제 자율 이동 중 STOP 19/2943틱. 제동 이벤트 기준 v0>1.0 고정 → 0.5로, 재가속한 소프트 STOP 램프는 제외. [POSE] 항목 추가: 추종 샘플의 25%가 자세 불일치, 이를 뺀 |d| 평균 0.167(전체 0.215). 횡오차 기준선(/car_state/odom_frenet d = iqp 레이싱라인, GB_TRACK의 local_waypoints와 동일)은 맞지만 PF 자세 오류 구간에선 신뢰 불가.
 - 기존 실패(수정 전에도 실패): test_profile_refinement…, test_unwinding…, test_step12…, test_stale_obstacles_dropped(state_machine API 이름 불일치).
+
+## Step 36 — lowspeed bag 20:44 반복 감속 원인 확정 (JSND_INT `abc3c3e`, controller만 빌드, 실차 미구동)
+bag `lowspeed_20261124_204417`(142 s, 자율 20.7~125.2 s, 7랩), 로그 `race_mpclowspeed_integrated_20261124_204404.log`. N=12·비상정지·Step 35 변경 유지.
+- **급감속 구간**: 자율 중 휠속도 저하는 매 랩 s≈1.1~1.9에서만 발생(30.4/45.7/61.1/76.6/91.5/121.5 s). 명령 1.0 → 0.10~0.37, 휠속도 0.97 → 0.52~0.75(61.16 s는 0.06, 전류제동 잠김). 그 외 구간 명령은 1.0 유지.
+- **직접 원인**: 매 랩 static_avoidance가 정적 장애물(obs_s≈4.2~4.4, RIGHT)을 2.0~3.3 m 앞에서 검출 → state_machine이 회피 경로 생성 전(path_exists=0, decision=TRAILING) 1~45틱 TRAILING → `_mpc_trailing_cap`이 PP 규칙대로 정적 대상이면 거리와 무관하게 crawl 0.2 m/s 반환 → 한 틱에 cap 1.0→0.2 → braking_recovery 최대 감속 → VESC 전류제동. 이후 OVERTAKE에서 설정값이 measured−0.5(≈0.47)부터 재가속(~0.6 s).
+  osqp 시간한도·deadline_exceeded는 이 틱들에 동반됐을 뿐 원인 아님(그 외 구간은 solved, cmd 1.0).
+- **수정**: MPC 모드 TRAILING + 정적 대상 + standoff 래치 전: cap = max(PP cap, min(√(crawl² + 2·a·(gap−standoff)), max_speed)), a=`mpc_static_approach_decel_mps2` 1.5(mpc_car.yaml, 0이면 기존 동작). 2.53 m 앞·0.97 m/s → cap 2.6 → 감속 없음. 접근 시 a로 감속, standoff 0.5 m 0 래치 유지. PP 모드·동적 대상 trailing·state_machine 무변경.
+  회귀테스트 `test_mpc_trailing.py::test_static_trailing_far_obstacle_no_step_brake`, `::test_static_trailing_approach_still_stops_at_standoff`(수정 전 실패/후 통과), 파일 전체 9 passed.
+- **위치추정(무변경, 원인 미확정)**: 매 랩 s≈2.83에서 1.4 s 동안 휠+IMU 추측항법 1.25 m·요 0.75 rad, PF 0.25 m·0.15 rad(7랩 동일, 횡가속 0.66~0.75 m/s²로 실제 주행 중). PF 입력 정상: 모션모델 속도 0.93 m/s(/vesc/odom), IMU 요레이트, 42 Hz·최대 간격 49 ms·weight collapse 0, 헤더 지연 1~7 ms(now() 스탬프, 의도된 설계). → 센서모델이 자세를 끌어당기는 스캔-맵 불일치로 추정(정적 장애물 1.4 m 앞 또는 맵 변경). /scan 미기록이라 확정 불가 → 코드 무변경. 마지막 랩은 정체 후 d=−0.7 이탈, 125.2 s 수동 개입. PF 정체 중 ego s≈2.9에서 s≈2.40 유령 장애물 검출.
+  다음 확인: `speed_rec.sh`에 /scan 추가해 같은 구간 기록, 장애물 제거 상태 1랩 비교.
+- 백업 ~/JSND_backups/step36_20261124_205217.

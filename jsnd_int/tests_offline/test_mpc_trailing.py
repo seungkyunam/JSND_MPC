@@ -107,3 +107,30 @@ def test_trailing_cap_drop_while_moving_brakes_instead_of_stop():
     r = im.IntegratedMPC(cfg).solve(state, path, 0.0, safety_speed_cap=0.2)
     assert r.success and r.status.startswith('braking_recovery'), r.status
     assert r.acceleration < -0.5 * cfg.max_decel
+
+
+def test_static_trailing_far_obstacle_no_step_brake():
+    """Step 36 (real car lowspeed 20:44 bag, every lap at s~1.1-1.9): GB_TRACK -> TRAILING
+    on a static obstacle 2.53 m ahead at 0.97 m/s set the cap to the 0.2 m/s crawl in one
+    tick (cmd 1.0 -> 0.10~0.35, wheel speed to 0.06). The cap must not demand braking
+    while the crawl is still reachable at the standoff with moderate deceleration."""
+    c = ctrl_trailing()
+    c.trailing_gap, c.trailing_p_gain, c.trailing_d_gain = 2.5, 1.35, 1.0   # controller.yaml
+    opp = [RACELINE[0, 4] + 2.53, 0.0, 0.0, True, True]
+    out = run(c, 'TRAILING', opp, 1, v=0.97)
+    assert out[0][3] >= 0.97, out
+    assert out[0][0] > 0.9, out
+
+
+def test_static_trailing_approach_still_stops_at_standoff():
+    c = ctrl_trailing()
+    gap, v, dt = 2.53, 0.97, 1.0 / CAR['control_loop_rate_hz']
+    pose, w = pose_on_line(0), local_window(0)
+    s0 = RACELINE[0, 4]
+    for _ in range(int(6.0 / dt)):
+        opp = [s0 + gap, 0.0, 0.0, True, True]
+        r = c.main_loop('TRAILING', pose, w, v, opp, np.array([s0, 0.0, v, 0.0]), 0.0, TRACK)
+        v = r[0]
+        gap -= v * dt
+        assert gap > 0.4, (gap, v)
+    assert v == 0.0 and c.static_stop_latched and gap > 0.4
