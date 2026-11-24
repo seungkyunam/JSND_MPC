@@ -157,3 +157,61 @@ source install/setup.bash
 ```
 
 Git 기준 성공 버전은 `b1e130f6`이다. 원본 미커밋 변경을 지우는 `reset --hard`는 사용하지 않는다.
+
+## 8. 실차 준비 후속 확인 (2026-11-24, 기준 e6dffde)
+
+- 원격 fetch 결과 기준 문서 이후 변경 없음. `race.launch.xml` → manager → Controller 분기를 확인했다: `controller:=pp`는 기존 PP, `controller:=mpc mpc_speed_source:=jsnd`는 기존 속도+조향 MPC, `mpc_speed_source:=integrated`는 v2다. 기본값은 계속 PP / MPC 선택 시 jsnd다. 운용 제어기·물리 한계·안전 코드 수정 없음.
+- 기존 18틱 원인은 위 분석을 재사용했다. v2 폐루프 확인을 위해 실제 `mpc_car.yaml` 가중치/물리 설정, 50Hz, OSQP 8ms/전체 16ms로 직선·S자·회피 경로를 각각 1/2m/s 운용 상한에서 500틱씩 실행했다. 정지 출발, 매 틱 로컬 경로 갱신, 실제 Controller 속도 setpoint 적분을 사용했다.
+- 총 3,000틱 모두 solved, `braking_envelope_infeasible` 0틱. 기존 로그 18틱이 이 조건의 신규 폐루프에서 재발하지 않았다. 모든 경로/외란에서 재발하지 않는다는 증명은 아니다.
+- 정확한 pose, 즉시 조향, 가정된 속도 응답 지연 0.12초의 합성 시험이다. 지연 보정은 정확한 pose에 맞춰 0초로 설정했다. 실차 0.1초 보정·센서 지연/잡음·서보 지연 검증은 별도로 남는다. 오차는 이산 경로점까지 거리이며 순수 횡오차와 다르다.
+- 재현: `PYTHONPATH=controller:controller/test:jsnd_int/tests_offline OPENBLAS_NUM_THREADS=1 python3 jsnd_int/tests_offline/validate_v2_readiness.py`. 저장 결과: `jsnd_int/tests_offline/v2_readiness_results.jsonl`. ROS 그래프나 하드웨어에 연결하지 않는다.
+- 로컬에 11_18_6 없음. 기록된 Jetson `jsnd@172.20.10.4`에 읽기 전용 SSH를 시도했으나 연결 시간초과. 따라서 원본 맵 확보, Jetson 배포/Jazzy 빌드/50Hz 실측은 **미수행**이다. 연결 가능 시 `scp jsnd@172.20.10.4:~/JSND_INT/src/racing_stack/stack_master/maps/11_18_6/global_waypoints.json /tmp/11_18_6_global_waypoints.json`으로 경로 원본부터 확보한다.
+
+### 세 제어기 실행 명령 (동시에 실행하지 않음)
+
+6절의 백업·3파일 배포·Jazzy 빌드를 먼저 수행한다. 각 명령 실행 전 이전 스택이 종료되어 VESC 드라이버가 중복 실행되지 않는지 확인한다. **아래 명령은 래치 유지 확인용이며 주행 허가가 아니다.** PP는 `mpc_profile` 속도 제한 대상이 아니므로 PP를 1m/s 시험이라고 간주하지 않는다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/JSND/install/setup.bash
+source ~/JSND_INT/install/setup.bash
+
+# 1. 기존 PP
+ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=pp \
+  use_estop:=true safety_mode:=true safety_engage_hold:=true joy_max_speed:=1.0
+
+# 2. 기존 조향 전용 MPC
+ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=mpc \
+  mpc_speed_source:=jsnd mpc_profile:=lowspeed mpc_rate_hz:=50 \
+  use_estop:=true safety_mode:=true safety_engage_hold:=true joy_max_speed:=1.0
+
+# 3. 신규 통합 MPC v2
+ros2 launch stack_master race.launch.xml map:=11_18_6 controller:=mpc \
+  mpc_speed_source:=integrated mpc_profile:=lowspeed mpc_rate_hz:=50 \
+  use_estop:=true safety_mode:=true safety_engage_hold:=true joy_max_speed:=1.0
+```
+
+### Jetson 읽기 전용 확인 절차 및 판정
+
+같은 환경을 source한 별도 터미널에서 실행한다. 모니터는 기존 기본값 off를 유지한다.
+
+```bash
+ros2 param get /controller_manager lateral_controller
+ros2 param get /controller_manager mpc_speed_source
+ros2 param get /controller_manager control_loop_rate_hz
+ros2 param get /controller_manager mpc_max_speed_mps
+python3 ~/JSND_MPC_v2/jsnd_int/tests_ros/bench_check.py 30
+ros2 topic echo /vesc/ackermann_cmd
+ros2 topic echo /simple_mux/estop_state
+ros2 topic echo /simple_mux/active_host
+ros2 topic echo /controller/mpc_cycle_ms
+ros2 topic echo /controller/mpc_loop_period_ms
+```
+
+- 선택 모드/50Hz/lowspeed 1.0m/s 로드를 확인한다(MPC에 해당). `active_host=estop`, 시작 래치 유지, 최종 `/vesc/ackermann_cmd` 속도 0을 확인한다. PP의 high-level 속도는 래치 중에도 0이 아닐 수 있으므로 최종 mux 출력을 확인해야 한다.
+- MPC 계산 p99 <16ms, 전체 cycle p99 <20ms, 실제 주기 약 20ms/50Hz인지 30초 이상 확인하고 deadline/STOP 사유를 보존한다. 주기 tail과 누락이 있으면 50Hz 달성으로 판정하지 않는다. `bench_check.py`만으로 전체 cycle 시간은 검증되지 않아 추가 토픽을 함께 확인한다.
+- 래치 상태에서는 안전 출력 0과 설정/데이터 신선도는 확인 가능하지만 TTC·조이스틱 유실·odom/waypoint 유실·FTG/TRAILING 전환의 전체 동작을 증명하지 못한다. 해당 통합 안전 시나리오는 미검증으로 남긴다.
+- `tests_ros/fake_world.py` 및 기존 `tests_ros/run.sh`에는 reset_estop/조이스틱 모의 입력이 포함되어 있어 이번 금지 조건에서는 실행하지 않는다. 실제 스택으로 시험 입력을 발행하지 않는다.
+- 복구는 7절의 백업 tar 복원 후 동일 Jazzy 재빌드. 단순히 `mpc_speed_source:=jsnd`로 선택하는 것은 제어기 전환이며 소스 복구와 구분한다.
+
+**최종 판정: 래치 유지 벤치 절차 준비 완료. 원본 맵 폐루프·Jetson/Jazzy 빌드·부하 상태 50Hz·안전 통합 및 차량 파라미터 실측이 남아 지상 자율 주행 테스트 준비 완료로 판정하지 않는다.**
