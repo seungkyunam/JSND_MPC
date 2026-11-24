@@ -144,7 +144,8 @@ def mpc_layers(cfg, state, path):
 
 
 def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60.0, log_every=0,
-             servo_delay_ticks=1, noise_pos=0.0, noise_v=0.0, offset_d=0.0, offset_yaw=0.0, seed=0):
+             servo_delay_ticks=1, noise_pos=0.0, noise_v=0.0, offset_d=0.0, offset_yaw=0.0, seed=0,
+             noise_yaw=None):
     rng = np.random.default_rng(seed)
     c, p = build(ctrl, profile, overrides or {}, rate)
     conv = c.converter
@@ -155,7 +156,12 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
     y += offset_d * np.cos(yaw)
     yaw += offset_yaw
     v, delta = 0.0, 0.0
-    delta_queue = collections.deque([0.0] * servo_delay_ticks)
+    # Fractional ticks interpolate adjacent delayed commands; this replaces the
+    # existing delay, rather than adding another queue. Integer behavior is unchanged.
+    delay_ticks = int(np.ceil(servo_delay_ticks))
+    delay_blend = delay_ticks - servo_delay_ticks
+    delta_queue = collections.deque([0.0] * delay_ticks)
+    yaw_sigma = 0.5 * noise_pos if noise_yaw is None else noise_yaw
     acc_now = np.zeros(10)
     s_prev = float(conv.get_frenet([x], [y])[0][0])
     s_total, t = 0.0, 0.0
@@ -177,7 +183,7 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
         wp = local_wpnts(s)
         xm, ym = x + noise_pos * rng.standard_normal(), y + noise_pos * rng.standard_normal()
         vm = v + noise_v * rng.standard_normal()
-        pose = np.array([[xm, ym, yaw + 0.5 * noise_pos * rng.standard_normal()]])
+        pose = np.array([[xm, ym, yaw + yaw_sigma * rng.standard_normal()]])
         frenet = np.array([s, d, vm, 0.0])
         c.yaw_rate = v * np.tan(delta) / L
         out = c.main_loop('GB_TRACK', pose, wp, vm, None, frenet, acc_now, TRACK_LEN)
@@ -215,6 +221,8 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
         # ---- vehicle ----
         delta_queue.append(float(np.clip(steer, -SERVO_LIMIT, SERVO_LIMIT)))
         cmd_delta = delta_queue.popleft()
+        if delay_blend:
+            cmd_delta = (1.0-delay_blend)*cmd_delta + delay_blend*delta_queue[0]
         delta += float(np.clip(cmd_delta - delta, -SERVO_RATE * dt, SERVO_RATE * dt))
         a = float(np.clip((spd - v) / VESC_TAU, -VESC_DEC, VESC_ACC))
         v_new = max(0.0, v + a * dt)
