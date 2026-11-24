@@ -593,3 +593,11 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 출발 불가 원인 2: `ObstacleTransition`(`state_transitions.py:133-170`)은 관심 장애물이 있고 |d| ≥ gb_ego_width 0.29 m이며 recovery/OT 경로가 없으면 GB가 비어도 TRAILING. 차 d=0.48 m 정지 + 오른쪽 벽 가장자리 검출(s≈9.96, d=-1.54, 폭 -1.66~-1.42, 트랙 d_right 1.70, 맵 xy≈(0.49, 1.76)) → TRAILING, `trailing_targets` 비어 MPC `trailing_without_target` STOP(PP도 0 출력, MPC 고유 문제 아님). 벽 검출 원인(PF 오프셋 vs 실제 벽 위치)은 미확정.
 - 환경 비교: domain 173/cyclone/`cyclonedds.xml` 동일, 중복 노드·VESC 2중 없음. config·맵은 JSND와 동일(`mpc_car.yaml`만 추가). race_mpc.sh 차이는 의도된 MPC 기본값(시작 래치·`/joy` 필요 reset, 수동 1.0 m/s, `use_estop:=true`, 50 Hz).
 - 재출발 절차: F710 X 모드 → `tmux kill-session -t rec`(스택 없이 남은 녹화) → `bash ~/JSND_INT/run/race_mpc.sh 4p0 11_18_6 integrated` → 차를 레이스라인 위(|d|<0.05 m, 20° 이내)에 두고 2D Pose Estimate → `/state_machine` GB_TRACK 확인 → reset_estop + RB(사용자).
+
+## 단계 28 (2026-11-24 18:37) — 통합 MPC lowspeed 재기동, 초기 위치 지정 대기 (코드·파라미터 변경 없음, JSND_INT `7734321`)
+- `race_mpc.sh` ABORT 원인: PID 8305 = tmux 서버(명령줄에 `race.launch.xml` 문자열 포함 → 중복 스택 pgrep에 걸림). `rec` 녹화 정상 종료(bag `4p0_20261124_182441` 보존) 후 `tmux kill-server`.
+- 수동 `joy_node`는 정리 시점에 이미 종료 → 스택 내장 `joy_node` 1개만(`/joy` 발행자 중복 없음).
+- 기동: `race_mpc.sh lowspeed 11_18_6 integrated`, 로그 `race_mpclowspeed_integrated_20261124_183702.log`.
+- 상태: `/joy` 15.6 Hz, `/scan` 40 Hz(827빔, sensor QoS), VESC `/vesc/sensors/core` 50 Hz·드라이버 1개, `/state_machine` 50 Hz GB_TRACK, MPC 50 Hz·약 1 ms·`outside_heading_envelope`(초기 위치 지정 전, 정상), estop `latched: startup` 유지.
+- 경고: VESC 입력 10.4 V(3S, 3.47 V/셀, 18:1x 11.4 V에서 하강) → state_machine `VOLTS TOO LOW`(volt_threshold 11.0, 로그·마커만, 정지 동작 없음). 주행 전 충전/교체 필요.
+- 사용자 조작 순서: 배터리 충전·교체(교체 시 스택 재기동) → 차를 레이스라인 위(|d|<0.05 m, 20° 이내) → Pitwall 2D Pose Estimate(scan·맵 정합 확인) → GB_TRACK·`solved` 확인 → `reset_estop` → RB. 정지 A, 수동 LB.
