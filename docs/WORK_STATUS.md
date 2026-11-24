@@ -654,3 +654,13 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 예측시간·조향변화 가중치·가속 제한: 주행 bag 실측이 없어 무변경. 차량 모델·지연 무변경.
 - N=30 실험(오프라인 무부하, bench 입력 363틱, preview_dt 0.05 유지): N=12 p99 5.6 ms / N=30 p99 11.7 ms(2.1배), N=30에서 `outside_envelope` STOP 7건 신규. 실차 전체 스택은 오프라인 대비 약 2배(Step 13) → N=30 p99 약 23 ms로 50 Hz 미달 추정. 기본값 N=12 유지, N=30은 yaml만 바꿔 실차 실험 가능.
 - test_corner_stall: 6 passed, 2 failed(test_profile_refinement, test_unwinding — 수정 전부터 실패). deadline 강제 테스트는 `ACCEPT_VERIFIED_LATE=False`로 주기 초과를 모사, `solved_late` 테스트 추가.
+
+## Step 35 — lowspeed 1 m/s 실차 bag 시간축 분석 (JSND_INT `5f5c831`, controller만 빌드, 실차 미구동)
+bag `3p0_20261124_203250`(97 s, 자율 4랩), 로그 `race_mpclowspeed_integrated_19700101_090100.log`.
+- **버벅임 직접 원인**: 매 랩 s≈1.3에서 state_machine이 정적 장애물(obs_s≈4.22, RIGHT, ot lane 0.12 m, NO_STATIC_PATH)로 TRAILING 판정 → safety cap이 한 틱에 급락 → 감속 부족분 > 0.30 m/s → `braking_envelope_infeasible` STOP 5틱(자율 중 STOP 19틱 중 16틱) → 소프트 STOP 램프가 설정값 0 → VESC 전류제동 0.97→0.78 m/s. 4랩 모두 동일(990.0/1005.1/1020.3/1035.7 s).
+  수정: 부족분이 safety cap(TRAILING) 때문이고 기하/끝점만으로는 허용치 이내면 STOP 대신 최대 가능 감속으로 추종(`braking_recovery`). 기하 원인 부족분은 기존대로 STOP. 상태머신·estop 무변경. 회귀테스트 `test_mpc_trailing.py::test_trailing_cap_drop_while_moving_brakes_instead_of_stop`(수정 전 실패/후 통과).
+- **코너 불안정 직접 원인 = 위치추정**: 헤어핀(s≈2.9~3.4)에서 매 랩 PF 자세가 1.5~2.0 s 정체(휠 1.45~1.84 m 이동 중 자세 0.24~0.45 m, IMU 요 0.8~1.2 rad 중 자세 0.03~0.5 rad) 후 0.1~0.4 m 순간이동. MPC는 정체된 자세로 조향(+0.24→−0.12→+0.25 rad 진동). MPC 계산실패·조향 포화와 무관(이 구간 status solved). PF/EKF는 원본 JSND 설치본이고 bag에 /scan·PF 원자세 없음 → 무변경. `speed_rec.sh`에 `/state_machine /pf/pose/odom /vesc/sensors/imu_corrected` 추가.
+- **TTC**: 로그에 TTC/estop 래치 0건(estop_state 전부 clear) — 원인 아님.
+- **MPC 계산시간**(자율 이동 중만): p50 4.4 / p99 16.8 / max 33.0 ms(87.5 ms는 정지 중). `deadline_exceeded` STOP 3틱.
+- **집계 정정(speed_report.py)**: non-tracking이 `startswith('tracking')`로 집계돼 항상 100%(4763/4763) → 실제 자율 이동 중 STOP 19/2943틱. 제동 이벤트 기준 v0>1.0 고정 → 0.5로, 재가속한 소프트 STOP 램프는 제외. [POSE] 항목 추가: 추종 샘플의 25%가 자세 불일치, 이를 뺀 |d| 평균 0.167(전체 0.215). 횡오차 기준선(/car_state/odom_frenet d = iqp 레이싱라인, GB_TRACK의 local_waypoints와 동일)은 맞지만 PF 자세 오류 구간에선 신뢰 불가.
+- 기존 실패(수정 전에도 실패): test_profile_refinement…, test_unwinding…, test_step12…, test_stale_obstacles_dropped(state_machine API 이름 불일치).

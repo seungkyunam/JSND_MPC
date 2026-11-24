@@ -444,7 +444,16 @@ class IntegratedMPC:
             deficit = float(np.max(reachable-caps))
             braking_recovery = deficit > 1e-4
             if braking_recovery:
-                if deficit > self.CONTINUATION_TOL[2]:
+                # Step 35 (real car lowspeed 20:32 bag): a GB_TRACK->TRAILING switch drops
+                # the safety cap in one tick (static obstacle at s~4.2 seen from s~1.3, every
+                # lap). That deficit is not a tracking fault: brake at the strongest feasible
+                # rate and keep tracking. Before, it STOPped (5 ticks) and the soft-STOP ramp
+                # drove the setpoint to 0 -> VESC current braking 0.97->0.78 m/s (stutter).
+                # A deficit the geometry/endpoint alone causes still STOPs as before.
+                if deficit > self.CONTINUATION_TOL[2] and (
+                        not np.isfinite(safety_speed_cap)
+                        or float(np.max(reachable-self._reference(state, path, periods)[2]))
+                        > self.CONTINUATION_TOL[2]):
                     return self._fail('braking_envelope_infeasible', previous_steering, started)
                 caps = np.maximum(caps, reachable+1e-4)
             m = np.zeros((4, 2*n))

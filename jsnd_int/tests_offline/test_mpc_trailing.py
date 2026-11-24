@@ -84,3 +84,26 @@ def test_stale_obstacles_dropped():
     assert sm._fresh_obstacles_in_interest() == []           # 1.5 s old -> dropped
     sm.obstacle_stale_timeout_s = 0.0
     assert sm._fresh_obstacles_in_interest() == ['obs']      # disabled
+
+
+def test_trailing_cap_drop_while_moving_brakes_instead_of_stop():
+    """Step 35 (real car lowspeed 20:32 bag): GB_TRACK->TRAILING dropped the safety cap
+    from 1.0 to the static-obstacle crawl in one tick at 0.97 m/s. The deficit > 0.30 m/s
+    returned braking_envelope_infeasible (STOP, setpoint ramp to 0, VESC current brake)
+    every lap. Now: tracked at the strongest feasible braking."""
+    import yaml
+    from controller.mpc import integrated_mpc as im
+    from controller.mpc.configuration import MPC_DEFAULTS, make_config
+    from test_stabilization import CFG
+    v = dict(MPC_DEFAULTS)
+    for f in ('mpc_car.yaml', 'mpc_profile_lowspeed.yaml'):
+        p = yaml.safe_load((CFG / f).read_text())['controller_manager']['ros__parameters']
+        v.update({k: x for k, x in p.items() if k in MPC_DEFAULTS})
+    cfg = make_config(v, 0.324, True, 50)
+    path = np.column_stack((np.arange(80)*.1, np.zeros(80), np.full(80, 1.0)))
+    state = np.array([0.3, 0.0, 0.0, 0.97])
+    free = im.IntegratedMPC(cfg).solve(state, path, 0.0)
+    assert free.success, free.status
+    r = im.IntegratedMPC(cfg).solve(state, path, 0.0, safety_speed_cap=0.2)
+    assert r.success and r.status.startswith('braking_recovery'), r.status
+    assert r.acceleration < -0.5 * cfg.max_decel
