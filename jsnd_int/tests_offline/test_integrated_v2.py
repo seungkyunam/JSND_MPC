@@ -109,3 +109,121 @@ def test_pp_code_and_safety_files_preserved():
                      'stack_master/scripts/simple_mux_node.py']:
         f='jsnd_int/racing_stack/'+relative
         assert subprocess.check_output(['git','show','b1e130f6:'+f],cwd=ROOT)==(ROOT/f).read_bytes()
+
+
+def test_full_actuator_acceleration_available_on_straight():
+    m = IntegratedMPC(config(max_speed=2., q_speed=80.))
+    r = m.solve([0., 0., 0., .1], virtual_path('straight'), 0.)
+    assert r.success, r.status
+    assert r.acceleration > m.config.max_accel/np.sqrt(2.)+.1
+    assert r.acceleration <= m.config.max_accel
+
+
+def test_friction_polygon_axis_limits_and_inner_ellipse():
+    m = IntegratedMPC(config()); c = m.config
+    vmax = np.full(c.horizon, 2.)
+    bounds = np.minimum(c.max_steer, np.arctan(c.max_lateral_accel*c.wheelbase/vmax**2/np.sqrt(2.)))
+    matrix = m._friction_rows(vmax, bounds)
+    rhs = np.cos(np.pi/16)
+    # Both full longitudinal actuator endpoints remain feasible at zero steering.
+    for acceleration in [c.max_accel, -c.max_decel]:
+        u = np.tile([acceleration, 0.], c.horizon)
+        assert np.max(matrix@u) <= rhs+1e-12
+        u[0] *= 1.001
+        assert np.max(matrix@u) > rhs
+    # Exhaustive normalized grid: every accepted polygon point is inside the ellipse.
+    scale = vmax[0]**2*np.tan(bounds[0])/bounds[0]/(c.wheelbase*c.max_lateral_accel)
+    for x in np.linspace(-1.05, 1.05, 85):
+        for y in np.linspace(-1., 1., 81):
+            a = x*(c.max_accel if x >= 0 else c.max_decel)
+            u = np.tile([a, y/scale], c.horizon)
+            if np.max(matrix@u) <= rhs+1e-12:
+                assert x*x+y*y <= 1.+1e-12
+    # The old rectangle's corners and thus its guaranteed braking reserve survive.
+    for a in [-c.max_decel/np.sqrt(2.), c.max_accel/np.sqrt(2.)]:
+        for sign in [-1, 1]:
+            assert np.max(matrix@np.tile([a, sign/np.sqrt(2.)/scale], c.horizon)) <= rhs+1e-12
+
+
+@pytest.mark.parametrize('reason', IntegratedMPC.CONTINUATION_REASONS)
+def test_transient_failure_two_ticks_then_stop(reason, monkeypatch):
+    m = IntegratedMPC(config()); p = virtual_path('straight')
+    r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
+    plan = m.plan
+    # Deterministic wall clock; the logical control tick still advances.
+    monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: plan['started']+.02)
+    m._solve = lambda *args: m._fail(reason, 0.)
+    for tick in [1, 2]:
+        t = tick*m.config.dt
+        state = np.array([np.interp(t, m.node_times, plan['predicted'][:, j]) for j in range(4)])
+        out = m.solve(state, p, r.steering)
+        assert out.success and out.status == 'plan_continuation:'+reason
+        assert -m.config.max_decel <= out.acceleration <= m.config.max_accel
+    assert not m.solve(state, p, out.steering).success
+    assert m.plan is None
+
+
+@pytest.mark.parametrize('reason', ['osqp:primal infeasible', 'osqp:dual infeasible',
+    'constraint_violation', 'nonlinear_prediction_outside_envelope', 'braking_envelope_infeasible'])
+def test_unsafe_failure_never_reuses_plan(reason):
+    m = IntegratedMPC(config()); p = virtual_path('straight')
+    r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
+    m._solve = lambda *args: m._fail(reason, 0.)
+    assert not m.solve(r.predicted[1], p, r.steering).success
+    assert m.plan is None
+
+
+@pytest.mark.parametrize('invalidate', ['age', 'reset', 'state', 'steering', 'cap', 'no_plan'])
+def test_continuation_requires_fresh_valid_plan(invalidate, monkeypatch):
+    m = IntegratedMPC(config()); p = virtual_path('straight')
+    r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
+    state, steer, cap = r.predicted[1].copy(), r.steering, np.inf
+    if invalidate == 'age':
+        then = m.plan['started']+1.
+        monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: then)
+    elif invalidate == 'reset': m.reset()
+    elif invalidate == 'state': state[0] += .5
+    elif invalidate == 'steering': steer = m.config.max_steer+.01
+    elif invalidate == 'cap': cap = 0.
+    elif invalidate == 'no_plan': m.plan = None
+    m._solve = lambda *args: m._fail('deadline_exceeded', 0.)
+    assert not m.solve(state, p, steer, safety_speed_cap=cap).success
+    assert m.plan is None
+
+
+def test_success_after_miss_refreshes_plan(monkeypatch):
+    m = IntegratedMPC(config()); p = virtual_path('straight')
+    r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
+    with monkeypatch.context() as patch:
+        patch.setattr(m, '_solve', lambda *args: m._fail('deadline_exceeded', 0.))
+        r = m.solve(r.predicted[1], p, r.steering)
+        assert r.success and m.continuation == 1
+    r = m.solve([0.004, 0, 0, .1], p, r.steering)
+    assert r.success and r.status == 'solved'
+    assert m.continuation == 0 and m.plan is not None
+
+
+@pytest.mark.parametrize('status', ['maximum iterations reached', 'run time limit reached', 'solved inaccurate'])
+def test_osqp_failure_reuses_only_previously_verified_controls(status, monkeypatch):
+    from types import SimpleNamespace
+    m = IntegratedMPC(config()); p = virtual_path('straight')
+    r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
+    plan = m.plan
+    # Deliberately unsafe last iterate may seed the next solve, never the command.
+    failed = SimpleNamespace(info=SimpleNamespace(status_val=7, status=status),
+                             x=np.full_like(m.previous, 1000.), y=np.zeros_like(m.previous_dual))
+    monkeypatch.setattr(m.solver, 'solve', lambda **kwargs: failed)
+    monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: plan['started']+.02)
+    continued = m.solve(r.predicted[1], p, r.steering)
+    assert continued.success and continued.status == 'plan_continuation:osqp:'+status
+    assert continued.acceleration == pytest.approx(plan['controls'][1, 0])
+    assert abs(continued.steering-r.steering) <= m.config.max_steer_rate*m.config.dt+1e-9
+
+
+def test_continuation_cannot_skip_over_control_stage(monkeypatch):
+    m = IntegratedMPC(config(preview_dt=.01)); p = virtual_path('straight')
+    r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
+    then = m.plan['started']+.02
+    monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: then)
+    monkeypatch.setattr(m, '_solve', lambda *args: m._fail('deadline_exceeded', 0.))
+    assert not m.solve(r.predicted[1], p, r.steering).success

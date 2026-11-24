@@ -1,0 +1,37 @@
+[
+  {
+    "path": "jsnd_int/racing_stack/controller/controller/safety_gate.py",
+    "unchanged": true,
+    "sha256": "fa39995ee37493c9360a4413b06a9d361132893f2eacee1e2c54f80640c09a85"
+  },
+  {
+    "path": "jsnd_int/racing_stack/stack_master/scripts/simple_mux_node.py",
+    "unchanged": true,
+    "sha256": "d7d0219c20bbfc80b4095b652c41ab0d095c37ea45172e8528da2af00cba4a2e"
+  },
+  {
+    "path": "jsnd_int/racing_stack/controller/controller/controller_manager.py",
+    "unchanged": true,
+    "sha256": "7d07217e77f6cd1ddf38976b8207f0525097b6674053656598259c28fc110b1c"
+  },
+  {
+    "path": "jsnd_int/racing_stack/controller/controller/combined/src/Controller.py",
+    "unchanged": true,
+    "sha256": "029b080dce1f37f015878f51bff0607c5382a5f03285c7664ebfa53c4903f249"
+  },
+  {
+    "path": "jsnd_int/racing_stack/controller/controller/mpc/steering_mpc.py",
+    "unchanged": true,
+    "sha256": "99c7a319e43b5b039d67354ddb9a1210d266d1c13515aa3aef634b3a8e1495a6"
+  },
+  {
+    "path": "jsnd_int/racing_stack/stack_master/config/mpc_car.yaml",
+    "unchanged": true,
+    "sha256": "befa4fe4c072af079a749a9fbb9e5989e3a1bd99275b0a48a8b14f90cb8b9313"
+  },
+  {
+    "path": "sensor/vesc/vesc_driver/params/vesc_config.yaml",
+    "unchanged": true,
+    "sha256": "ee25fb9188ce087734d7dc14e107660e6cbc4a84887baeb96ea5055e0abf3dd4"
+  }
+]

@@ -1,4 +1,4 @@
-"""ROS-independent joint acceleration/steering LTV MPC; failures request STOP.
+"""ROS-independent joint acceleration/steering LTV MPC with bounded verified-plan continuation.
 
 Inputs are rear-axle [x,y,yaw,v] and ordered local XY points. Extra columns
 are ignored. Geometry, operator ceiling and an explicit obstacle safety cap
@@ -17,6 +17,8 @@ class IntegratedConfig(MPCConfig):
     max_iter: int = 1000
     preview_dt: float = .1
     max_speed: float = 3.0
+    # Configured conservative actuator limits, NOT optional tuning caps.
+    # No measured replacement is available; never infer these from waypoint speeds.
     max_accel: float = 1.5
     max_decel: float = 2.5
     max_lateral_accel: float = 3.0
@@ -100,20 +102,26 @@ class IntegratedMPC:
         self.h_base = np.diag(np.tile([config.r_accel, config.r_steer], n)) + config.r_rate*d.T@d
         # Speed rows of the condensed prediction: v_{k+1} = v_0 + sum_j<=k periods_j*a_j.
         # Row 3 of every linearised A_k is [0,0,0,1] and B_k[3] = [period_k, 0], so these
-        # rows (hence the whole constraint matrix) never change between solves.
+        # rows never change; appended friction rows have fixed sparsity but variable values.
         speed_rows = np.zeros((n, size))
         for k in range(n):
             speed_rows[k, 0:2*k+2:2] = self.periods[:k+1]
         self.matrix = sparse.csc_matrix(np.vstack((np.eye(size), d, speed_rows)))
         self.state_weights = np.tile([config.q_position, config.q_position, config.q_heading, 0.], (n, 1))
         self.state_weights[-1] *= config.terminal_scale
-        self.box_accel_lo = np.full(n, -config.max_decel / np.sqrt(2.))
-        self.box_accel_hi = np.full(n, config.max_accel / np.sqrt(2.))
+        self.box_accel_lo = np.full(n, -config.max_decel)
+        self.box_accel_hi = np.full(n, config.max_accel)
         self.plan = None          # last accepted, fully verified plan (absolute coordinates)
         self.continuation = 0     # consecutive ticks served from that plan
         self.reset()
 
     def reset(self):
+        """External reset invalidates commands as well as solver warm starts."""
+        self.plan = None
+        self.continuation = 0
+        self._reset_warm_start()
+
+    def _reset_warm_start(self):
         self.previous = None
         self.previous_dual = None
 
@@ -124,7 +132,7 @@ class IntegratedMPC:
         return self._fail(reason, previous_steering, started)
 
     def _fail(self, reason, previous_steering=0., started=None):
-        self.reset()
+        self._reset_warm_start()
         try:
             steer = float(previous_steering)
             if not np.isfinite(steer): steer = 0.
@@ -134,13 +142,33 @@ class IntegratedMPC:
                                 0., 0., SafetyRequest.STOP, reason,
                                 0. if started is None else perf_counter()-started)
 
+    def _friction_rows(self, vmax, steer_bounds):
+        """16-sided inner polygon of the asymmetric acceleration ellipse.
+
+        At |delta| <= b, |tan(delta)| <= tan(b)/b * |delta|. Using
+        the stage speed upper bound makes y = V^2*tan(b)/b*delta/(L*Y)
+        a conservative lateral proxy. Axis vertices allow full A/D at zero
+        steering; the 45-degree vertices retain the old braking reserve.
+        """
+        c, n = self.config, self.config.horizon
+        theta = (np.arange(16)+.5)*2*np.pi/16
+        cx, sy = np.cos(theta), np.sin(theta)
+        ax = cx/np.where(cx >= 0, c.max_accel, c.max_decel)
+        lateral = np.maximum(vmax**2, 1e-6)*np.tan(steer_bounds)/steer_bounds/(c.wheelbase*c.max_lateral_accel)
+        values = np.stack((np.broadcast_to(ax, (n, 16)), lateral[:, None]*sy), axis=-1)
+        rows = np.repeat(np.arange(16*n), 2)
+        cols = np.repeat(2*np.arange(n), 32)+np.tile([0, 1], 16*n)
+        return self.sparse.csc_matrix((values.ravel(), (rows, cols)), shape=(16*n, 2*n))
+
     def _geometry_caps(self, path, safety_speed_cap):
         c = self.config
         arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1))]
         tangent = _gradient(path[:, :2], arc)
         yaw = np.unwrap(np.arctan2(tangent[:, 1], tangent[:, 0]))
         curvature = _gradient(yaw, arc)
-        # Inscribed box in (a/a_long)^2 + (a_y/a_lat)^2 <= 1.
+        # Keep the lateral allocation and guaranteed braking reserve: at
+        # |a_y| <= Y/sqrt(2), the polygon includes |a| <= D/sqrt(2).
+        # This is a preview reserve, no longer a fixed longitudinal input box.
         lat = c.max_lateral_accel / np.sqrt(2.)
         caps = np.minimum(min(c.max_speed, safety_speed_cap),
                           np.sqrt(.85*lat/np.maximum(abs(curvature), 1e-6)))
@@ -178,7 +206,7 @@ class IntegratedMPC:
         samples = [sample]
         for dt in periods.tolist():
             target = float(np.interp(sample, arc, caps))
-            v = min(max(target, max(0., velocity-c.max_decel/np.sqrt(2.)*dt)), velocity+c.max_accel/np.sqrt(2.)*dt)
+            v = min(max(target, max(0., velocity-c.max_decel*dt)), velocity+c.max_accel*dt)
             sample += max(.05, .5*(velocity+v))*dt
             velocity = v
             samples.append(sample)
@@ -234,6 +262,7 @@ class IntegratedMPC:
         matches what that plan predicted for this instant. The command is re-limited
         against the current steering (rate), the plan's steering bound and verified
         stage speed cap, and the lateral-acceleration limit; any miss -> None (STOP).
+        Wall-clock expiry also prevents reusing a plan after a scheduling gap.
         The status stays visible as 'plan_continuation:<reason>'.
         """
         c, plan = self.config, self.plan
@@ -242,11 +271,14 @@ class IntegratedMPC:
         try:
             state = np.asarray(state, float)
             prev = float(previous_steering)
-            if state.shape != (4,) or not np.isfinite(state).all() or not np.isfinite(prev):
+            if state.shape != (4,) or not np.isfinite(state).all() or state[3] < 0 or not np.isfinite(prev) or abs(prev) > c.max_steer:
                 return None
-            t = (self.continuation+1)*c.dt
+            age = perf_counter()-plan['started']
+            if age > (self.MAX_CONTINUATION_TICKS+1)*c.dt:
+                return None
+            t = max((self.continuation+1)*c.dt, age)
             stage = int(np.searchsorted(self.node_times, t, 'right'))-1
-            if stage < 1 or stage >= c.horizon:
+            if stage < 1 or stage >= c.horizon or t+c.dt > self.node_times[stage+1]+1e-9:
                 return None
             w = (t-self.node_times[stage])/self.periods[stage]
             p = plan['predicted']
@@ -266,7 +298,7 @@ class IntegratedMPC:
             accel = min(accel, c.max_accel, (float(plan['caps'][stage])-v0)/c.dt)
             if accel < -c.max_decel-1e-4:
                 return None
-            accel = max(accel, -c.max_decel)
+            accel = max(accel, -c.max_decel, -v0/c.dt)
             v1 = max(0., v0+accel*c.dt)
             lat = max(v0, v1)**2*abs(np.tan(steer))/c.wheelbase
             # Recheck actual projected location, including state mismatch tolerated above.
@@ -283,7 +315,8 @@ class IntegratedMPC:
             if v1 > actual_cap+1e-4 or np.linalg.norm(projection[idx]-end_xy) > c.max_tracking_error:
                 return None
             longitudinal = c.max_accel if accel >= 0 else c.max_decel
-            if (accel/longitudinal)**2 + (lat/c.max_lateral_accel)**2 > 1.+1e-3:
+            if (lat > c.max_lateral_accel/np.sqrt(2.)+1e-3
+                    or (accel/longitudinal)**2 + (lat/c.max_lateral_accel)**2 > 1.+1e-3):
                 return None
         except (ValueError, TypeError, IndexError, KeyError):
             return None
@@ -315,9 +348,9 @@ class IntegratedMPC:
             steer_speed[:n][turning] = (np.sqrt((c.max_lateral_accel/np.sqrt(2.))*c.wheelbase
                                                 / np.tan(np.minimum(min_abs[turning], c.max_steer)))*(1-1e-6))
             caps = np.minimum(caps, np.minimum(steer_speed[:n], steer_speed[1:]))
-            reachable = np.maximum(0., state[3]-c.max_decel/np.sqrt(2.)*self.end_times)
+            reachable = np.maximum(0., state[3]-c.max_decel*self.end_times)
             # Do not relax physical/terminal bounds to make an unsafe QP feasible.
-            if np.any(caps < state[3]-c.max_decel/np.sqrt(2.)*self.end_times-1e-4):
+            if np.any(caps < state[3]-c.max_decel*self.end_times-1e-4):
                 return self._fail('braking_envelope_infeasible', previous_steering, started)
             m = np.zeros((4, 2*n))
             b = np.array([0., 0., state[2], state[3]])
@@ -359,7 +392,7 @@ class IntegratedMPC:
             g -= .5*c.q_speed*np.einsum('ki,kij->j', tangents, dm)
             g[1::2] -= c.r_steer*delta
             lower = -all_b[:, 3]
-            matrix = self.matrix      # constant (see __init__)
+            # Base speed/rate rows are constant; friction rows depend on caps.
             rate = c.max_steer_rate*periods
             p_values = 2*h[self.p_rows, self.p_cols]
             # Profile check geometry (path only; independent of the solution).
@@ -378,10 +411,11 @@ class IntegratedMPC:
                 steer_bounds = np.minimum(c.max_steer, np.arctan((c.max_lateral_accel/np.sqrt(2.))*c.wheelbase/np.maximum(vmax**2, 1e-6)))
                 box_lo = np.column_stack((self.box_accel_lo, -steer_bounds)).ravel()
                 box_hi = np.column_stack((self.box_accel_hi, steer_bounds)).ravel()
-                lo = np.concatenate((box_lo, prev-rate, lower))
-                hi = np.concatenate((box_hi, prev+rate, upper))
-                # Reuse the OSQP factorization; A is constant, so only P, q and the
-                # bounds change between solves.
+                friction = self._friction_rows(vmax, steer_bounds)
+                matrix = self.sparse.vstack((self.matrix, friction), format='csc')
+                lo = np.concatenate((box_lo, prev-rate, lower, np.full(16*n, -np.inf)))
+                hi = np.concatenate((box_hi, prev+rate, upper, np.full(16*n, np.cos(np.pi/16))))
+                # Fixed sparsity: update friction coefficients with the current speed caps.
                 if self.solver is None:
                     self.solver = self.osqp.OSQP()
                     p = self.sparse.csc_matrix((p_values, self.p_rows, self.p_indptr), shape=(2*n, 2*n))
@@ -390,9 +424,9 @@ class IntegratedMPC:
                         max_iter=c.max_iter, time_limit=c.solver_time_limit,
                         adaptive_rho_interval=25, check_termination=10)
                 elif attempt == 0:
-                    self.solver.update(Px=p_values, q=2*g, l=lo, u=hi)
+                    self.solver.update(Px=p_values, Ax=matrix.data, q=2*g, l=lo, u=hi)
                 else:
-                    self.solver.update(l=lo, u=hi)
+                    self.solver.update(Ax=matrix.data, l=lo, u=hi)
                 if self.previous is None:
                     self.solver.warm_start(x=np.zeros(2*n), y=np.zeros(len(lo)))
                 elif self.previous_dual is None or not self.WARM_START_DUAL:
@@ -473,7 +507,7 @@ class IntegratedMPC:
             self.previous = u.copy()
             self.previous_dual = np.array(sol.y, copy=True)
             predicted[:, :2] += state[:2]; ref[:, :2] += state[:2]
-            self.plan = {'controls': controls, 'predicted': predicted, 'reference': ref,
+            self.plan = {'started': started, 'controls': controls, 'predicted': predicted, 'reference': ref,
                          'caps': caps.copy(), 'steer_bounds': steer_bounds.copy()}
             return IntegratedResult(float(controls[0, 1]), max(0., float(predicted[1, 3])),
                                     float(controls[0, 0]), SafetyRequest.NONE, 'solved', elapsed,

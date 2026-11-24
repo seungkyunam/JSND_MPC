@@ -215,3 +215,85 @@ ros2 topic echo /controller/mpc_loop_period_ms
 - 복구는 7절의 백업 tar 복원 후 동일 Jazzy 재빌드. 단순히 `mpc_speed_source:=jsnd`로 선택하는 것은 제어기 전환이며 소스 복구와 구분한다.
 
 **최종 판정: 래치 유지 벤치 절차 준비 완료. 원본 맵 폐루프·Jetson/Jazzy 빌드·부하 상태 50Hz·안전 통합 및 차량 파라미터 실측이 남아 지상 자율 주행 테스트 준비 완료로 판정하지 않는다.**
+
+## 9. 가감속 제약 및 일시 계산 실패 처리 수정 (2026-11-24)
+
+기준은 원격 `integrated-mpc-v2` 최신 `c7c7e39a43eca5e46687ff84ed3cf4e58ef3e2d0`다. 이번 변경은 `jsnd_int/racing_stack/controller/controller/mpc/integrated_mpc.py`와 오프라인 테스트에 한정한다. 위 2절의 **고정 종가속 사각형 설명은 이번 변경으로 대체**되며, 목적함수와 후방 제동 상한은 유지한다. ROS 실행, Jetson 배포, 실차 구동은 수행하지 않았다.
+
+### 제약조건 및 목적함수 전후 비교
+
+$A,D,Y$는 기존 설정의 가속·감속·횡가속 한계다. `mpc_car.yaml`의 $A=1,D=2,Y=2$ 및 하드웨어 설정은 변경하지 않았다. 저장소에는 이 값을 대체할 실측 구동/제동 모델이 없다. GGV 예측값이나 VESC 전류 상한을 가속도 실측치로 간주하지 않았다. **임의의 추가 종가속 축소는 제거하되, 유한한 기존 구동 한계는 보수적 대체값으로 유지**한다. 이는 실제 차량 한계를 새로 식별·인증했다는 의미가 아니다.
+
+| 항목 | 수정 전 | 수정 후 |
+|---|---|---|
+| 입력 가감속 경계 | $-D/\sqrt2\le a\le A/\sqrt2$ | $-D\le a\le A$ + 단계별 연계 마찰 제약 |
+| 마찰 연계 | 고정 내부 사각형 | 축 방향 꼭짓점을 포함하는 내부 16각형; 직선에서 전체 $A,D$ 허용 |
+| 횡가속 배분 | $Y/\sqrt2$ | 유지: 기존 곡률 속도 및 제동 여유 보존 |
+| 후방 제동 | $b=\beta D/\sqrt2$ | 유지: 최대 횡가속 배분에서도 가능한 제동 여유 |
+| 기준 경로 샘플 속도 변화 | $[-D/\sqrt2,A/\sqrt2]$ | $[-D,A]$; 기준 생성 후 QP에서 실제 연계 제약 강제 |
+| 제동 불가능 사전 판정·refinement 하한 | $\max(0,v_0-Dt/\sqrt2)$ | $\max(0,v_0-Dt)$; 선회 시 가능 여부는 연계 QP가 추가 판정 |
+| 속도·조향·조향 변화율·종단 정지 | 기존 상한 | 유지, 제약을 완화해 실패를 숨기지 않음 |
+| 목적함수 | 위치/방위 추종 + 입력/조향변화 비용 − 진행량 보상 | 식·가중치 변경 없음; 샘플 기준은 새 입력 경계로 생성 |
+| 최적화 변수/웨이포인트 | $U=[a_0,\delta_0,\ldots]$, XY만 사용 | 유지; 속도 열 0/음수/NaN에도 동일 해 |
+
+단계 속도 상한 $V_k$, 조향 상한 $b_k$에 대해
+
+$$\eta_k=\frac{V_k^2\tan(b_k)}{b_kLY}\delta_k,\quad
+\theta_j=(j+1/2)\frac{2\pi}{16},\quad j=0,\ldots,15.$$
+
+추가하는 선형 부등식은
+
+$$\frac{\cos\theta_j}{A_j}a_k+\sin\theta_j\eta_k\le\cos(\pi/16),\qquad
+A_j=\begin{cases}A&\cos\theta_j\ge0\\D&\cos\theta_j<0.\end{cases}$$
+
+$|\delta|\le b<\pi/2$에서 $|\tan\delta|\le(\tan b/b)|\delta|$이므로 $|\eta|$는 정규화 횡가속의 상계다. 내부 다각형이므로 원래 비선형 마찰타원 밖의 해를 허용하지 않는다. 기존 사각형의 네 꼭짓점도 포함하므로 $Y/\sqrt2$ 횡배분에서 $D/\sqrt2$ 제동 여유가 유지된다. 따라서 후방 제동식을 단순히 $\beta D$로 올리거나 무한대 가속도 경계로 바꾸지 않았다. 비선형 재적분 검사도 계속 수행한다.
+
+QP는 그대로 볼록이다. $P\succ0$인 기존 비용에 선형 제약만 추가했다. N=10에서는 기존 40개 행에 160개 마찰 행이 추가된다. 행렬 희소 구조는 고정이며, 속도·조향 경계에 따라 마찰 행의 수치만 `Ax`로 갱신한다.
+
+### 계산 실패와 계획 재사용
+
+기준 브랜치에도 검증 계획을 최대 2틱 재사용하는 기능이 있었다. 이를 새 제어기로 대체하지 않고 보완했다.
+
+- 허용 사유: 전체 계산 deadline, OSQP 시간/반복 한도 초과, solved inaccurate. 실패한 최적화의 마지막 iterate는 warm start에만 사용하고 제어 출력으로 채택하지 않는다.
+- 성공한 마지막 계획의 다음 입력만 사용한다. 현재 XY 경로와 장애물 상한이 같고, 상태 오차가 위치 0.10m/방위 0.15rad/속도 0.30m/s 이내여야 한다. 속도 열 변경은 무관하다.
+- 현재 조향 변화율·입력/속도 경계·투영 위치의 제동 상한·횡가속 배분·마찰타원을 다시 검사한다. 속도 0 아래로 적분하는 감속도 제한한다.
+- 최대 2회 연속 재사용 후 세 번째 실패는 STOP이다. 성공하면 새 계획으로 교체하고 실패 횟수를 초기화한다.
+- 새로 계획 시작 시각을 저장한다. 경과시간이 3 제어주기(50Hz에서 60ms)를 넘으면 폐기한다. 논리적 틱과 실제 경과시간 중 늦은 시각을 사용하며, 명령 한 틱이 저장 계획의 입력 구간 경계를 넘으면 재사용하지 않는다.
+- 외부 `reset()`은 계획도 폐기한다. 내부 계산 실패의 warm-start 초기화와 구분해 재사용 가능한 계획을 보존한다.
+- 경로/안전 상한 변경, 입력 이상, 상태 불일치, 제약 위반, infeasible, 계획 없음/만료는 즉시 STOP이다. 로컬 경로 창이 바뀐 경우에도 보수적으로 폐기하는 기존 규칙은 유지한다.
+
+E-STOP, TTC, 통신 유실 watchdog, 조이스틱/odom 보호, VESC/서보 설정, Controller의 속도 명령 적분/lead 제한은 수정하지 않았다. 기준 커밋과의 바이트 일치 및 SHA256을 `validation/mpc_constraint_revision/protected_files.json`에 저장했다. 이 검사는 소스 보존 증거이며 실제 DDS/하드웨어 동작 시험은 아니다.
+
+### 재검증 결과
+
+증거 파일은 [validation/mpc_constraint_revision](validation/mpc_constraint_revision)에 저장했다.
+
+- 수정 전 v2 11개 통과. 기존 루트 회귀 106개 통과(루트 소스는 변경 없음). 따라서 기존 117개 검사를 다시 확인했다.
+- 수정 후 v2 33개 통과: 기존 11개 + 추가 22개. 전체 139개 통과.
+- 추가 검증: 직선에서 기존 $A/\sqrt2$ 초과 가속 허용, 양·음 종가속 축 한계, 내부 다각형의 타원 포함/기존 사각형 보존, 실제 solver 실패 주입, 미검증 iterate 출력 금지, 최대 2틱/연속 실패 STOP/성공 복구, 계획 만료/reset/상태·안전 상한 변화/입력 구간 경계 검사.
+- 기존 `validate_v2_readiness.py`를 같은 환경에서 수정 전후 각각 실행했다. 직선/S자/정적 회피 × 1/2m/s × 500틱 = 각 3,000틱. **전후 모두 solved 3,000, STOP 0, 제동 불가능 거부 0**.
+
+| 경로 | 운용 상한(m/s) | 최대 거리 오차 전→후(m) | 계산 p99 전→후(ms) |
+|---|---:|---:|---:|
+| 직선 | 1 | 0.01957 → 0.01997 | 2.35 → 1.87 |
+| S자 | 1 | 0.02142 → 0.02117 | 2.44 → 2.97 |
+| 정적 회피 | 1 | 0.02265 → 0.02243 | 1.79 → 2.10 |
+| 직선 | 2 | 0.01996 → 0.01999 | 2.40 → 1.83 |
+| S자 | 2 | 0.02300 → 0.02377 | 1.26 → 2.45 |
+| 정적 회피 | 2 | 0.02616 → 0.02639 | 1.28 → 2.44 |
+
+동일 합성 모델(정확한 pose, 즉시 조향, 가정된 속도응답 0.12초), 같은 기존 가중치와 OSQP 8ms/전체 16ms 한도다. 시간은 호스트 부하에 영향을 받으며 Jetson 보장값이 아니다. 오차는 가장 가까운 이산 경로점까지 거리다. 11_18_6 원본 맵과 Jetson 전용 환경이 필요한 과거 `test_jsnd_mpc`/stabilization/맵 통합 시험은 해당 입력/환경 부재로 이번 검증에 포함하지 않았다. 실측 가감속 모델·구동계 추종 검증도 여전히 남는다.
+
+### 재현
+
+Python 3.10, NumPy 1.26.4, SciPy 1.15.3, OSQP 1.0.4, pytest 9.2.0. 의존성은 `/tmp/mpc-revision-deps`에 격리 설치했으며 시스템 패키지를 변경하지 않았다. pytest 외부 플러그인 자동 로딩은 호스트 버전 충돌 때문에 해제했다. 아래 명령은 저장소 루트 기준이며 ROS 노드를 실행하지 않는다.
+
+```bash
+export PYTHONPATH=/tmp/mpc-revision-deps:controller:controller/test:jsnd_int/tests_offline
+export OPENBLAS_NUM_THREADS=1
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+python3 -m pytest -q jsnd_int/tests_offline/test_integrated_v2.py
+# v2 overlay 모듈이 루트 시뮬레이션 MPC에 섞이지 않도록 별도 프로세스 사용
+python3 -m pytest -q controller/test/test_lateral_mpc.py controller/test/test_integrated_mpc.py controller/test/test_controller_integration.py
+python3 jsnd_int/tests_offline/validate_v2_readiness.py
+```

@@ -1,0 +1,6 @@
+{"path": "straight", "vmax": 1.0, "status": {"solved": 500}, "max_error": 0.01996746403307046, "p99_ms": 1.8718828904729883, "final_x": 9.163148733613383}
+{"path": "s_curve", "vmax": 1.0, "status": {"solved": 500}, "max_error": 0.021171314143916438, "p99_ms": 2.972735849843957, "final_x": 8.865026706854428}
+{"path": "static_avoidance", "vmax": 1.0, "status": {"solved": 500}, "max_error": 0.02242653173269436, "p99_ms": 2.095490270503432, "final_x": 8.821949957764142}
+{"path": "straight", "vmax": 2.0, "status": {"solved": 500}, "max_error": 0.019991216728938888, "p99_ms": 1.8266980398220765, "final_x": 14.149225077828781}
+{"path": "s_curve", "vmax": 2.0, "status": {"solved": 500}, "max_error": 0.023766526159740092, "p99_ms": 2.4482153307508265, "final_x": 13.936477555224704}
+{"path": "static_avoidance", "vmax": 2.0, "status": {"solved": 500}, "max_error": 0.02638726706697237, "p99_ms": 2.4406623697996097, "final_x": 13.998255072427716}
