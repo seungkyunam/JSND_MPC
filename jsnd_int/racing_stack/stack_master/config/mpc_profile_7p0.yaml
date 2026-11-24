@@ -1,0 +1,8 @@
+# 7.0 m/s profile (2026-11-24, step 27). Load with mpc_profile:=7p0. Prepared only, not driven.
+# Copy of mpc_profile_5p0.yaml with only the MPC speed cap raised; accel/decel, lateral accel,
+# steering 0.4 rad and steering rate, curvature slow-down, waypoint speed caps, A latch/estop unchanged.
+# NOTE: VESC speed_max 23250 ERPM / speed_to_erpm_gain 4614 = 5.04 m/s hardware cap (vehicle_config.yaml,
+# unchanged) -> above ~5.0 m/s the motor command saturates; real top speed must be read from odom.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 7.0

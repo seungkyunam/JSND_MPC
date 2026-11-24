@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Speed-ramp recorder (step 19): records the topics speed_report.py needs, in tmux "rec".
-# usage: bash ~/JSND_INT/run/speed_rec.sh <2p25|3p0|4p0|5p0>   stop: tmux send-keys -t rec C-c; sleep 2; tmux kill-session -t rec
+# usage: bash ~/JSND_INT/run/speed_rec.sh <2p25|3p0|4p0|5p0|6p0|7p0>   stop: tmux send-keys -t rec C-c; sleep 2; tmux kill-session -t rec
 set -eo pipefail
 P=${1:?profile}; INT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd); H=$(dirname "$INT")
 tmux has-session -t race 2>/dev/null || { echo "ABORT: race stack not running"; exit 1; }

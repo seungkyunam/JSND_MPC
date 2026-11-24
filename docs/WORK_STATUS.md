@@ -601,3 +601,11 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 상태: `/joy` 15.6 Hz, `/scan` 40 Hz(827빔, sensor QoS), VESC `/vesc/sensors/core` 50 Hz·드라이버 1개, `/state_machine` 50 Hz GB_TRACK, MPC 50 Hz·약 1 ms·`outside_heading_envelope`(초기 위치 지정 전, 정상), estop `latched: startup` 유지.
 - 경고: VESC 입력 10.4 V(3S, 3.47 V/셀, 18:1x 11.4 V에서 하강) → state_machine `VOLTS TOO LOW`(volt_threshold 11.0, 로그·마커만, 정지 동작 없음). 주행 전 충전/교체 필요.
 - 사용자 조작 순서: 배터리 충전·교체(교체 시 스택 재기동) → 차를 레이스라인 위(|d|<0.05 m, 20° 이내) → Pitwall 2D Pose Estimate(scan·맵 정합 확인) → GB_TRACK·`solved` 확인 → `reset_estop` → RB. 정지 A, 수동 LB.
+
+## 단계 29 (2026-11-24) — 6p0/7p0 프로파일 준비 + 5p0 코너 반복 정지 원인 (실차 구동 없음, JSND_INT `6738aa7`)
+- 추가: `stack_master/config/mpc_profile_6p0.yaml`, `mpc_profile_7p0.yaml` — 5p0 사본, `mpc_max_speed_mps`만 6.0/7.0. 가감속·횡가속·조향각/변화율·곡률 감속·비상정지·MPC 코드 무변경.
+- 실행: `bash ~/JSND_INT/run/race_mpc.sh <6p0|7p0> 11_18_6 integrated`, 기록 `speed_rec.sh` → `speed_report.py <bag> --vmax N`(`/car_state/odom` 최고속도, 명령-실속 차이, `/vesc/sensors/core`).
+- stack_master만 빌드, install에 6p0/7p0 존재·YAML 파싱·5p0 대비 차이(속도 상한 1줄) 확인.
+- **주의 1**: VESC `speed_max` 23250 ERPM / 4614 = **5.04 m/s 하드웨어 상한**(무변경) → 6/7 명령은 모터에서 포화.
+- **주의 2**: 11_18_6 iqp 참조 속도 최대 3.87 m/s(s≈0), 코너 2.07~2.25 → 이 맵에서는 5p0/6p0/7p0 실주행 최고속도 차이가 작을 것으로 예상.
+- 5p0 코너 반복 정지(`race_mpc5p0_integrated_20261124_190832.log`, 352 s, STOP 216): ego_s 매칭 결과 **s≈9~11에 131회(61%)**(곡률 0.53~0.86, 두 번째 헤어핀 진입: outside_envelope·heading·osqp inaccurate), **s≈3에 26회**(곡률 0.9: deadline·braking_envelope). 원인 후보 = 고곡률 진입 시 QP 수렴 실패/계산 시간 초과 + 비선형 예측 envelope 이탈. 수정은 사용자 결정 대기.
