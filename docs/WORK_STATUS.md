@@ -633,3 +633,17 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 무변경: A 래치, simple_mux TTC EStop(자율 중 79회, 거의 매 랩 — 별도 오판 확인 필요), 자율 미선택 0 강제, 최고속도 상한, OVERTAKE/상태머신.
 - 검증: `test_mpc_integration.py::test_solver_stop_while_moving_ramps_down_then_zero`(신규), `test_corner_stall.py::test_deadline_miss_continues_verified_plan_at_most_max_ticks` 포함 7건 통과. 기존 실패 3건(test_profile_refinement…, test_budget_miss_recovers_over_ticks, test_recovery_after_stop_from_standstill)은 수정 전에도 실패. controller만 빌드, 백업 `~/JSND_backups/step32_20261124_195839`.
 - 실차 확인: 로그 `Current braking engaged: target=0.00` 빈도. 튜닝: `mpc_fallback_max_s`(소프트 STOP 창), `mpc_r_rate`(코너 조향 부드러움).
+
+## 단계 33 — Step 32 통합 MPC가 PP보다 느리고 불안정한 원인 분석 (코드 무변경, JSND_INT `badf33a`)
+- 데이터 범위: 최신 실차는 텍스트 로그뿐(`race_mpc5p0_integrated_20261124_200556.log`, 자율 34 s). bag `4p0_20261124_182441`은 estop 래치 정지(최고 0.0007 m/s)라 주행 데이터 아님. **주행 중 조향각·조향속도·횡오차·헤딩오차·조향지연·MPC 계산시간은 실측 없음.** MPC 상태 로그는 상태 변화 시 1줄 → 횟수는 하한.
+- 랩타임(11_18_6): PP(11-18 20:01 원본 JSND, 섹터 1구간 1.0) 5.45~6.01 s / 통합 d3b20b9 3p0 5.95~6.7 / 통합 badf33a 3p0 7.39~7.86 / 통합 badf33a 5p0 8.75, 7.67 후 3랩째 실패(수동 개입) / 조향 MPC f3326a1 5p0 7.87~8.00. Step 32는 5p0가 3p0보다 빠르지 않음 → 속도 상한은 비결정 요인.
+- 현재 `speed_scaling.yaml`은 코너 2구간 0.6(5섹터) — PP·jsnd 소스에만 적용, 통합 MPC 미사용. PP 기록(11-18)은 전 구간 1.0이었음.
+- 1. 코너 속도: 제동 이벤트 실제속도 최대 PP 3.88 / MPC 5p0 2.86 m/s. MPC 기하 상한 sqrt(0.85·4.5/|κ|)은 레이싱라인과 거의 같음(s≈3: 2.06 vs 2.07, s≈10: 2.15 vs 2.26, 상한<vx 14%, 평균 −0.09 m/s) → 곡률 제한은 주원인 아님. MPC가 로컬 경로 수치미분으로 구한 실제 κ는 미기록.
+- 2. 예측 0.57 s(N=12): 2.0~2.8 m/s에서 1.1~1.6 m, 헤어핀 진입(κ 0.25→0.9) 약 2 m의 절반만 봄. 단계 22의 '진입 조향 지연'과 부합. 단 계산시간 초과가 잦아 N 증가는 위험. 실차 효과 측정 불가.
+- 3. 조향 진동·포화: 측정 불가. 간접 증거 — 5p0 3랩째 468.5~470.5 s 계산 실패 집중 → outside_tracking(>1.0 m) → heading envelope STOP → 473.4 s 수동. d3b20b9 로그 tracking STOP 1593, heading 36.
+- 4. 가중치: q_position 12, q_heading 8, r_steer 0.2, r_rate 2.0(단계 30), terminal 3, q_speed 8, r_accel 0.15. r_rate 2.0 + 짧은 예측 → 진입 조향 지연 추정(실측 미확인).
+- 5. 모델: 휠베이스 0.324·조향속도 3.2 rad/s·지연보정 0.1 s 모두 실측 아님. 오프라인(단계 24)에서 자세지연 ≥120 ms면 MPC만 발산. 실제 PF/odom·서보 지연 미측정.
+- 6. 빈도(5p0, 자율 34 s, 하한): MPC STOP 67(≈2/s — deadline 20, OSQP inaccurate 13, time limit 12, braking_envelope_infeasible 7, heading/tracking 9, 입력오류 5), plan_continuation 57, solved_inexact_verified 22. TTC EStop 6(≈3/랩), 3p0 badf33a 10/4랩, d3b20b9 103/62랩, PP 로그 0(PP 당시 TTC 활성 여부는 로그로 확인 불가). TTC 1회당 0.06~0.4 s 동안 실제속도 평균 약 −0.6 m/s.
+- 가속 구조: MPC A=5.0이지만 setpoint는 측정속도+0.5 m/s(`mpc_cmd_max_lead_mps`) 이내, 이전 setpoint에 a·dt 누적. PP는 0.25 s 앞 레이싱라인 vx를 계단 명령. 실제 가속도는 미기록.
+- 우선순위: ① TTC EStop(랩당 ~3회, PP와 설정 동일 여부 확인) ② 계산 실패 STOP + Step 32 소프트 STOP(틱당 0.1 m/s, 최대 1.0 m/s 하강 후 낮은 setpoint에서 재가속; 3p0 랩 Step 31→32 약 +1.3 s, 세션 차이 있어 '유력') ③ lead 0.5 m/s 누적 방식의 가속 제약 ④ 코너 불안정(예측 0.57 s, r_rate 2.0, 미측정 지연) ⑤ 곡률 제한(주원인 아님).
+- 다음: 코드 수정 없이 `speed_rec.sh`로 주행 bag 1회(조향·속도 명령, odom, frenet, mpc_status, elapsed, IMU, /scan) → 3~5번 정량화 후 튜닝. OVERTAKE·상태머신 무변경(로그 상태 GB_TRACK만).
