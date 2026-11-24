@@ -286,6 +286,21 @@ class IntegratedMPC:
         steering = np.arctan(c.wheelbase*np.interp(samples[:-1], arc, curvature))
         return reference, steering, limits
 
+    @staticmethod
+    def _same_path(old, new):
+        """True if `new` is `old` itself or the same path with the local window slid
+        forward/back (identical overlapping points). A slid window is not a new path;
+        any changed point (avoidance, replanning) still counts as a new path."""
+        if old.shape == new.shape and np.array_equal(old, new):
+            return True
+        for a, b in ((old, new), (new, old)):
+            j = np.flatnonzero((a == b[0]).all(axis=1))
+            if len(j):
+                m = min(len(a)-j[0], len(b))
+                if m >= 3 and np.array_equal(a[j[0]:j[0]+m], b[:m]):
+                    return True
+        return False
+
     def solve(self, state, waypoints, previous_steering, safety_speed_cap=np.inf):
         started = perf_counter()
         # A changed avoidance path or obstacle cap invalidates continuation.
@@ -295,7 +310,7 @@ class IntegratedMPC:
             return self.reject('invalid_state_path_or_steering', previous_steering, started)
         if getattr(self, '_context', None) is not None:
             old_path, old_cap = self._context
-            if old_cap != safety_speed_cap or not np.array_equal(old_path, context[0]):
+            if old_cap != safety_speed_cap or not self._same_path(old_path, context[0]):
                 self.plan = None
         self._context = context
         result = self._solve(state, waypoints, previous_steering, started, safety_speed_cap)

@@ -616,3 +616,12 @@ JSND_INT `586ba13` (`jsnd_int/0009-*.patch` + 사본). 50 Hz·N=10·2.25 m/s 유
 - 오프라인 11_18_6 5p0(잡음 2 cm·0.05 m/s, 서보 60 ms, race.launch 예산): STOP 1→0, 횡오차 최대 0.162→0.089 m, MPC p99 11.4→8.5 ms, 랩 5.32→5.30 s. 6p0/7p0 STOP 0~1. r_rate 1/2/4/8 비교 → 2.0 유지.
 - 비교 명령: `python3 jsnd_int/tests_offline/corner_sweep.py --real --noise "" mpc_horizon=10,mpc_preview_dt=0.1`.
 - 알려진 차이: test_stabilization budget_miss(구형 max_iter 200)에서 정지 복구 7틱(실제 4000회 설정은 0~2틱).
+
+## 단계 31 — 주행 중 불필요한 MPC STOP 수정 (JSND_INT `d3b20b9`, 실차 미구동)
+- 원인: `IntegratedMPC.solve()`가 `/local_waypoints`가 직전 틱과 비트 단위로 다르면 이어쓰기 계획을 폐기. 주행 중 같은 레이스라인 창이 앞으로 밀리는 것도 "변경"으로 판정 → 계산 지연(deadline/OSQP 시간 한도·부정확)마다 이어쓰기 없이 STOP(속도 0). bench 입력 610틱 중 146틱이 창 슬라이드.
+- 수정: `_same_path()` — 같은 점열이 밀린 경우만 계획 유지. 점이 하나라도 다르거나(회피·재계획) 속도 상한이 바뀌면 기존대로 폐기. 이어쓰기 검사(최대 2틱, 위치/heading/속도 일치, 횡가속·경로 재검사) 무변경.
+- 근거: 5p0 실차 로그(1487 s) MPC STOP 2139회(86/min) 중 계산 지연 계열 ~1350회.
+- 검증: `test_corner_stall.py::test_slid_local_window_keeps_continuation_changed_path_drops_it` (수정 전 실패/후 통과), 기존 이어쓰기 테스트 3건 통과. controller만 빌드.
+- 무변경: A 버튼 래치, joy 단절 보호, simple_mux TTC EStop, MPC 튜닝값.
+- reset_estop `no fresh wheel odometry` 거부: simple_mux 기동 52 ms 직후 요청(첫 odom 수신 전) → 코드 정상, 스택 기동 후 재호출.
+- 미확인: 5p0 자율주행 중 TTC EStop 17회 이상(±70°, 0.35 s) — `/scan` 미기록으로 오판 여부 판단 불가.

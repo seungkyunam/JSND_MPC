@@ -155,3 +155,22 @@ def test_compute_time_on_drive_windows():
     el = np.array([r.elapsed_s for r in replay(mpc)])*1e3
     print('elapsed ms p50 %.2f p99 %.2f max %.2f' % (*np.percentile(el, [50, 99]), el.max()))
     assert np.percentile(el, 50) < 8.
+
+
+def test_slid_local_window_keeps_continuation_changed_path_drops_it():
+    """2026-11-24: /local_waypoints slides forward while driving; that must not drop the
+    verified plan (was: array_equal -> plan=None -> every compute miss = STOP)."""
+    c = config()
+    long = straight(n=80)
+    mpc = im.IntegratedMPC(c)
+    first = mpc.solve(np.array([0., 0., 0., 1.0]), long[:70], 0.)
+    assert first.status == 'solved'
+    late = dataclasses.replace(c); object.__setattr__(late, 'deadline', 1e-9); mpc.config = late
+    r = mpc.solve(_expected_state(first, 1, c), long[1:71], first.steering)   # window slid 1 point
+    assert r.success and r.status == 'plan_continuation:deadline_exceeded', r.status
+    # a changed path (lateral offset, e.g. avoidance) still drops the plan -> STOP
+    mpc = im.IntegratedMPC(c)
+    first = mpc.solve(np.array([0., 0., 0., 1.0]), long[:70], 0.)
+    mpc.config = late
+    moved = long[1:71].copy(); moved[:, 1] += .05
+    assert mpc.solve(_expected_state(first, 1, c), moved, first.steering).status == 'deadline_exceeded'
