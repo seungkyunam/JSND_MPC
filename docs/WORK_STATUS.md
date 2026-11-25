@@ -813,3 +813,10 @@ bag `5p0_20261124_205612`(258 s). 최종 mux 출력이 0이 된 이벤트 분류
 - Kinematic LTV-MPC solver, N=12/50 Hz, 실차 물리 한계와 production 계획 계수 0.85, PP 제어, E-stop 코드는 무변경. Step 44의 실험 override는 오프라인에만 적용했다. 새 helper의 rate 입력은 offline ground truth이므로 실제 EKF rate 잡음/지연 재현은 아니다.
 - 입력/예측 연결·기존 STOP/odom·mux 보호·배포/복구 관련 **17 passed** (`step45_tests.xml`). XML 파싱 및 실행 shell 문법 확인. Jetson Jazzy 빌드는 실행하지 않았고 명령만 준비했다. 배포 도구는 기준 파일 해시 확인·5파일 백업/갱신/복구를 제공하며 맵·차량 설정·EKF·E-stop을 덮어쓰지 않는다. 실제 Jetson의 미확인 변경은 자동으로 강제 덮어쓰지 않는다.
 - 오늘 개발은 이 결과와 실행 준비로 종료. 실차 연결, 추가 튜닝·탐색 및 불필요한 테스트는 수행하지 않았다.
+
+## Step 45 Jetson 배포 (2026-11-25)
+- Jetson `~/JSND_INT/src/racing_stack`에 `step45_deploy.py check`(Step 44 기준 해시 5개 일치, 현장 수정 없음) → `apply`. 백업 `~/bench_logs/step45_backup_20261125_141551`. `~/JSND` 원본·맵 `11_18_6`·`mpc_car.yaml`·EKF·E-stop 무변경.
+- ROS2 Jazzy `colcon build --packages-select controller stack_master` 성공, install의 `controller.mpc.pose_prediction` import·osqp 1.1.3 확인. 실차 주행 전(모터 구동 0회).
+- Jetson `~/JSND_MPC`는 다른 브랜치·미커밋 수정이 있어 그대로 두고 `~/JSND_MPC_v3`(이 브랜치 clone)에서 배포·실행: `bash ~/JSND_MPC_v3/jsnd_int/run/step45_run.sh <pp|mpc|improved> 11_18_6 <profile>`.
+- 기록 도구 추가: `jsnd_int/run/step45_rec.sh <mode>`(tmux `rec` mcap bag: MPC 계산시간 3종, mpc_status, 제어기/mux 후 ackermann 명령, odom·VESC core 실제 속도, PF/EKF/IMU, /scan, state_machine, mux/estop), `step45_check.sh <mode>`(읽기 전용 param·토픽 주기·EKF yaw rate 확인).
+- 주의: 개선 모드 heading 보정은 `/car_state/odom` angular.z(EKF yaw rate)를 사용하나 Step 38 실차 bag에서 이 값이 조향/PF와 무상관, `imu_corrected` 0건이었음 → improved 주행 전 `step45_check.sh`로 확인 필요. `lowspeed`(1 m/s)는 PP 랩타임 비교용이 아님.
