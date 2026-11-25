@@ -1,5 +1,7 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
+> **2026-11-25 인수인계: 최신 상태는 [HANDOVER.md](HANDOVER.md)와 [STEP50_STEP49_RUN_ANALYSIS.md](STEP50_STEP49_RUN_ANALYSIS.md)를 먼저 본다.** 아래 내용은 11-22~24 기록이다.
+
 ## 0. 현재 위치 (2026-11-22 단계 12 — WORK_STATUS 참고)
 - 코드: JSND_INT `91d0e26` = install. MPC 조향 ±0.4 rad / 0.3 rad/s, MPC 모드 LB 수동 최고 1.0 m/s(PP 4.0 불변). RB 자율 / LB 수동 / A 비상정지 래치
 - 실차 모터 구동 없음. VESC·LiDAR 전원 상태 미확인

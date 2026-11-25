@@ -820,3 +820,11 @@ bag `5p0_20261124_205612`(258 s). 최종 mux 출력이 0이 된 이벤트 분류
 - Jetson `~/JSND_MPC`는 다른 브랜치·미커밋 수정이 있어 그대로 두고 `~/JSND_MPC_v3`(이 브랜치 clone)에서 배포·실행: `bash ~/JSND_MPC_v3/jsnd_int/run/step45_run.sh <pp|mpc|improved> 11_18_6 <profile>`.
 - 기록 도구 추가: `jsnd_int/run/step45_rec.sh <mode>`(tmux `rec` mcap bag: MPC 계산시간 3종, mpc_status, 제어기/mux 후 ackermann 명령, odom·VESC core 실제 속도, PF/EKF/IMU, /scan, state_machine, mux/estop), `step45_check.sh <mode>`(읽기 전용 param·토픽 주기·EKF yaw rate 확인).
 - 주의: 개선 모드 heading 보정은 `/car_state/odom` angular.z(EKF yaw rate)를 사용하나 Step 38 실차 bag에서 이 값이 조향/PF와 무상관, `imu_corrected` 0건이었음 → improved 주행 전 `step45_check.sh`로 확인 필요. `lowspeed`(1 m/s)는 PP 랩타임 비교용이 아님.
+
+## Step 46~50 색인 (2026-11-25)
+- Step 46: [STEP46_STRAIGHT_OSCILLATION.md](STEP46_STRAIGHT_OSCILLATION.md) — improved 모드 직선 진동 원인(EKF yaw rate), `mpc` 모드만 사용
+- Step 47: [STEP47_CORNER_SPEED_TUNING.md](STEP47_CORNER_SPEED_TUNING.md) — JSND_INT `4ca035e`
+- Step 48: [STEP48_INTEGRATED_MPC_BOTTLENECKS.md](STEP48_INTEGRATED_MPC_BOTTLENECKS.md) — JSND_INT `0f5e086`
+- Step 49: [STEP49_STOPS_CORNER_LATENCY.md](STEP49_STOPS_CORNER_LATENCY.md) — JSND_INT `89e1011`
+- Step 50: [STEP50_STEP49_RUN_ANALYSIS.md](STEP50_STEP49_RUN_ANALYSIS.md) — Step 49 실차 분석(코드 무변경)
+- 인수인계: [HANDOVER.md](HANDOVER.md)
