@@ -89,7 +89,18 @@ class IntegratedMPC:
     ACCEPT_VERIFIED_LATE = True   # step 34: verified solve late vs deadline but within dt is served
     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
     MAX_CONTINUATION_TICKS = 5          # at most 5 consecutive ticks (100 ms at 50 Hz; plan spans 0.57 s)
-    CONTINUATION_TOL = (.10, .15, .30)  # measured vs planned: position m, heading rad, speed m/s
+    # Step 48: speed 0.30 -> 0.50 m/s. The plan assumes v follows a instantly; the real VESC
+    # speed loop lags the setpoint by up to mpc_cmd_max_lead (0.5, cmd-meas p90 0.48 on the car),
+    # so every compute miss during accel/braking was refused -> STOP -> soft-stop decel ramp.
+    # Cap, lateral, friction and tracking are still re-verified from the MEASURED state.
+    CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: position m, heading rad, speed m/s
+    BRAKING_RECOVERY_TOL = .30          # braking-envelope overshoot answered by max braking (unchanged)
+    # Step 48: OSQP eps 1e-5 -> 1e-4 (+ adaptive rho every 10 iterations). The QP residual is
+    # then up to ~1e-3, so the row check uses this tolerance; every safety property is still
+    # enforced after it on the clipped controls and the NONLINEAR prediction (coupled/lateral
+    # accel, tracking, heading, braking caps), whose tolerances are unchanged.
+    QP_EPS = 1e-4
+    QP_ROW_TOL = 2e-3
     PROFILE_REFINEMENTS = 2             # bounded geometry-envelope refinement
     # Speed caps use this fraction of the lateral limit Y; steering may still use all of Y.
     # The difference is the steering authority left to correct tracking errors in a corner.
@@ -466,10 +477,10 @@ class IntegratedMPC:
                 # rate and keep tracking. Before, it STOPped (5 ticks) and the soft-STOP ramp
                 # drove the setpoint to 0 -> VESC current braking 0.97->0.78 m/s (stutter).
                 # A deficit the geometry/endpoint alone causes still STOPs as before.
-                if deficit > self.CONTINUATION_TOL[2] and (
+                if deficit > self.BRAKING_RECOVERY_TOL and (
                         not np.isfinite(safety_speed_cap)
                         or float(np.max(reachable-self._reference(state, path, periods)[2]))
-                        > self.CONTINUATION_TOL[2]):
+                        > self.BRAKING_RECOVERY_TOL):
                     return self._fail('braking_envelope_infeasible', previous_steering, started)
                 caps = np.maximum(caps, reachable+1e-4)
             m = np.zeros((4, 2*n))
@@ -544,9 +555,9 @@ class IntegratedMPC:
                     self.solver = self.osqp.OSQP()
                     p = self.sparse.csc_matrix((p_values, self.p_rows, self.p_indptr), shape=(2*n, 2*n))
                     self.solver.setup(P=p, q=2*g, A=matrix, l=lo, u=hi,
-                        verbose=False, polishing=False, eps_abs=1e-5, eps_rel=1e-5,
+                        verbose=False, polishing=False, eps_abs=self.QP_EPS, eps_rel=self.QP_EPS,
                         max_iter=c.max_iter, time_limit=c.solver_time_limit,
-                        adaptive_rho_interval=25, check_termination=10)
+                        adaptive_rho_interval=10, check_termination=10)
                 elif attempt == 0:
                     self.solver.update(Px=p_values, Ax=matrix.data, q=2*g, l=lo, u=hi)
                 else:
@@ -576,7 +587,7 @@ class IntegratedMPC:
                     return result
                 u = sol.x
                 au = matrix@u
-                if not np.isfinite(u).all() or np.any(au < lo-1e-4) or np.any(au > hi+1e-4):
+                if not np.isfinite(u).all() or np.any(au < lo-self.QP_ROW_TOL) or np.any(au > hi+self.QP_ROW_TOL):
                     if inexact:
                         result = self._fail('osqp:'+sol.info.status, previous_steering, started)
                         self.previous, self.previous_dual = np.array(sol.x), np.array(sol.y)
@@ -632,9 +643,18 @@ class IntegratedMPC:
                         return result
                     return self._fail('nonlinear_prediction_outside_envelope:'+','.join(bad), previous_steering, started)
                 actual_caps = np.minimum((1-alpha)*seg_v0[indices] + alpha*seg_v1[indices], c.max_speed)
+                # Step 48: the plan rides the braking envelope; a small overshoot found only
+                # at the REACHED positions (VESC lag, pose noise) is the same case as the
+                # braking_recovery above: brake at the strongest feasible rate and keep
+                # tracking (same 0.30 m/s bound) instead of STOP + soft-stop ramp.
+                short = float(np.max(reachable-actual_caps))
+                if not braking_recovery and 0. < short <= self.BRAKING_RECOVERY_TOL:
+                    braking_recovery = True
                 if braking_recovery:
-                    actual_caps = np.maximum(actual_caps, reachable+1e-4)
-                violation = predicted[1:, 3] > actual_caps+1e-4
+                    floor = reachable+2*self.QP_ROW_TOL+1e-4   # QP residual above the brake floor
+                    actual_caps = np.maximum(actual_caps, floor)
+                    caps = np.maximum(caps, np.minimum(floor, caps+self.BRAKING_RECOVERY_TOL))
+                violation = predicted[1:, 3] > actual_caps+self.QP_ROW_TOL   # step 48: QP residual (2 mm/s)
                 if not np.any(violation):
                     break
                 # The QP caps are sampled at the reference positions; the solution can
@@ -642,7 +662,7 @@ class IntegratedMPC:
                 # only the violating stages to the profile at the reached positions
                 # (never below the full-braking envelope) and re-solve; the check above
                 # is unchanged, so an unresolved violation still STOPs.
-                tightened = np.where(violation, np.maximum(np.minimum(caps, actual_caps-1e-3), reachable), caps)
+                tightened = np.where(violation, np.maximum(np.minimum(caps, actual_caps-2*self.QP_ROW_TOL), reachable), caps)
                 if attempt == self.PROFILE_REFINEMENTS or np.all(tightened >= caps):
                     return self._fail('nonlinear_braking_envelope_violation', previous_steering, started)
                 caps = tightened
