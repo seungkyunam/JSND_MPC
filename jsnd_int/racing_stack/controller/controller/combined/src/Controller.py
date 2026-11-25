@@ -204,6 +204,11 @@ class Controller:
 
     # ============================ Integrated MPC ============================
     STANDSTILL_NOISE_MPS = 0.02
+    # Step 49 (real car 16:14 log, 7 hard STOPs in 42 s of autodrive): after VESC current
+    # braking the wheel odom undershoots to -0.02..-0.3 m/s for a few ticks. The forward-only
+    # integrated MPC treated that as invalid input -> immediate 0 setpoint (hard STOP) and the
+    # restart stutter. Small negative odom is standstill; larger reverse speed still STOPs.
+    REVERSE_ODOM_TOL_MPS = 0.3
 
     def reset_mpc_speed_command(self):
         """Next MPC command restarts from the measured speed (stop, FTG, input loss)."""
@@ -274,7 +279,10 @@ class Controller:
         return self.mpc_speed_cmd
 
     # Behaviour/input STOPs keep the immediate 0 setpoint (state-machine semantics unchanged).
-    HARD_STOP_PREFIXES = ('trailing_without_target', 'unsupported_behavior', 'invalid_local_control_input')
+    # Step 49: trailing_without_target (TRAILING while the target list is momentarily empty,
+    # 4x in the 16:14 run, 0.3-0.8 s each) uses the soft STOP ramp (max_decel, at most
+    # mpc_fallback_max_s, then 0) instead of a one-tick 0 setpoint = VESC current braking.
+    HARD_STOP_PREFIXES = ('unsupported_behavior', 'invalid_local_control_input')
 
     def _mpc_soft_stop(self, measured):
         status = str(getattr(self.mpc_result, 'status', ''))
@@ -333,9 +341,9 @@ class Controller:
             if position.shape != (1, 3):
                 raise ValueError('invalid pose shape')
             measured = float(speed)
-            if not np.isfinite(measured) or measured < -self.STANDSTILL_NOISE_MPS:
+            if not np.isfinite(measured) or measured < -self.REVERSE_ODOM_TOL_MPS:
                 raise ValueError('invalid_or_reverse_speed')
-            measured = max(0.0, measured)  # clamp only standstill odom jitter
+            measured = max(0.0, measured)  # clamp standstill jitter / post-braking odom undershoot
             rear = position[0].copy()
             if self.mpc_heading_robust:
                 rear[2] = self.pose_prediction.condition_heading(rear)

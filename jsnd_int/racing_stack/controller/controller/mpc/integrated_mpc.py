@@ -88,12 +88,16 @@ class IntegratedMPC:
     ACCEPT_VERIFIED_INEXACT = True
     ACCEPT_VERIFIED_LATE = True   # step 34: verified solve late vs deadline but within dt is served
     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
-    MAX_CONTINUATION_TICKS = 5          # at most 5 consecutive ticks (100 ms at 50 Hz; plan spans 0.57 s)
+    # Step 49: 5 -> 10 consecutive ticks (200 ms at 50 Hz; the plan spans 0.57 s). Real car 16:14:
+    # 14 deadline_exceeded + 7 osqp STOPs in 42 s, clustered in hairpin braking where the CPU
+    # misses come in bursts longer than 5 ticks. Every served tick is still re-verified.
+    MAX_CONTINUATION_TICKS = 10
     # Step 48: speed 0.30 -> 0.50 m/s. The plan assumes v follows a instantly; the real VESC
     # speed loop lags the setpoint by up to mpc_cmd_max_lead (0.5, cmd-meas p90 0.48 on the car),
     # so every compute miss during accel/braking was refused -> STOP -> soft-stop decel ramp.
     # Cap, lateral, friction and tracking are still re-verified from the MEASURED state.
-    CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: position m, heading rad, speed m/s
+    CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: cross-track m, heading rad, speed (faster) m/s
+    CONTINUATION_ALONG_TOL = .30        # step 49: along-track (behind/ahead of the plan) m
     BRAKING_RECOVERY_TOL = .30          # braking-envelope overshoot answered by max braking (unchanged)
     # Step 48: OSQP eps 1e-5 -> 1e-4 (+ adaptive rho every 10 iterations). The QP residual is
     # then up to ~1e-3, so the row check uses this tolerance; every safety property is still
@@ -385,8 +389,16 @@ class IntegratedMPC:
             expect = (1-w)*p[stage]+w*p[stage+1]
             pos_tol, yaw_tol, v_tol = self.CONTINUATION_TOL
             dyaw = (state[2]-expect[2]+np.pi) % (2*np.pi)-np.pi
-            if (np.hypot(state[0]-expect[0], state[1]-expect[1]) > pos_tol or abs(dyaw) > yaw_tol
-                    or abs(state[3]-expect[3]) > v_tol):
+            # Step 49: split the position check. Along the planned heading the car is mostly
+            # BEHIND the plan (VESC speed loop lags the planned acceleration), which is not a
+            # tracking fault: along-track tolerance CONTINUATION_ALONG_TOL, cross-track stays
+            # pos_tol. Speed: only FASTER than planned is rejected (slower is covered by the
+            # cap/friction re-checks below). Offline: 9 of 14 refused continuations failed this state match.
+            ex, ey = state[0]-expect[0], state[1]-expect[1]
+            along = np.cos(expect[2])*ex + np.sin(expect[2])*ey
+            cross = -np.sin(expect[2])*ex + np.cos(expect[2])*ey
+            if (abs(cross) > pos_tol or abs(along) > self.CONTINUATION_ALONG_TOL or abs(dyaw) > yaw_tol
+                    or state[3]-expect[3] > v_tol):
                 return None
             accel, steer = (float(x) for x in plan['controls'][stage])
             bound, step = float(plan['steer_bounds'][stage]), c.max_steer_rate*c.dt
@@ -412,8 +424,20 @@ class IntegratedMPC:
             projection = path[:-1]+fraction[:, None]*segments
             idx = np.argmin(np.linalg.norm(projection-end_xy, axis=1))
             actual_cap = np.interp(arc[idx]+fraction[idx]*(arc[idx+1]-arc[idx]), arc, geometric_caps)
-            if v1 > actual_cap+1e-4 or np.linalg.norm(projection[idx]-end_xy) > c.max_tracking_error:
+            if np.linalg.norm(projection[idx]-end_xy) > c.max_tracking_error:
                 return None
+            if v1 > actual_cap+1e-4:
+                # Step 49: same rule as braking_recovery in _solve. The measured speed lags the
+                # planned braking (VESC speed loop); within BRAKING_RECOVERY_TOL brake at the
+                # strongest deceleration the friction ellipse leaves with the planned steering
+                # (re-checked below) instead of STOP.
+                if v1-actual_cap > self.BRAKING_RECOVERY_TOL:
+                    return None
+                ratio = v0*v0*abs(np.tan(steer))/c.wheelbase/c.max_lateral_accel
+                if ratio > 1.:
+                    return None
+                accel = max(-c.max_decel*np.sqrt(1.-ratio*ratio)*(1-1e-6), -v0/c.dt)
+                v1 = max(0., v0+accel*c.dt)
             longitudinal = c.max_accel if accel >= 0 else c.max_decel
             if (lat > c.max_lateral_accel+1e-3
                     or (accel/longitudinal)**2 + (lat/c.max_lateral_accel)**2 > 1.+1e-3):

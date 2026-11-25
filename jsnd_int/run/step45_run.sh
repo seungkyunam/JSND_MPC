@@ -28,8 +28,11 @@ if [[ "$mode" == pp ]]; then
 else
   enabled=false
   [[ "$mode" == improved ]] && enabled=true
+  # Step 49: mpc mode uses command-history latency prediction (heading_robust stays off:
+  # EKF yaw rate unreliable, step 46). improved = both on, unchanged.
+  history=true
   args+=(controller:=mpc mpc_speed_source:=integrated mpc_rate_hz:=50
          mpc_profile:="$profile" mpc_monitor:=false
-         mpc_heading_robust:="$enabled" mpc_history_prediction:="$enabled")
+         mpc_heading_robust:="$enabled" mpc_history_prediction:="$history")
 fi
 ros2 launch stack_master race.launch.xml "${args[@]}" 2>&1 | tee -a "$log_path"

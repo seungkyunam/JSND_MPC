@@ -46,7 +46,14 @@ controller_manager:
     # 2026-11-23 real-car 3p0: steering diverged + outside_heading_envelope 1.1 s after RB.
     #   Offline: >=120 ms pose delay reproduces it (PP unaffected); 0.1 s prediction removes it
     #   for 0..200 ms delay. Real PF/odom latency NOT measured yet.
-    mpc_latency_comp_s: 0.1
+    # 2026-11-25 step 49: 0.1 -> 0.18 s = pose delay + servo dead time (the command acts on the
+    #   car ~60 ms after it is sent; 0.1 covered the pose part only). Used together with
+    #   mpc_history_prediction:=true (step45_run.sh mpc), which integrates the ACTUAL command
+    #   history over this window instead of the last command only. Offline 11_18_6 5p0, 140 ms
+    #   pose delay + 60 ms servo: corner entry yaw-rate overshoot 1.22 -> 1.06, mid/exit
+    #   undershoot 0.61/0.78 -> 1.02/0.97, max |d| 0.46 -> 0.16 m. Also used by the jsnd
+    #   steering-only mode. Rollback: 0.1 here + mpc_history_prediction:=false (restart only).
+    mpc_latency_comp_s: 0.18
     # --- speed envelope ---
     # mpc_max_speed_mps: operator ceiling from the mpc_profile overlay (lowspeed 1.0 ... 5p0 5.0).
     # jsnd mode: min(JSND speed command, this). The 11_18_6 plan peaks at 3.9 m/s (2.3 in the

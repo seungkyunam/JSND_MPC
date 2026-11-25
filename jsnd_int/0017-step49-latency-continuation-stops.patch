@@ -1,0 +1,142 @@
+From 89e101127dc04d406b6498815784c472a6f54fbb Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Wed, 25 Nov 2026 16:28:10 +0900
+Subject: [PATCH] Step 49: command-history latency prediction 0.18 s
+ (pose+servo), continuation 10 ticks with cross/along split and braking
+ recovery, post-braking odom undershoot tolerance 0.3 m/s,
+ trailing_without_target soft STOP ramp
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../controller/combined/src/Controller.py     | 14 ++++++--
+ controller/controller/mpc/integrated_mpc.py   | 34 ++++++++++++++++---
+ stack_master/config/mpc_car.yaml              |  9 ++++-
+ 3 files changed, 48 insertions(+), 9 deletions(-)
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index f6b5ce9..967a2c8 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -204,6 +204,11 @@ class Controller:
+ 
+     # ============================ Integrated MPC ============================
+     STANDSTILL_NOISE_MPS = 0.02
++    # Step 49 (real car 16:14 log, 7 hard STOPs in 42 s of autodrive): after VESC current
++    # braking the wheel odom undershoots to -0.02..-0.3 m/s for a few ticks. The forward-only
++    # integrated MPC treated that as invalid input -> immediate 0 setpoint (hard STOP) and the
++    # restart stutter. Small negative odom is standstill; larger reverse speed still STOPs.
++    REVERSE_ODOM_TOL_MPS = 0.3
+ 
+     def reset_mpc_speed_command(self):
+         """Next MPC command restarts from the measured speed (stop, FTG, input loss)."""
+@@ -274,7 +279,10 @@ class Controller:
+         return self.mpc_speed_cmd
+ 
+     # Behaviour/input STOPs keep the immediate 0 setpoint (state-machine semantics unchanged).
+-    HARD_STOP_PREFIXES = ('trailing_without_target', 'unsupported_behavior', 'invalid_local_control_input')
++    # Step 49: trailing_without_target (TRAILING while the target list is momentarily empty,
++    # 4x in the 16:14 run, 0.3-0.8 s each) uses the soft STOP ramp (max_decel, at most
++    # mpc_fallback_max_s, then 0) instead of a one-tick 0 setpoint = VESC current braking.
++    HARD_STOP_PREFIXES = ('unsupported_behavior', 'invalid_local_control_input')
+ 
+     def _mpc_soft_stop(self, measured):
+         status = str(getattr(self.mpc_result, 'status', ''))
+@@ -333,9 +341,9 @@ class Controller:
+             if position.shape != (1, 3):
+                 raise ValueError('invalid pose shape')
+             measured = float(speed)
+-            if not np.isfinite(measured) or measured < -self.STANDSTILL_NOISE_MPS:
++            if not np.isfinite(measured) or measured < -self.REVERSE_ODOM_TOL_MPS:
+                 raise ValueError('invalid_or_reverse_speed')
+-            measured = max(0.0, measured)  # clamp only standstill odom jitter
++            measured = max(0.0, measured)  # clamp standstill jitter / post-braking odom undershoot
+             rear = position[0].copy()
+             if self.mpc_heading_robust:
+                 rear[2] = self.pose_prediction.condition_heading(rear)
+diff --git a/controller/controller/mpc/integrated_mpc.py b/controller/controller/mpc/integrated_mpc.py
+index 9cfc54f..e648bc1 100644
+--- a/controller/controller/mpc/integrated_mpc.py
++++ b/controller/controller/mpc/integrated_mpc.py
+@@ -88,12 +88,16 @@ class IntegratedMPC:
+     ACCEPT_VERIFIED_INEXACT = True
+     ACCEPT_VERIFIED_LATE = True   # step 34: verified solve late vs deadline but within dt is served
+     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
+-    MAX_CONTINUATION_TICKS = 5          # at most 5 consecutive ticks (100 ms at 50 Hz; plan spans 0.57 s)
++    # Step 49: 5 -> 10 consecutive ticks (200 ms at 50 Hz; the plan spans 0.57 s). Real car 16:14:
++    # 14 deadline_exceeded + 7 osqp STOPs in 42 s, clustered in hairpin braking where the CPU
++    # misses come in bursts longer than 5 ticks. Every served tick is still re-verified.
++    MAX_CONTINUATION_TICKS = 10
+     # Step 48: speed 0.30 -> 0.50 m/s. The plan assumes v follows a instantly; the real VESC
+     # speed loop lags the setpoint by up to mpc_cmd_max_lead (0.5, cmd-meas p90 0.48 on the car),
+     # so every compute miss during accel/braking was refused -> STOP -> soft-stop decel ramp.
+     # Cap, lateral, friction and tracking are still re-verified from the MEASURED state.
+-    CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: position m, heading rad, speed m/s
++    CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: cross-track m, heading rad, speed (faster) m/s
++    CONTINUATION_ALONG_TOL = .30        # step 49: along-track (behind/ahead of the plan) m
+     BRAKING_RECOVERY_TOL = .30          # braking-envelope overshoot answered by max braking (unchanged)
+     # Step 48: OSQP eps 1e-5 -> 1e-4 (+ adaptive rho every 10 iterations). The QP residual is
+     # then up to ~1e-3, so the row check uses this tolerance; every safety property is still
+@@ -385,8 +389,16 @@ class IntegratedMPC:
+             expect = (1-w)*p[stage]+w*p[stage+1]
+             pos_tol, yaw_tol, v_tol = self.CONTINUATION_TOL
+             dyaw = (state[2]-expect[2]+np.pi) % (2*np.pi)-np.pi
+-            if (np.hypot(state[0]-expect[0], state[1]-expect[1]) > pos_tol or abs(dyaw) > yaw_tol
+-                    or abs(state[3]-expect[3]) > v_tol):
++            # Step 49: split the position check. Along the planned heading the car is mostly
++            # BEHIND the plan (VESC speed loop lags the planned acceleration), which is not a
++            # tracking fault: along-track tolerance CONTINUATION_ALONG_TOL, cross-track stays
++            # pos_tol. Speed: only FASTER than planned is rejected (slower is covered by the
++            # cap/friction re-checks below). Offline: 9 of 14 refused continuations failed this state match.
++            ex, ey = state[0]-expect[0], state[1]-expect[1]
++            along = np.cos(expect[2])*ex + np.sin(expect[2])*ey
++            cross = -np.sin(expect[2])*ex + np.cos(expect[2])*ey
++            if (abs(cross) > pos_tol or abs(along) > self.CONTINUATION_ALONG_TOL or abs(dyaw) > yaw_tol
++                    or state[3]-expect[3] > v_tol):
+                 return None
+             accel, steer = (float(x) for x in plan['controls'][stage])
+             bound, step = float(plan['steer_bounds'][stage]), c.max_steer_rate*c.dt
+@@ -412,8 +424,20 @@ class IntegratedMPC:
+             projection = path[:-1]+fraction[:, None]*segments
+             idx = np.argmin(np.linalg.norm(projection-end_xy, axis=1))
+             actual_cap = np.interp(arc[idx]+fraction[idx]*(arc[idx+1]-arc[idx]), arc, geometric_caps)
+-            if v1 > actual_cap+1e-4 or np.linalg.norm(projection[idx]-end_xy) > c.max_tracking_error:
++            if np.linalg.norm(projection[idx]-end_xy) > c.max_tracking_error:
+                 return None
++            if v1 > actual_cap+1e-4:
++                # Step 49: same rule as braking_recovery in _solve. The measured speed lags the
++                # planned braking (VESC speed loop); within BRAKING_RECOVERY_TOL brake at the
++                # strongest deceleration the friction ellipse leaves with the planned steering
++                # (re-checked below) instead of STOP.
++                if v1-actual_cap > self.BRAKING_RECOVERY_TOL:
++                    return None
++                ratio = v0*v0*abs(np.tan(steer))/c.wheelbase/c.max_lateral_accel
++                if ratio > 1.:
++                    return None
++                accel = max(-c.max_decel*np.sqrt(1.-ratio*ratio)*(1-1e-6), -v0/c.dt)
++                v1 = max(0., v0+accel*c.dt)
+             longitudinal = c.max_accel if accel >= 0 else c.max_decel
+             if (lat > c.max_lateral_accel+1e-3
+                     or (accel/longitudinal)**2 + (lat/c.max_lateral_accel)**2 > 1.+1e-3):
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 905f357..1de9274 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -46,7 +46,14 @@ controller_manager:
+     # 2026-11-23 real-car 3p0: steering diverged + outside_heading_envelope 1.1 s after RB.
+     #   Offline: >=120 ms pose delay reproduces it (PP unaffected); 0.1 s prediction removes it
+     #   for 0..200 ms delay. Real PF/odom latency NOT measured yet.
+-    mpc_latency_comp_s: 0.1
++    # 2026-11-25 step 49: 0.1 -> 0.18 s = pose delay + servo dead time (the command acts on the
++    #   car ~60 ms after it is sent; 0.1 covered the pose part only). Used together with
++    #   mpc_history_prediction:=true (step45_run.sh mpc), which integrates the ACTUAL command
++    #   history over this window instead of the last command only. Offline 11_18_6 5p0, 140 ms
++    #   pose delay + 60 ms servo: corner entry yaw-rate overshoot 1.22 -> 1.06, mid/exit
++    #   undershoot 0.61/0.78 -> 1.02/0.97, max |d| 0.46 -> 0.16 m. Also used by the jsnd
++    #   steering-only mode. Rollback: 0.1 here + mpc_history_prediction:=false (restart only).
++    mpc_latency_comp_s: 0.18
+     # --- speed envelope ---
+     # mpc_max_speed_mps: operator ceiling from the mpc_profile overlay (lowspeed 1.0 ... 5p0 5.0).
+     # jsnd mode: min(JSND speed command, this). The 11_18_6 plan peaks at 3.9 m/s (2.3 in the
+-- 
+2.43.0
+
