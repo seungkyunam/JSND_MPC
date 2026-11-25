@@ -2,7 +2,7 @@
 
 - 분석 대상: Step 49 `step45_mpc_5p0_20261125_163051.log` (checkout `1cd9736`, JSND_INT `89e1011`, 5p0, 자율 141 s, 12랩)
 - 비교 대상: Step 48 `step45_mpc_5p0_20261125_161456.log` (`fbeeefd`, 자율 31 s, 3랩). 15:49 런은 이벤트 없음(9.6 s), 15:47 런은 OSQP NONCVX 기동 실패라 제외.
-- 두 런 모두 **bag 없음**. 로그 사본: `docs/logs/step49_run_*.log`, `docs/logs/step48_run_*.log`, 랩 기록 `docs/logs/lap_analyzer_step48_1615_step49_1630.txt`.
+- 두 런 모두 **bag 없음**. 로그 사본: `docs/logs/step49_run_*.log.txt`, `docs/logs/step48_run_*.log.txt`, 랩 기록 `docs/logs/lap_analyzer_step48_1615_step49_1630.txt`.
 - 분석 스크립트: `jsnd_int/tests_offline/step50/tl.py <log>`(RB 기준 이벤트 타임라인), `met.py <log>...`(분당 지표).
 - 목표 속도 = 레이싱라인 `global_traj_wpnts_iqp.vx_mps`(11_18_6). 설정점/실제 = VESC `Current braking engaged/released: target/actual` 로그와 state_machine `[STATIC_OT] speed=`. **가속도 명령은 로그에 없음.** s 위치는 시간으로 추정.
 
