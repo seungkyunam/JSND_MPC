@@ -109,6 +109,7 @@ class ControllerManager(Node):
         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
         self.mpc_static_approach_decel_mps2 = float(self._get_param('mpc_static_approach_decel_mps2', 1.5))
         self.mpc_envelope_recovery_speed_mps = float(self._get_param('mpc_envelope_recovery_speed_mps', 0.5))
+        self.mpc_accel_jerk_mps3 = float(self._get_param('mpc_accel_jerk_mps3', 0.0))  # step 47, 0 = off
         self.mpc_odom_timeout_s = float(self._get_param('mpc_odom_timeout_s', 0.2))
         self.last_odom_time = None
         # MPC holds 0 speed unless simple_mux has autodrive selected (fresh status).
@@ -278,6 +279,7 @@ class ControllerManager(Node):
             mpc_history_prediction=bool(self.mpc_values['mpc_history_prediction']),
             mpc_static_approach_decel_mps2=self.mpc_static_approach_decel_mps2,
             mpc_envelope_recovery_speed_mps=self.mpc_envelope_recovery_speed_mps,
+            mpc_accel_jerk_mps3=self.mpc_accel_jerk_mps3,
         )
         self.controller.pose_prediction.clock = lambda: self.get_clock().now().nanoseconds * 1e-9
         self.controller.speed_now = self.speed_now

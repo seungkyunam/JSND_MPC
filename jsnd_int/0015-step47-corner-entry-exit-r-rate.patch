@@ -1,0 +1,206 @@
+From 4ca035e90be7c5898a3de9cc41ad27b150db82ff Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Wed, 25 Nov 2026 14:38:29 +0900
+Subject: [PATCH] Step 47: r_rate 3.0, corner brake lead 0.12 s, steering
+ preview 0.03 s, corner-exit accel jerk 20 m/s^3 (integrated MPC);
+ safety/physical limits unchanged
+
+---
+ .../controller/combined/src/Controller.py     | 15 ++++++++++++-
+ controller/controller/controller_manager.py   |  2 ++
+ controller/controller/mpc/configuration.py    |  5 +++++
+ controller/controller/mpc/integrated_mpc.py   | 22 ++++++++++++++++---
+ controller/controller/mpc/lateral_mpc.py      |  2 ++
+ stack_master/config/mpc_car.yaml              |  9 +++++++-
+ 6 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index 3f46a10..f6b5ce9 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -85,6 +85,7 @@ class Controller:
+                 mpc_history_prediction=False,
+                 mpc_static_approach_decel_mps2=1.5,
+                 mpc_envelope_recovery_speed_mps=0.5,
++                mpc_accel_jerk_mps3=0.0,
+             ):
+ 
+         # Parameters from manager
+@@ -180,6 +181,9 @@ class Controller:
+         self.curr_applied_steering = 0.0
+         self._mpc_last_status = None
+         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
++        # Step 47: corner-exit acceleration ramps in at this jerk (0 = off). Braking is never limited.
++        self.mpc_accel_jerk_mps3 = max(0.0, float(mpc_accel_jerk_mps3))
++        self.mpc_applied_accel = 0.0
+         # Step 23: 'jsnd' = legacy JSND/PP speed pipeline + steering-only MPC (SteeringMPC);
+         # 'integrated' = previous joint speed+steering IntegratedMPC.
+         if mpc_speed_source not in ("jsnd", "integrated"):
+@@ -204,6 +208,7 @@ class Controller:
+     def reset_mpc_speed_command(self):
+         """Next MPC command restarts from the measured speed (stop, FTG, input loss)."""
+         self.mpc_speed_cmd = None
++        self.mpc_applied_accel = 0.0
+ 
+     def record_applied_steering(self, steering, published=True):
+         """Manager feedback of the steering actually published (FTG / input-loss stop)."""
+@@ -245,6 +250,7 @@ class Controller:
+             if self._mpc_soft_stop(measured):
+                 cfg = self.lateral_mpc.config
+                 self.mpc_speed_cmd = max(0.0, self.mpc_speed_cmd - cfg.max_decel * cfg.dt)
++                self.mpc_applied_accel = 0.0
+                 return self.mpc_speed_cmd
+             self.reset_mpc_speed_command()
+             return 0.0
+@@ -254,7 +260,14 @@ class Controller:
+         # is a permanent speed loss recovered only at max_accel (cumulative slowdown
+         # seen in step 32 vs 31). The MPC's own braking still acts through a*dt.
+         base = max(base, measured - self.mpc_cmd_max_lead_mps)
+-        command = base + result.acceleration * self.lateral_mpc.config.dt
++        accel = float(result.acceleration)
++        if self.mpc_accel_jerk_mps3 > 0.0 and accel > 0.0:
++            # Step 47: positive acceleration rises at most jerk*dt per tick (smooth corner
++            # exit); any deceleration request passes through unchanged.
++            accel = min(accel, max(0.0, self.mpc_applied_accel)
++                        + self.mpc_accel_jerk_mps3 * self.lateral_mpc.config.dt)
++        self.mpc_applied_accel = accel
++        command = base + accel * self.lateral_mpc.config.dt
+         upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
+                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
+         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 7c39a47..05c92cc 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -109,6 +109,7 @@ class ControllerManager(Node):
+         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
+         self.mpc_static_approach_decel_mps2 = float(self._get_param('mpc_static_approach_decel_mps2', 1.5))
+         self.mpc_envelope_recovery_speed_mps = float(self._get_param('mpc_envelope_recovery_speed_mps', 0.5))
++        self.mpc_accel_jerk_mps3 = float(self._get_param('mpc_accel_jerk_mps3', 0.0))  # step 47, 0 = off
+         self.mpc_odom_timeout_s = float(self._get_param('mpc_odom_timeout_s', 0.2))
+         self.last_odom_time = None
+         # MPC holds 0 speed unless simple_mux has autodrive selected (fresh status).
+@@ -278,6 +279,7 @@ class ControllerManager(Node):
+             mpc_history_prediction=bool(self.mpc_values['mpc_history_prediction']),
+             mpc_static_approach_decel_mps2=self.mpc_static_approach_decel_mps2,
+             mpc_envelope_recovery_speed_mps=self.mpc_envelope_recovery_speed_mps,
++            mpc_accel_jerk_mps3=self.mpc_accel_jerk_mps3,
+         )
+         self.controller.pose_prediction.clock = lambda: self.get_clock().now().nanoseconds * 1e-9
+         self.controller.speed_now = self.speed_now
+diff --git a/controller/controller/mpc/configuration.py b/controller/controller/mpc/configuration.py
+index 0f69997..6d6fa57 100644
+--- a/controller/controller/mpc/configuration.py
++++ b/controller/controller/mpc/configuration.py
+@@ -50,6 +50,9 @@ MPC_DEFAULTS = {
+     'mpc_latency_comp_s': 0.,
+     'mpc_heading_robust': False,
+     'mpc_history_prediction': False,
++    # Step 47 (integrated only; 0 = previous behaviour)
++    'mpc_brake_lead_s': 0.,
++    'mpc_steer_preview_s': 0.,
+ }
+ 
+ 
+@@ -101,4 +104,6 @@ def make_config(values, wheelbase, wheelbase_explicit, loop_rate):
+         deadline=values['mpc_deadline_s'], max_iter=values['mpc_max_iter'],
+         max_tracking_error=values['mpc_max_tracking_error_m'],
+         max_heading_error=values['mpc_max_heading_error_rad'],
++        brake_lead_s=float(values['mpc_brake_lead_s']),
++        steer_preview_s=float(values['mpc_steer_preview_s']),
+     )
+diff --git a/controller/controller/mpc/integrated_mpc.py b/controller/controller/mpc/integrated_mpc.py
+index 35c66c1..431ad60 100644
+--- a/controller/controller/mpc/integrated_mpc.py
++++ b/controller/controller/mpc/integrated_mpc.py
+@@ -25,11 +25,22 @@ class IntegratedConfig(MPCConfig):
+     q_speed: float = 8.0
+     r_accel: float = .15
+     braking_preview_ratio: float = .85
++    # Step 47 (0 = previous behaviour). brake_lead_s: each curvature speed cap also
++    # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
++    # starts before the corner, tightening only). steer_preview_s: steering
++    # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
++    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s')   # class attribute, not a field
++    brake_lead_s: float = 0.
++    steer_preview_s: float = 0.
+ 
+     def __post_init__(self):
+         super().__post_init__()
+         if self.braking_preview_ratio > 1.:
+             raise ValueError('braking preview cannot exceed maximum deceleration')
++        for name in ('brake_lead_s', 'steer_preview_s'):
++            value = getattr(self, name)
++            if not np.isfinite(value) or not 0. <= value <= .5:
++                raise ValueError(name + ' must be within [0, 0.5] s')
+ 
+ 
+ @dataclass(frozen=True)
+@@ -214,8 +225,12 @@ class IntegratedMPC:
+         # Full friction-ellipse limits (step 26): no Y/sqrt(2) allocation, no 0.85
+         # curvature factor. Lateral cap = sqrt(Y/|kappa|) (a_long = 0 at the limit).
+         kappa = np.maximum(abs(curvature), 1e-6)
+-        v2 = np.minimum(min(c.max_speed, safety_speed_cap),
+-                        np.sqrt(self.LATERAL_PLAN_FRACTION*c.max_lateral_accel/kappa))**2
++        lateral_cap = np.sqrt(self.LATERAL_PLAN_FRACTION*c.max_lateral_accel/kappa)
++        if c.brake_lead_s > 0.:
++            # Step 47: a corner cap also holds brake_lead_s*v before it (only lowers caps).
++            reach = np.searchsorted(arc, arc+c.brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
++            lateral_cap = np.array([lateral_cap[i:j].min() for i, j in enumerate(reach.tolist())])
++        v2 = np.minimum(min(c.max_speed, safety_speed_cap), lateral_cap)**2
+         # Unknown path beyond the supplied endpoint: reserve enough distance to stop.
+         v2[-1] = 0.
+         # Backward braking pass on the same g-g ellipse the raceline generator uses:
+@@ -284,7 +299,8 @@ class IntegratedMPC:
+         # about the caps: with the caps far above the current speed the LTV model
+         # predicted too much yaw per step and the closed loop oscillated.
+         reference[:, 3] = speeds
+-        steering = np.arctan(c.wheelbase*np.interp(samples[:-1], arc, curvature))
++        steer_at = samples[:-1]+c.steer_preview_s*np.asarray(speeds[:-1])
++        steering = np.arctan(c.wheelbase*np.interp(steer_at, arc, curvature))
+         return reference, steering, limits
+ 
+     @staticmethod
+diff --git a/controller/controller/mpc/lateral_mpc.py b/controller/controller/mpc/lateral_mpc.py
+index 023172a..7fb410b 100644
+--- a/controller/controller/mpc/lateral_mpc.py
++++ b/controller/controller/mpc/lateral_mpc.py
+@@ -39,6 +39,8 @@ class MPCConfig:
+ 
+     def __post_init__(self):
+         for name, value in vars(self).items():
++            if name in getattr(self, 'ZERO_ALLOWED', ()):  # step 47: optional features, 0 = off
++                continue
+             if not np.isfinite(value) or value <= 0:
+                 raise ValueError(f"MPC {name} must be finite and positive")
+         if not isinstance(self.horizon, int) or not 2 <= self.horizon <= 100:
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 6cc6834..26313b2 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -5,6 +5,7 @@
+ #   mpc_profile_1p5.yaml       1.5 m/s
+ #   mpc_profile_2p25.yaml      2.25 m/s
+ #   mpc_profile_3p0.yaml / 4p0 / 5p0   3.0 / 4.0 / 5.0 m/s (staged ramp, step 18)
++#   mpc_profile_6p0.yaml / 7p0         6.0 / 7.0 m/s ceiling (VESC speed_max still caps ~5.04 m/s)
+ #   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
+ # Legacy PP/speed settings stay untouched.
+ controller_manager:
+@@ -78,7 +79,13 @@ controller_manager:
+     mpc_solver_time_limit_s: 0.004
+     mpc_deadline_s: 0.008
+     mpc_q_heading: 8.0
+-    mpc_r_rate: 2.0
++    # 2026-11-25 step 47: 2.0 -> 3.0 (straight-line left/right steering oscillation; also used by
++    #   the jsnd steering-only MPC). Rollback: 2.0 here (yaml is symlinked into install, restart only).
++    mpc_r_rate: 3.0
++    # --- step 47 corner entry/exit (integrated only, 0 = step 46 behaviour) ---
++    mpc_brake_lead_s: 0.12        # curvature speed cap applied 0.12*v m earlier (VESC speed-loop lag); lowers caps only
++    mpc_steer_preview_s: 0.03     # steering feed-forward/linearisation sampled 0.03*v m ahead
++    mpc_accel_jerk_mps3: 20.0     # corner-exit acceleration ramp (0 -> 5 m/s^2 in 0.25 s); braking never limited
+     # --- acceleration -> VESC speed setpoint ---
+     mpc_cmd_max_lead_mps: 0.5         # setpoint may lead measured odom speed by at most this
+     mpc_static_approach_decel_mps2: 1.5  # TRAILING static obstacle: cap = sqrt(crawl^2 + 2*a*(gap-standoff)) (0 = old flat crawl cap)
+-- 
+2.43.0
+

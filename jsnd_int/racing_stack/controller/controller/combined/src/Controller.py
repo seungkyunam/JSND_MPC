@@ -85,6 +85,7 @@ class Controller:
                 mpc_history_prediction=False,
                 mpc_static_approach_decel_mps2=1.5,
                 mpc_envelope_recovery_speed_mps=0.5,
+                mpc_accel_jerk_mps3=0.0,
             ):
 
         # Parameters from manager
@@ -180,6 +181,9 @@ class Controller:
         self.curr_applied_steering = 0.0
         self._mpc_last_status = None
         self.mpc_speed_cmd = None  # VESC speed setpoint integrated from MPC acceleration
+        # Step 47: corner-exit acceleration ramps in at this jerk (0 = off). Braking is never limited.
+        self.mpc_accel_jerk_mps3 = max(0.0, float(mpc_accel_jerk_mps3))
+        self.mpc_applied_accel = 0.0
         # Step 23: 'jsnd' = legacy JSND/PP speed pipeline + steering-only MPC (SteeringMPC);
         # 'integrated' = previous joint speed+steering IntegratedMPC.
         if mpc_speed_source not in ("jsnd", "integrated"):
@@ -204,6 +208,7 @@ class Controller:
     def reset_mpc_speed_command(self):
         """Next MPC command restarts from the measured speed (stop, FTG, input loss)."""
         self.mpc_speed_cmd = None
+        self.mpc_applied_accel = 0.0
 
     def record_applied_steering(self, steering, published=True):
         """Manager feedback of the steering actually published (FTG / input-loss stop)."""
@@ -245,6 +250,7 @@ class Controller:
             if self._mpc_soft_stop(measured):
                 cfg = self.lateral_mpc.config
                 self.mpc_speed_cmd = max(0.0, self.mpc_speed_cmd - cfg.max_decel * cfg.dt)
+                self.mpc_applied_accel = 0.0
                 return self.mpc_speed_cmd
             self.reset_mpc_speed_command()
             return 0.0
@@ -254,7 +260,14 @@ class Controller:
         # is a permanent speed loss recovered only at max_accel (cumulative slowdown
         # seen in step 32 vs 31). The MPC's own braking still acts through a*dt.
         base = max(base, measured - self.mpc_cmd_max_lead_mps)
-        command = base + result.acceleration * self.lateral_mpc.config.dt
+        accel = float(result.acceleration)
+        if self.mpc_accel_jerk_mps3 > 0.0 and accel > 0.0:
+            # Step 47: positive acceleration rises at most jerk*dt per tick (smooth corner
+            # exit); any deceleration request passes through unchanged.
+            accel = min(accel, max(0.0, self.mpc_applied_accel)
+                        + self.mpc_accel_jerk_mps3 * self.lateral_mpc.config.dt)
+        self.mpc_applied_accel = accel
+        command = base + accel * self.lateral_mpc.config.dt
         upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))

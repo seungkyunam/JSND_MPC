@@ -50,6 +50,9 @@ MPC_DEFAULTS = {
     'mpc_latency_comp_s': 0.,
     'mpc_heading_robust': False,
     'mpc_history_prediction': False,
+    # Step 47 (integrated only; 0 = previous behaviour)
+    'mpc_brake_lead_s': 0.,
+    'mpc_steer_preview_s': 0.,
 }
 
 
@@ -101,4 +104,6 @@ def make_config(values, wheelbase, wheelbase_explicit, loop_rate):
         deadline=values['mpc_deadline_s'], max_iter=values['mpc_max_iter'],
         max_tracking_error=values['mpc_max_tracking_error_m'],
         max_heading_error=values['mpc_max_heading_error_rad'],
+        brake_lead_s=float(values['mpc_brake_lead_s']),
+        steer_preview_s=float(values['mpc_steer_preview_s']),
     )

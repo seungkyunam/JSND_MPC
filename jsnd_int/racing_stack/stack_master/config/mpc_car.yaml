@@ -5,6 +5,7 @@
 #   mpc_profile_1p5.yaml       1.5 m/s
 #   mpc_profile_2p25.yaml      2.25 m/s
 #   mpc_profile_3p0.yaml / 4p0 / 5p0   3.0 / 4.0 / 5.0 m/s (staged ramp, step 18)
+#   mpc_profile_6p0.yaml / 7p0         6.0 / 7.0 m/s ceiling (VESC speed_max still caps ~5.04 m/s)
 #   mpc_profile_exp2mps.yaml   2.0 m/s, wheels-lifted bench experiment only
 # Legacy PP/speed settings stay untouched.
 controller_manager:
@@ -78,7 +79,13 @@ controller_manager:
     mpc_solver_time_limit_s: 0.004
     mpc_deadline_s: 0.008
     mpc_q_heading: 8.0
-    mpc_r_rate: 2.0
+    # 2026-11-25 step 47: 2.0 -> 3.0 (straight-line left/right steering oscillation; also used by
+    #   the jsnd steering-only MPC). Rollback: 2.0 here (yaml is symlinked into install, restart only).
+    mpc_r_rate: 3.0
+    # --- step 47 corner entry/exit (integrated only, 0 = step 46 behaviour) ---
+    mpc_brake_lead_s: 0.12        # curvature speed cap applied 0.12*v m earlier (VESC speed-loop lag); lowers caps only
+    mpc_steer_preview_s: 0.03     # steering feed-forward/linearisation sampled 0.03*v m ahead
+    mpc_accel_jerk_mps3: 20.0     # corner-exit acceleration ramp (0 -> 5 m/s^2 in 0.25 s); braking never limited
     # --- acceleration -> VESC speed setpoint ---
     mpc_cmd_max_lead_mps: 0.5         # setpoint may lead measured odom speed by at most this
     mpc_static_approach_decel_mps2: 1.5  # TRAILING static obstacle: cap = sqrt(crawl^2 + 2*a*(gap-standoff)) (0 = old flat crawl cap)

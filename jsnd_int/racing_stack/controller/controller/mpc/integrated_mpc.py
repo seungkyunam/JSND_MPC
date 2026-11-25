@@ -25,11 +25,22 @@ class IntegratedConfig(MPCConfig):
     q_speed: float = 8.0
     r_accel: float = .15
     braking_preview_ratio: float = .85
+    # Step 47 (0 = previous behaviour). brake_lead_s: each curvature speed cap also
+    # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
+    # starts before the corner, tightening only). steer_preview_s: steering
+    # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
+    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s')   # class attribute, not a field
+    brake_lead_s: float = 0.
+    steer_preview_s: float = 0.
 
     def __post_init__(self):
         super().__post_init__()
         if self.braking_preview_ratio > 1.:
             raise ValueError('braking preview cannot exceed maximum deceleration')
+        for name in ('brake_lead_s', 'steer_preview_s'):
+            value = getattr(self, name)
+            if not np.isfinite(value) or not 0. <= value <= .5:
+                raise ValueError(name + ' must be within [0, 0.5] s')
 
 
 @dataclass(frozen=True)
@@ -214,8 +225,12 @@ class IntegratedMPC:
         # Full friction-ellipse limits (step 26): no Y/sqrt(2) allocation, no 0.85
         # curvature factor. Lateral cap = sqrt(Y/|kappa|) (a_long = 0 at the limit).
         kappa = np.maximum(abs(curvature), 1e-6)
-        v2 = np.minimum(min(c.max_speed, safety_speed_cap),
-                        np.sqrt(self.LATERAL_PLAN_FRACTION*c.max_lateral_accel/kappa))**2
+        lateral_cap = np.sqrt(self.LATERAL_PLAN_FRACTION*c.max_lateral_accel/kappa)
+        if c.brake_lead_s > 0.:
+            # Step 47: a corner cap also holds brake_lead_s*v before it (only lowers caps).
+            reach = np.searchsorted(arc, arc+c.brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
+            lateral_cap = np.array([lateral_cap[i:j].min() for i, j in enumerate(reach.tolist())])
+        v2 = np.minimum(min(c.max_speed, safety_speed_cap), lateral_cap)**2
         # Unknown path beyond the supplied endpoint: reserve enough distance to stop.
         v2[-1] = 0.
         # Backward braking pass on the same g-g ellipse the raceline generator uses:
@@ -284,7 +299,8 @@ class IntegratedMPC:
         # about the caps: with the caps far above the current speed the LTV model
         # predicted too much yaw per step and the closed loop oscillated.
         reference[:, 3] = speeds
-        steering = np.arctan(c.wheelbase*np.interp(samples[:-1], arc, curvature))
+        steer_at = samples[:-1]+c.steer_preview_s*np.asarray(speeds[:-1])
+        steering = np.arctan(c.wheelbase*np.interp(steer_at, arc, curvature))
         return reference, steering, limits
 
     @staticmethod
