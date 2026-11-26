@@ -1,0 +1,125 @@
+[
+  {
+    "controller": "baseline",
+    "phases": {
+      "entry": {
+        "samples": 405,
+        "speed_mean": 3.0440386581601575,
+        "lateral_abs_mean": 0.06805268264034227,
+        "lateral_abs_max": 0.22895151060151625,
+        "inside_error_max": 0.03591083287153076
+      },
+      "middle": {
+        "samples": 48,
+        "speed_mean": 3.8729009731419626,
+        "lateral_abs_mean": 0.053537850534725394,
+        "lateral_abs_max": 0.1974112949370657,
+        "inside_error_max": 0.030995080393189253
+      },
+      "exit": {
+        "samples": 371,
+        "speed_mean": 3.0029948052511273,
+        "lateral_abs_mean": 0.025471531457929672,
+        "lateral_abs_max": 0.09853367612392945,
+        "inside_error_max": 0.062265809299941674
+      },
+      "straight": {
+        "samples": 362,
+        "speed_mean": 4.6115299218834656,
+        "lateral_abs_mean": 0.013234802538643137,
+        "lateral_abs_max": 0.08751385307291058,
+        "inside_error_max": 0.05290049253491718
+      }
+    },
+    "coupled_plant_violations": 46,
+    "coupled_plant_max": 1.1293242824599905,
+    "steer_variation_rad": 25.99513527721242,
+    "steer_oscillations": 530,
+    "accel_max": 3.4439016175246695,
+    "decel_min": -4.354429032019436,
+    "command_accel_max": 3.7853319090634217,
+    "command_decel_min": -4.99697695114707
+  },
+  {
+    "controller": "time_cost",
+    "phases": {
+      "entry": {
+        "samples": 403,
+        "speed_mean": 3.0442418064024923,
+        "lateral_abs_mean": 0.02996147974410308,
+        "lateral_abs_max": 0.11287582511378053,
+        "inside_error_max": 0.058478834177153105
+      },
+      "middle": {
+        "samples": 43,
+        "speed_mean": 4.167687878658128,
+        "lateral_abs_mean": 0.015912120420060464,
+        "lateral_abs_max": 0.03999941094803637,
+        "inside_error_max": 0.0067785099370773665
+      },
+      "exit": {
+        "samples": 350,
+        "speed_mean": 3.1971754576408724,
+        "lateral_abs_mean": 0.017542236584950927,
+        "lateral_abs_max": 0.11604303751833273,
+        "inside_error_max": 0.012919526022396224
+      },
+      "straight": {
+        "samples": 355,
+        "speed_mean": 4.675852433875548,
+        "lateral_abs_mean": 0.022262988830827703,
+        "lateral_abs_max": 0.12813967246365873,
+        "inside_error_max": 0.10800508364563696
+      }
+    },
+    "coupled_plant_violations": 92,
+    "coupled_plant_max": 1.3028277490479796,
+    "steer_variation_rad": 21.618042162468317,
+    "steer_oscillations": 491,
+    "accel_max": 4.0000000000000036,
+    "decel_min": -4.250085735954068,
+    "command_accel_max": 4.964096472548496,
+    "command_decel_min": -4.995135227790426
+  },
+  {
+    "controller": "PP capped plan",
+    "phases": {
+      "entry": {
+        "samples": 363,
+        "speed_mean": 3.2332609076514567,
+        "lateral_abs_mean": 0.16409270930197892,
+        "lateral_abs_max": 0.4587372238389102,
+        "inside_error_max": 0.4587372238389102
+      },
+      "middle": {
+        "samples": 52,
+        "speed_mean": 3.440653993438914,
+        "lateral_abs_mean": 0.28441737810387696,
+        "lateral_abs_max": 0.44268669320819454,
+        "inside_error_max": 0.44268669320819454
+      },
+      "exit": {
+        "samples": 337,
+        "speed_mean": 3.1353087155540886,
+        "lateral_abs_mean": 0.18067552519914712,
+        "lateral_abs_max": 0.41959089182525167,
+        "inside_error_max": 0.41959089182525167
+      },
+      "straight": {
+        "samples": 464,
+        "speed_mean": 3.6385009271974273,
+        "lateral_abs_mean": 0.14725008926409688,
+        "lateral_abs_max": 0.44141885316112073,
+        "inside_error_max": 0.44141885316112073
+      }
+    },
+    "coupled_plant_violations": 809,
+    "coupled_plant_max": 11.929005082265357,
+    "steer_variation_rad": 22.91456684144726,
+    "steer_oscillations": 375,
+    "accel_max": 4.0000000000000036,
+    "decel_min": -6.000000000000005,
+    "command_accel_max": 150.0,
+    "command_decel_min": -150.0
+  }
+]

@@ -1,0 +1,122 @@
+[
+  {
+    "variant": "baseline",
+    "tau": 0.12,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 3.4134428121176934,
+    "time_to_3": 1.06,
+    "lead_limited_fraction": 0.0,
+    "max_speed": 4.999999999999842,
+    "max_command": 5.0,
+    "optimal_accel_median": 3.452289653030801
+  },
+  {
+    "variant": "time_cost",
+    "tau": 0.12,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 4.0,
+    "time_to_3": 0.92,
+    "lead_limited_fraction": 0.184,
+    "max_speed": 4.999999999999998,
+    "max_command": 5.0,
+    "optimal_accel_median": 4.9999999999999964
+  },
+  {
+    "variant": "lead1",
+    "tau": 0.12,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 3.4134428121176934,
+    "time_to_3": 1.06,
+    "lead_limited_fraction": 0.0,
+    "max_speed": 4.999999999999842,
+    "max_command": 5.0,
+    "optimal_accel_median": 3.452289653030801
+  },
+  {
+    "variant": "nojerk",
+    "tau": 0.12,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 3.416100570931724,
+    "time_to_3": 0.98,
+    "lead_limited_fraction": 0.0,
+    "max_speed": 4.999999999999921,
+    "max_command": 5.0,
+    "optimal_accel_median": 3.4522896530308054
+  },
+  {
+    "variant": "gain2",
+    "tau": 0.12,
+    "terminal_status": "braking_envelope_infeasible",
+    "elapsed_s": 1.46,
+    "accel_0p5_to_3_median": 4.0,
+    "time_to_3": 0.86,
+    "lead_limited_fraction": 0.0,
+    "max_speed": 5.361492584566416,
+    "max_command": 9.523179955502352,
+    "optimal_accel_median": 3.4522896530308045
+  },
+  {
+    "variant": "baseline",
+    "tau": 0.45,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 1.1111111111111112,
+    "time_to_3": 2.86,
+    "lead_limited_fraction": 0.796,
+    "max_speed": 4.91682143723483,
+    "max_command": 5.0,
+    "optimal_accel_median": 3.4522896530308036
+  },
+  {
+    "variant": "time_cost",
+    "tau": 0.45,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 1.1111111111111112,
+    "time_to_3": 2.84,
+    "lead_limited_fraction": 0.808,
+    "max_speed": 4.917377975777271,
+    "max_command": 5.0,
+    "optimal_accel_median": 4.9999999999999964
+  },
+  {
+    "variant": "lead1",
+    "tau": 0.45,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 2.2222222222222223,
+    "time_to_3": 1.62,
+    "lead_limited_fraction": 0.296,
+    "max_speed": 4.9987075111287735,
+    "max_command": 5.0,
+    "optimal_accel_median": 3.4522896530308014
+  },
+  {
+    "variant": "nojerk",
+    "tau": 0.45,
+    "terminal_status": "solved",
+    "elapsed_s": 4.98,
+    "accel_0p5_to_3_median": 1.1111111111111112,
+    "time_to_3": 2.7800000000000002,
+    "lead_limited_fraction": 0.8,
+    "max_speed": 4.929171961679671,
+    "max_command": 5.0,
+    "optimal_accel_median": 3.4522896530308036
+  },
+  {
+    "variant": "gain2",
+    "tau": 0.45,
+    "terminal_status": "braking_envelope_infeasible",
+    "elapsed_s": 1.58,
+    "accel_0p5_to_3_median": 4.0,
+    "time_to_3": 0.98,
+    "lead_limited_fraction": 0.0,
+    "max_speed": 5.328343495681294,
+    "max_command": 9.456886991362587,
+    "optimal_accel_median": 3.452289653030808
+  }
+]

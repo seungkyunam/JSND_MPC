@@ -1,0 +1,7 @@
+# Offline candidate ONLY. Requires operator approval and verified pose/servo delay.
+# Same 5 m/s ceiling and physical limits as 5p0; no command multiplication.
+# Delay mismatch tests can violate actual-plant lateral limits: not the default.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 5.0
+    mpc_time_weighted_accel_cost: true

@@ -108,6 +108,9 @@ def build(ctrl, profile, overrides, rate):
     if ctrl == 'mpc':
         v_ = p['_mpc_vals']
         extra.update(pose_to_rear_axle_m=p['mpc_pose_to_rear_axle_m'],
+                     mpc_accel_jerk_mps3=p.get('mpc_accel_jerk_mps3', 0.0),
+                     mpc_static_approach_decel_mps2=p.get('mpc_static_approach_decel_mps2', 1.5),
+                     mpc_envelope_recovery_speed_mps=p.get('mpc_envelope_recovery_speed_mps', 0.5),
                      mpc_cmd_max_lead_mps=p.get('mpc_cmd_max_lead_mps', .5),
                      mpc_speed_source=v_['mpc_speed_source'],
                      mpc_plan_lateral_accel_limit=v_['mpc_plan_lateral_accel_limit_mps2'],
@@ -147,7 +150,7 @@ def mpc_layers(cfg, state, path):
 
 def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60.0, log_every=0,
              servo_delay_ticks=1, noise_pos=0.0, noise_v=0.0, offset_d=0.0, offset_yaw=0.0, seed=0,
-             noise_yaw=None):
+             noise_yaw=None, pose_delay_ticks=0):
     rng = np.random.default_rng(seed)
     c, p = build(ctrl, profile, overrides or {}, rate)
     conv = c.converter
@@ -163,6 +166,7 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
     delay_ticks = int(np.ceil(servo_delay_ticks))
     delay_blend = delay_ticks - servo_delay_ticks
     delta_queue = collections.deque([0.0] * delay_ticks)
+    pose_queue = collections.deque([(x, y, yaw)] * int(pose_delay_ticks))
     yaw_sigma = 0.5 * noise_pos if noise_yaw is None else noise_yaw
     acc_now = np.zeros(10)
     s_prev = float(conv.get_frenet([x], [y])[0][0])
@@ -184,9 +188,11 @@ def simulate(ctrl='pp', profile='5p0', overrides=None, rate=50, laps=2, t_max=60
             if len(lap_marks) >= laps:
                 break
         wp = local_wpnts(s)
-        xm, ym = x + noise_pos * rng.standard_normal(), y + noise_pos * rng.standard_normal()
+        pose_queue.append((x, y, yaw))
+        xp, yp, yawp = pose_queue.popleft()
+        xm, ym = xp + noise_pos * rng.standard_normal(), yp + noise_pos * rng.standard_normal()
         vm = v + noise_v * rng.standard_normal()
-        pose = np.array([[xm, ym, yaw + yaw_sigma * rng.standard_normal()]])
+        pose = np.array([[xm, ym, yawp + yaw_sigma * rng.standard_normal()]])
         frenet = np.array([s, d, vm, 0.0])
         c.yaw_rate = v * np.tan(delta) / L
         c.pose_prediction.observe(t, c.yaw_rate)

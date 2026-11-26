@@ -1,0 +1,19 @@
+== docs/logs/step49_run_5p0_20261125_163051.log.txt  autodrive 140.6s
+ laps 12: [16.136444299, 11.280703605, 11.592911159, 12.234605879, 11.402158426, 14.28729626, 7.229407569, 6.712262076, 7.567746206, 21.678480758, 13.597526439, 7.664333393]
+  best 6.71 median 11.50
+ STOP 81 (34.6/min), episodes(>0.5s gap) 40 (17.1/min)
+    17 trailing_without_target
+    14 ValueError
+    12 braking_envelope_infeasible
+    12 deadline_exceeded
+     9 osqp
+     8 envelope_recovery:ValueError
+     5 nonlinear_prediction_outside_envelope:heading
+     3 nonlinear_braking_envelope_violation
+     1 nonlinear_prediction_outside_envelope:tracking,heading
+ VESC braking engaged 81 (34.6/min), target=0 45 (19.2/min), median actual at target0 1.70
+  nonzero brake events: median overshoot actual-target 0.19
+ TTC 17 (7.3/min)
+ standstill (SM v<0.15) ~5.2s = 4%
+ OVERTAKE->TRAILING at v>1: n=9 speeds [3.1, 3.08, 3.06, 1.53, 2.92, 2.54, 1.64, 2.02, 1.7]
+ envelope_recovery events 8; max speed seen 3.13

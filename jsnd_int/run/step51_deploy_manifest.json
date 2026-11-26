@@ -1,0 +1,33 @@
+{
+  "base_commit": "de416d9d60015c0134c1cc0a8562afbb14d3b596",
+  "files": {
+    "controller/controller/combined/src/Controller.py": {
+      "base_sha256": "aaeda4b733e21ddf48ddb2bf7065913561031c650eabccba5afef80e1f810619",
+      "new_sha256": "a3428a567ee5b44ae673e71de782195b04690ddc50a83b2b4512e619afb87488"
+    },
+    "controller/controller/controller_manager.py": {
+      "base_sha256": "d17ea4a74e81227c44759bf98171ab1e73d58438c4e10ae6a643e048ae1fd8b5",
+      "new_sha256": "d89a589d95b368c272c0a0859813a712e7467123a564daa6508be32589719cdb"
+    },
+    "controller/controller/mpc/configuration.py": {
+      "base_sha256": "60a49365392bd4d60350c03629f7f1f074b883931cbe99b0a70395da50f8ead2",
+      "new_sha256": "38cee6c637b9c3212966856a1969b4b5360ce94c725dddbff806c09ad335e0f8"
+    },
+    "controller/controller/mpc/integrated_mpc.py": {
+      "base_sha256": "76856f8bc00e88e3fb1490a6b413f781d8530bed711377eb5a98993e723acf50",
+      "new_sha256": "01015630b2a8014e9b6b29622127ac2fc74049baf1820b680d256046803cc528"
+    },
+    "state_machine/state_machine/state_machine_node.py": {
+      "base_sha256": "fe94a37a48f819555b6602598e9ff5fcde2e3b03d80ef3e226d859c3909c2856",
+      "new_sha256": "a9adb1523e65778814a01ab4cd38e09dce43d5e6b1c381165571a2778ae00a37"
+    },
+    "state_machine/state_machine/state_machine_params.py": {
+      "base_sha256": "36e9c5fa6156a5a7252c2ac5571ab76516c57b20cb7d4da6fb536d3e6e8b7c88",
+      "new_sha256": "9858cf2509da0fe75cb3e8d7e2a137e140e29dfe434b674ec964636ce9f055cd"
+    },
+    "stack_master/config/mpc_profile_step51_5p0.yaml": {
+      "base_sha256": null,
+      "new_sha256": "8db0c842130a2b08d5acde8f14ee533e24271ae4c549cb1822ceb4ef2f599774"
+    }
+  }
+}

@@ -131,8 +131,8 @@ def test_forward_horizon_does_not_wrap_behind_the_car():
     SM = _sm_class()
     sm = types.SimpleNamespace(track_length=13.91, obstacle_rear_exclusion_m=2.0, gb_horizon_m=15.0,
                                cur_s=1.0)
-    assert SM._forward_horizon(sm, 20.0) == pytest.approx(11.91)
-    assert SM._forward_horizon(sm, 8.0) == 8.0                        # long track / short horizon: unchanged
+    assert SM._forward_horizon(sm, 20.0) == pytest.approx(6.955)
+    assert SM._forward_horizon(sm, 8.0) == pytest.approx(6.955)       # forward half-lap guard
     sm.track_length = 80.0
     assert SM._forward_horizon(sm, 20.0) == 20.0
     # enemy-in-front: obstacle 1.4 m behind (gap 12.51 on the 13.91 m lap) is not in front
