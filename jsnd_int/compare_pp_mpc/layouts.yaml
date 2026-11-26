@@ -1,0 +1,13 @@
+# Obstacle layouts for avoidance success rate. Fill in the MEASURED placement (Frenet s along
+# /global_waypoints of map 11_18_6, track 13.913 m) before the run; the same layout id must be
+# used for the PP and MPC runs. Positions are not known for past runs -> layout "unknown".
+# pre_m/post_m: pass window [s-pre, s+post]; contact_m: min LiDAR range below which a pass fails
+# (LiDAR origin, not body; 0 = do not judge by distance).
+layouts:
+  L1:
+    note: "예시 - 실제 배치로 교체할 것"
+    pre_m: 1.5
+    post_m: 1.0
+    contact_m: 0.0
+    obstacles:
+      - {id: o1, s: 0.0, d: 0.0, size_m: 0.0}
