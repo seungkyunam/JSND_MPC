@@ -77,6 +77,7 @@ class Controller:
                 lateral_mpc=None,
                 pose_to_rear_axle_m=0.0,
                 mpc_cmd_max_lead_mps=0.5,
+                mpc_cmd_accel_lead_mps=0.0,
                 mpc_speed_source="integrated",
                 mpc_plan_lateral_accel_limit=4.5,
                 mpc_fallback_max_ticks=10,
@@ -174,6 +175,7 @@ class Controller:
         self.lateral_mpc = lateral_mpc
         self.pose_to_rear_axle_m = pose_to_rear_axle_m
         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
+        self.mpc_cmd_accel_lead_mps = float(mpc_cmd_accel_lead_mps)  # step 52, 0 = off
         self.mpc_result = None
         self.mpc_speed_diagnostics = {}
         self.mpc_trailing_cap = None
@@ -276,7 +278,16 @@ class Controller:
                         + self.mpc_accel_jerk_mps3 * self.lateral_mpc.config.dt)
         self.mpc_applied_accel = accel
         command = base + accel * self.lateral_mpc.config.dt
-        upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
+        # Step 52 (vehicle bag 18:20): on straights the 0.5 m/s lead clipped 62% of the
+        # accelerating ticks (optimal 2.4 m/s^2, real 1.4-1.6, motor current p95 27 A).
+        # A larger lead is allowed only while a fully solved plan accelerates and never
+        # brakes inside its horizon; the plan peak / max_speed caps below still apply,
+        # and braking_recovery, continuation, late/inexact and STOP keep the 0.5 lead.
+        lead = self.mpc_cmd_max_lead_mps
+        if (self.mpc_cmd_accel_lead_mps > lead and result.status in ('solved', 'solved_late') and accel > 0.0
+                and float(np.min(np.diff(result.predicted[:, 3]))) >= -1e-3):
+            lead = self.mpc_cmd_accel_lead_mps
+        upper = min(float(np.max(result.predicted[:, 3])), measured + lead,
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
         self.mpc_speed_diagnostics.update(
@@ -286,9 +297,9 @@ class Controller:
             predicted_speed_mps=result.predicted[:, 3].tolist(),
             optimal_accel_horizon_mps2=result.controls[:, 0].tolist(),
             command_unclipped_mps=float(command), command_clipped_mps=self.mpc_speed_cmd,
-            command_upper_mps=float(upper), lead_limit_mps=float(measured + self.mpc_cmd_max_lead_mps),
+            command_upper_mps=float(upper), lead_limit_mps=float(measured + lead), lead_mps=float(lead),
             jerk_limited=bool(accel < result.acceleration - 1e-6),
-            lead_limited=bool(command > measured + self.mpc_cmd_max_lead_mps + 1e-6),
+            lead_limited=bool(command > measured + lead + 1e-6),
             plan_limited=bool(command > float(np.max(result.predicted[:, 3])) + 1e-6))
         return self.mpc_speed_cmd
 

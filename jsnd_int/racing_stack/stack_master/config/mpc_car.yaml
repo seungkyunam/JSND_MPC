@@ -100,6 +100,7 @@ controller_manager:
     mpc_accel_jerk_mps3: 20.0     # corner-exit acceleration ramp (0 -> 5 m/s^2 in 0.25 s); braking never limited
     # --- acceleration -> VESC speed setpoint ---
     mpc_cmd_max_lead_mps: 0.5         # setpoint may lead measured odom speed by at most this
+    mpc_cmd_accel_lead_mps: 1.2       # step 52: lead while a solved plan only accelerates (straights); 0 = off
     mpc_static_approach_decel_mps2: 1.5  # TRAILING static obstacle: cap = sqrt(crawl^2 + 2*a*(gap-standoff)) (0 = old flat crawl cap)
     mpc_envelope_recovery_speed_mps: 0.5  # stopped outside heading envelope: PP creep back to the path (0 = old permanent STOP)
     mpc_odom_timeout_s: 0.2           # stale /car_state/odom -> 0 speed

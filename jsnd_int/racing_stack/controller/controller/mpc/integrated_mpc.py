@@ -104,6 +104,12 @@ class IntegratedMPC:
     CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: cross-track m, heading rad, speed (faster) m/s
     CONTINUATION_ALONG_TOL = .30        # step 49: along-track (behind/ahead of the plan) m
     BRAKING_RECOVERY_TOL = .30          # braking-envelope overshoot answered by max braking (unchanged)
+    # Step 52 (vehicle bag 18:20): braking_recovery forced the QP onto the pure max-decel
+    # envelope, which uses the whole friction polygon -> steering p50 0.001 rad in corner 2
+    # (solved: 0.128) -> heading envelope STOP. With this on, the recovery floor reserves the
+    # lateral share the reference steering needs (same 16-gon) and brakes with the rest,
+    # never more than BRAKING_RECOVERY_TOL above the caps. False = Step 51 behaviour.
+    BRAKING_RECOVERY_STEER_RESERVE = True
     # Step 48: OSQP eps 1e-5 -> 1e-4 (+ adaptive rho every 10 iterations). The QP residual is
     # then up to ~1e-3, so the row check uses this tolerance; every safety property is still
     # enforced after it on the clipped controls and the NONLINEAR prediction (coupled/lateral
@@ -500,6 +506,22 @@ class IntegratedMPC:
             # which leaves the corner). Bounded by the existing speed tolerance of
             # plan continuation; a larger overshoot still STOPs. A cap is never raised
             # above what that braking from the measured speed reaches.
+            # Step 52: speed reached when braking with the friction left after the reference
+            # steering (|delta_ref|; stage 0 at least the steering the rate limit keeps).
+            turn_reach = reachable
+            if self.BRAKING_RECOVERY_STEER_RESERVE:
+                need = np.minimum(np.abs(np.clip(delta_ref, -c.max_steer, c.max_steer)), c.max_steer)
+                need[0] = max(need[0], steer0)
+                turn_reach, vk = np.empty(n), v0
+                for k in range(n):
+                    bk = min(c.max_steer, np.arctan(c.max_lateral_accel*c.wheelbase/max(vk*vk, 1e-6)))
+                    dk_ = min(need[k], bk)
+                    eta = max(vk*vk, 1e-6)*np.tan(bk)/bk*dk_/(c.wheelbase*c.max_lateral_accel)
+                    dec = float(np.min(-c.max_decel*(np.cos(np.pi/16)-np.sin(theta[back])*eta)/np.cos(theta[back])))
+                    vk = max(0., vk-min(c.max_decel, max(0., dec))*periods[k])
+                    turn_reach[k] = vk
+                turn_reach = np.maximum(reachable, turn_reach)
+            recovery_floor = reachable
             deficit = float(np.max(reachable-caps))
             braking_recovery = deficit > 1e-4
             if braking_recovery:
@@ -514,7 +536,8 @@ class IntegratedMPC:
                         or float(np.max(reachable-self._reference(state, path, periods)[2]))
                         > self.BRAKING_RECOVERY_TOL):
                     return self._fail('braking_envelope_infeasible', previous_steering, started)
-                caps = np.maximum(caps, reachable+1e-4)
+                recovery_floor = np.maximum(reachable, np.minimum(turn_reach, caps+self.BRAKING_RECOVERY_TOL))
+                caps = np.maximum(caps, recovery_floor+1e-4)
             m = np.zeros((4, 2*n))
             b = np.array([0., 0., state[2], state[3]])
             h = self.h_base.copy()
@@ -682,8 +705,9 @@ class IntegratedMPC:
                 short = float(np.max(reachable-actual_caps))
                 if not braking_recovery and 0. < short <= self.BRAKING_RECOVERY_TOL:
                     braking_recovery = True
+                    recovery_floor = np.maximum(reachable, np.minimum(turn_reach, actual_caps+self.BRAKING_RECOVERY_TOL))
                 if braking_recovery:
-                    floor = reachable+2*self.QP_ROW_TOL+1e-4   # QP residual above the brake floor
+                    floor = recovery_floor+2*self.QP_ROW_TOL+1e-4   # QP residual above the brake floor
                     actual_caps = np.maximum(actual_caps, floor)
                     caps = np.maximum(caps, np.minimum(floor, caps+self.BRAKING_RECOVERY_TOL))
                 violation = predicted[1:, 3] > actual_caps+self.QP_ROW_TOL   # step 48: QP residual (2 mm/s)

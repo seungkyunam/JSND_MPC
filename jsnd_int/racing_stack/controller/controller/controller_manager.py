@@ -108,6 +108,7 @@ class ControllerManager(Node):
         self.mpc_values = mpc_values  # also read later in global_wpnts_cb (Controller construction)
         self.pose_to_rear_axle_m = mpc_values['mpc_pose_to_rear_axle_m']
         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
+        self.mpc_cmd_accel_lead_mps = float(self._get_param('mpc_cmd_accel_lead_mps', 0.0))  # step 52, 0 = off
         self.mpc_static_approach_decel_mps2 = float(self._get_param('mpc_static_approach_decel_mps2', 1.5))
         self.mpc_envelope_recovery_speed_mps = float(self._get_param('mpc_envelope_recovery_speed_mps', 0.5))
         self.mpc_accel_jerk_mps3 = float(self._get_param('mpc_accel_jerk_mps3', 0.0))  # step 47, 0 = off
@@ -273,6 +274,7 @@ class ControllerManager(Node):
             lateral_mpc=self.lateral_mpc,
             pose_to_rear_axle_m=self.pose_to_rear_axle_m,
             mpc_cmd_max_lead_mps=self.mpc_cmd_max_lead_mps,
+            mpc_cmd_accel_lead_mps=self.mpc_cmd_accel_lead_mps,
             mpc_speed_source=self.mpc_speed_source,
             mpc_plan_lateral_accel_limit=float(self.mpc_values['mpc_plan_lateral_accel_limit_mps2']),
             mpc_fallback_max_ticks=max(1, int(round(float(self.mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
