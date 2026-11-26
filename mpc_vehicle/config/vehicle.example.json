@@ -1,6 +1,5 @@
 {
   "vehicle_id": "UNVERIFIED",
-  "map_dir": "/REPLACE/with/copied/MAP_NAME",
   "vehicle_config": "/REPLACE/with/copied/CAR/vehicle_config.yaml",
   "static_transforms": "/REPLACE/with/copied/CAR/static_transforms.yaml",
   "wheelbase": 0.324,

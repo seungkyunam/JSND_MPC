@@ -15,7 +15,9 @@ def configure(context):
     profile = LaunchConfiguration('profile').perform(context)
     mode = LaunchConfiguration('mode').perform(context)
     confirm = LaunchConfiguration('confirm').perform(context)
-    p = check(profile, mode, confirm)
+    map_dir = LaunchConfiguration('map_dir').perform(context)
+    p = check(profile, mode, confirm, map_dir or None)
+    node_params = {'profile': profile, 'mode': mode, 'map_dir': map_dir, 'use_sim_time': False}
     share = Path(get_package_share_directory('stack_master'))
     config = share/'config'
     vehicle = p['vehicle_config']
@@ -47,6 +49,9 @@ def configure(context):
                  remappings=[('/clicked_point', '/pf_global_initialize')], output='screen'),
             Node(package='robot_localization', executable='ekf_node', name='ekf_localization',
                  parameters=[str(config/'ekf_pf.yaml')], remappings=[('odometry/filtered', '/car_state/odom')], output='screen'),
+            # Race stack is stopped here, so the launch-selected map supplies /global_waypoints.
+            Node(package='mpc_vehicle', executable='mpc_vehicle_waypoints', name='mpc_vehicle_waypoints',
+                 parameters=[node_params], output='screen'),
         ]
     nodes += [
         Node(package='stack_master', executable='simple_mux_node.py', name='mpc_vehicle_mux',
@@ -57,9 +62,11 @@ def configure(context):
                           'joy_max_steer': float(p['max_steer_rad']), 'use_keyboard': False,
                           'joy_freshness_threshold': .2, 'use_estop': True, 'sim': False}], output='screen'),
         Node(package='mpc_vehicle', executable='mpc_vehicle_controller', name='mpc_vehicle_controller',
-             parameters=[{'profile': profile, 'mode': mode, 'use_sim_time': False}], output='screen'),
+             parameters=[node_params], output='screen'),
+        Node(package='mpc_vehicle', executable='mpc_vehicle_estop', name='mpc_vehicle_estop',
+             parameters=[node_params], output='screen'),
         Node(package='mpc_vehicle', executable='mpc_vehicle_gate', name='mpc_vehicle_gate',
-             parameters=[{'profile': profile, 'mode': mode, 'use_sim_time': False}], output='screen')]
+             parameters=[node_params], output='screen')]
     handlers = [RegisterEventHandler(OnProcessExit(target_action=node,
                 on_exit=[EmitEvent(event=Shutdown(reason='vehicle stack child exited; independent watchdog required'))]))
                 for node in nodes]
@@ -70,4 +77,8 @@ def configure(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('profile'), DeclareLaunchArgument('mode', default_value='shadow'),
-        DeclareLaunchArgument('confirm', default_value=''), OpaqueFunction(function=configure)])
+        DeclareLaunchArgument('confirm', default_value=''),
+        # Empty for shadow (follows the running stack's /global_waypoints);
+        # bench/drive: the map folder their own localization and waypoint source use.
+        DeclareLaunchArgument('map_dir', default_value=''),
+        OpaqueFunction(function=configure)])

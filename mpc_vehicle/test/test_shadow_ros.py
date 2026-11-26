@@ -22,12 +22,7 @@ def test_shadow_gate_with_real_dds(tmp_path):
     from nav_msgs.msg import Odometry
     from ackermann_msgs.msg import AckermannDriveStamped
     from mpc_vehicle.nodes import VehicleGate, command, RAW, MUX, HEALTH, FINAL
-    folder = tmp_path/'11_16_3'; folder.mkdir()
-    for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml', 'map.pgm'):
-        (folder/name).write_text('{}')
-    (folder/'11_16_3.yaml').write_text('image: map.pgm\n')
     p = json.loads((Path(__file__).parents[1]/'config/vehicle.example.json').read_text())
-    p['map_dir'] = str(folder)
     for name in ('vehicle_config', 'static_transforms'):
         f=tmp_path/(name+'.yaml'); f.write_text('{}'); p[name]=str(f)
     profile=tmp_path/'profile.json'; profile.write_text(json.dumps(p))

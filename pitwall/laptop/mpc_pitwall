@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Laptop (Ubuntu 22.04): open RViz for JSND_MPC on pitwall domain 174.
+# Uses the existing Conda RoboStack Jazzy env (msnd_pitwall) from
+# racing_stack/READMEforlaptop.md, NOT the system Humble install.
+# Runs locally on the laptop display -- no X11 forwarding.
+#
+#   mpc_pitwall            # RViz
+#   mpc_pitwall shell      # same env, interactive shell for ros2 CLI checks
+#   mpc_pitwall check      # read-only: topics/rates seen from the relay
+#   MPC_PITWALL_HUMBLE=1 mpc_pitwall   # fallback: system Humble rviz2 (needs ros-humble-rmw-cyclonedds-cpp)
+set -eo pipefail
+CONDA_ENV=${MPC_PITWALL_CONDA_ENV:-msnd_pitwall}
+CONDA_SH=${MPC_PITWALL_CONDA_SH:-$HOME/miniforge3/etc/profile.d/conda.sh}
+DDS_XML=${MPC_PITWALL_DDS_XML:-$HOME/.config/msnd/cyclonedds-mpc-pitwall.xml}
+RVIZ_CFG=${MPC_PITWALL_RVIZ:-$HOME/.config/msnd/mpc_pitwall.rviz}
+
+[[ -r $HOME/.config/msnd/mpc_pitwall.env ]] && . "$HOME/.config/msnd/mpc_pitwall.env" && export MPC_PITWALL_HUMBLE
+# Re-exec once in a clean environment so system Humble variables are not inherited.
+if [[ -z ${MPC_PITWALL_CLEAN:-} ]]; then
+  exec env -i MPC_PITWALL_CLEAN=1 \
+    HOME="$HOME" USER="$USER" LOGNAME="${LOGNAME:-$USER}" SHELL=/bin/bash \
+    TERM="${TERM:-xterm-256color}" LANG="${LANG:-C.UTF-8}" PATH=/usr/local/bin:/usr/bin:/bin \
+    DISPLAY="${DISPLAY-}" XAUTHORITY="${XAUTHORITY-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY-}" \
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR-}" DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS-}" \
+    MPC_PITWALL_CONDA_ENV="$CONDA_ENV" MPC_PITWALL_CONDA_SH="$CONDA_SH" \
+    MPC_PITWALL_DDS_XML="$DDS_XML" MPC_PITWALL_RVIZ="$RVIZ_CFG" MPC_PITWALL_HUMBLE="${MPC_PITWALL_HUMBLE-}" \
+    /bin/bash "$(readlink -f "${BASH_SOURCE[0]}")" "$@"
+fi
+
+[[ -r $DDS_XML ]] || { echo "Laptop DDS XML not found: $DDS_XML (re-run the installer)" >&2; exit 1; }
+[[ -r $RVIZ_CFG ]] || { echo "RViz config not found: $RVIZ_CFG" >&2; exit 1; }
+set +u
+if [[ -n ${MPC_PITWALL_HUMBLE:-} ]]; then
+  # Humble <-> Jazzy over CycloneDDS: only standard msgs are relayed, so this
+  # usually works, but cross-distro is not officially supported. Prefer Jazzy.
+  source /opt/ros/humble/setup.bash
+else
+  [[ -r $CONDA_SH ]] || { echo "conda.sh not found: $CONDA_SH (or use MPC_PITWALL_HUMBLE=1)" >&2; exit 1; }
+  source "$CONDA_SH"
+  conda activate "$CONDA_ENV"
+  [[ $ROS_DISTRO == jazzy ]] || { echo "Expected Jazzy from conda env $CONDA_ENV, got '$ROS_DISTRO'" >&2; exit 1; }
+fi
+
+export ROS_DOMAIN_ID=174          # pitwall domain; the vehicle stack (173) is loopback-only on the Jetson
+unset ROS_LOCALHOST_ONLY ROS_DISCOVERY_SERVER ROS_STATIC_PEERS
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI="file://$DDS_XML"
+echo "mpc_pitwall: $ROS_DISTRO / domain $ROS_DOMAIN_ID / $RMW_IMPLEMENTATION / $CYCLONEDDS_URI"
+
+if [[ ${1:-} == shell ]]; then
+  ros2 daemon stop >/dev/null 2>&1 || true
+  exec /bin/bash --noprofile --norc -i
+fi
+if [[ ${1:-} == check ]]; then
+  ros2 daemon stop >/dev/null 2>&1 || true
+  echo '== topics on domain 174 (relay must be running on the Jetson):'
+  timeout 10 ros2 topic list --no-daemon || true
+  for t in /scan /pf/viz/inferred_pose /tf; do
+    echo "== rate $t (5 s):"; timeout 6 ros2 topic hz "$t" --window 20 2>/dev/null | grep -m1 'average rate' || echo '   no data'
+  done
+  echo '== /map:'; timeout 6 ros2 topic echo /map --once --qos-durability transient_local --qos-reliability reliable --field info 2>/dev/null | grep -E 'resolution|width|height' || echo '   no map'
+  echo '== /mpc_pitwall/global_path:'; timeout 6 ros2 topic echo /mpc_pitwall/global_path --once --qos-durability transient_local --qos-reliability reliable --field header.frame_id 2>/dev/null | head -1 || echo '   no path'
+  echo '== gate status:'; timeout 4 ros2 topic echo /mpc_vehicle/gate_status --once --field data 2>/dev/null | head -1 || echo '   no gate status'
+  exit 0
+fi
+[[ -n $DISPLAY || -n $WAYLAND_DISPLAY ]] || { echo 'No local display (run from the laptop desktop, not SSH)' >&2; exit 1; }
+exec rviz2 -d "$RVIZ_CFG"

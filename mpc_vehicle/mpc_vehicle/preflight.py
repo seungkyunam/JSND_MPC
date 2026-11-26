@@ -28,8 +28,8 @@ def check_dds_environment():
             raise ValueError('packaged CycloneDDS profile requires RMW_IMPLEMENTATION=rmw_cyclonedds_cpp')
 
 
-def check(profile, mode, confirmation):
-    p = load_profile(profile, mode)
+def check(profile, mode, confirmation, map_dir=None):
+    p = load_profile(profile, mode, map_dir)
     if os.environ.get('ROS_DISTRO') != 'jazzy':
         raise ValueError('vehicle launch requires ROS 2 Jazzy')
     domain = os.environ.get('ROS_DOMAIN_ID', '')

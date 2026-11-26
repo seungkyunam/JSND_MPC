@@ -123,7 +123,8 @@ python3 mpc_deployment/record_laps.py --map-dir stack_master/maps/test0 \
 
 ## 실차 실행 명령 — 여기서는 실행하지 않음
 
-실제 Jazzy 환경에서 실측 프로파일과 원본 11_16_3가 준비된 경우의 명령이다.
+실제 Jazzy 환경에서 실측 프로파일이 준비된 경우의 명령이다. 맵은 프로파일에 넣지 않는다:
+shadow는 실행 중인 기존 스택의 `/global_waypoints`를 따르고, bench/drive는 MAP 인자(맵 이름 또는 맵 폴더)로 받는다.
 예시 프로파일을 그대로 사용하면 필수 파일/검증 누락으로 차단되는 것이 정상이다.
 
 ```bash
@@ -135,9 +136,9 @@ export MPC_PROFILE=/검증된/vehicle.json
 export ROS_DOMAIN_ID=차량의_검증된_도메인
 bash run_mpc_vehicle.sh "$MPC_VEHICLE_BUILD" "$MPC_PROFILE" shadow
 # 물리 E-stop/watchdog 검증 + 바퀴 공중 조건 + 현장 확인 후에만:
-bash run_mpc_vehicle.sh "$MPC_VEHICLE_BUILD" "$MPC_PROFILE" bench
+bash run_mpc_vehicle.sh "$MPC_VEHICLE_BUILD" "$MPC_PROFILE" bench MAP_NAME
 # 현재 코드·설정·맵에 바인딩된 실제 bench 승인 + 통제된 저속 환경 후에만:
-bash run_mpc_vehicle.sh "$MPC_VEHICLE_BUILD" "$MPC_PROFILE" drive
+bash run_mpc_vehicle.sh "$MPC_VEHICLE_BUILD" "$MPC_PROFILE" drive MAP_NAME   # bench 승인과 같은 맵
 ```
 
 구체적 joy/안전 bridge/arm/stop/승인 절차는 `VEHICLE_RUN_GUIDE.md`를 따른다.

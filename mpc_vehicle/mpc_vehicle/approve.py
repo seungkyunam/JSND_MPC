@@ -9,8 +9,10 @@ from .core import CHECKS, load_profile, approval_binding
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('profile'); parser.add_argument('output')
+    parser.add_argument('--map-dir', required=True,
+                        help='map folder the wheels-up checks were run on; the approval is bound to it')
     args = parser.parse_args()
-    p = load_profile(args.profile, 'bench')
+    p = load_profile(args.profile, 'bench', args.map_dir)
     output = Path(args.output)
     if output.exists(): raise SystemExit('refusing to overwrite an existing report')
     print('Only attest tests actually completed on this exact vehicle/software. Abort on failure.')

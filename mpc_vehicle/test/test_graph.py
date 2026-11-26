@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 import pytest
 pytest.importorskip('rclpy')
-from mpc_vehicle.nodes import VehicleGate, PREFIX, RAW, MUX, HEALTH, APPLIED, FINAL, ACTUATORS, DISABLED
+from mpc_vehicle.nodes import VehicleGate, PREFIX, RAW, MUX, HEALTH, APPLIED, FINAL, ACTUATORS, DISABLED, WAYPOINTS
 from mpc_vehicle.core import GatePolicy
 
 
@@ -16,6 +16,7 @@ def graph():
     owners={RAW:'/mpc_vehicle_controller', HEALTH:'/mpc_vehicle_controller',
             MUX:'/mpc_vehicle_mux', APPLIED:'/mpc_vehicle_gate', FINAL:'/mpc_vehicle_gate',
             '/joy':'/joy_node', PREFIX+'/estop_clear':'/vehicle_safety',
+            WAYPOINTS:'/mpc_vehicle_waypoints',
             '/scan':'/urg_node', '/car_state/odom':'/ekf_localization', '/vesc/odom':'/vesc/vesc_to_odom_node'}
     for suffix in ACTUATORS: owners[PREFIX+'/actuator/'+suffix]='/vesc/ackermann_to_vesc_node'
     pubs={topic:[endpoint(name)] for topic,name in owners.items()}
@@ -35,7 +36,7 @@ def test_normal_private_driver_topology_is_accepted():
     assert node.graph_ok, node.graph_reason
 
 
-@pytest.mark.parametrize('topic', [RAW, MUX, FINAL, '/vesc/high_level/ackermann_cmd',
+@pytest.mark.parametrize('topic', [RAW, MUX, FINAL, WAYPOINTS, '/vesc/high_level/ackermann_cmd',
                                    PREFIX+'/actuator/motor/current', '/vesc/commands/motor/duty_cycle',
                                    PREFIX+'/disabled_keyboard_select'])
 def test_foreign_publisher_latches_stop(topic):

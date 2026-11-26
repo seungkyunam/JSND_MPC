@@ -84,15 +84,30 @@ def test_mux_transition_sample_is_not_forwarded():
 def test_profile_default_blocks_hardware_before_any_ros_access(tmp_path):
     source = Path(__file__).parents[1]/'config/vehicle.example.json'
     p = json.loads(source.read_text())
-    folder = tmp_path/'11_16_3'; folder.mkdir()
+    folder = tmp_path/'any_track'; folder.mkdir()
     for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml', 'map.pgm'):
         (folder/name).write_text('{}')
-    (folder/'11_16_3.yaml').write_text('image: map.pgm\n')
-    p['map_dir'] = str(folder)
+    (folder/'any_track.yaml').write_text('image: map.pgm\n')
     for key in ('vehicle_config', 'static_transforms'):
         path = tmp_path/(key+'.yaml'); path.write_text('{}'); p[key] = str(path)
     profile = tmp_path/'profile.json'; profile.write_text(json.dumps(p))
     assert load_profile(profile, 'shadow')['geometry_confirmed'] is False
-    with pytest.raises(ValueError, match='geometry_confirmed'): load_profile(profile, 'bench')
+    with pytest.raises(ValueError, match='geometry_confirmed'): load_profile(profile, 'bench', folder)
     p['speed_limit_mps'] = 1.; profile.write_text(json.dumps(p))
     with pytest.raises(ValueError, match='commissioning limit'): load_profile(profile, 'shadow')
+
+
+def test_solver_speed_clamps_only_standstill_noise():
+    from mpc_vehicle.core import solver_speed, STANDSTILL_NOISE_MPS
+    # Observed EKF jitter on the stopped car: +-1.8e-4 m/s.
+    for v in (-1.8e-4, -1.e-6, -0.0, -STANDSTILL_NOISE_MPS):
+        assert solver_speed(v) == 0.
+    for v in (0., 1.8e-4, .2):
+        assert solver_speed(v) == v
+    # Real reverse motion must still be refused, not turned into 0.
+    for v in (-STANDSTILL_NOISE_MPS-1e-6, -.05, -.2):
+        with pytest.raises(ValueError, match='reverse_motion'):
+            solver_speed(v)
+    for v in (float('nan'), float('inf'), float('-inf')):
+        with pytest.raises(ValueError, match='nonfinite'):
+            solver_speed(v)

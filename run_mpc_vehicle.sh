@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -eo pipefail
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-  echo "Usage: $0 BUILD_DIR PROFILE_JSON [shadow|bench|drive]" >&2; exit 2
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+  echo "Usage: $0 BUILD_DIR PROFILE_JSON [shadow|bench|drive] [MAP]" >&2
+  echo "  shadow: no MAP; follows /global_waypoints of the map the running stack selected." >&2
+  echo "  bench|drive: MAP = map name under the underlay's stack_master maps, or a map directory." >&2
+  exit 2
 fi
 build_root=$(realpath -e "$1")
 profile=$(realpath -e "$2")
@@ -11,6 +14,18 @@ case "$mode" in shadow|bench|drive) ;; *) echo 'Invalid mode' >&2; exit 2;; esac
 [[ $(cat "$build_root/ros-distro.txt") == jazzy ]] || exit 1
 stage=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 underlay=$(cat "$build_root/underlay-workspace.txt")
+map_arg=${4:-}
+map_dir=''
+if [[ $mode == shadow ]]; then
+  [[ -z $map_arg ]] || { echo 'shadow takes no MAP: it follows the running stack /global_waypoints' >&2; exit 2; }
+else
+  [[ -n $map_arg ]] || { echo "$mode requires MAP (no map is stored in the vehicle profile)" >&2; exit 2; }
+  if [[ $map_arg == */* ]]; then
+    map_dir=$(realpath -e "$map_arg")
+  else
+    map_dir=$(realpath -e "$underlay/install/stack_master/share/stack_master/maps/$map_arg")
+  fi
+fi
 source "$stage/mpc_deployment/ros_distro.bash"
 mpc_detect_distro "$underlay" jazzy >/dev/null
 source /opt/ros/jazzy/setup.bash
@@ -47,4 +62,8 @@ elif [[ $mode == drive ]]; then
   read -r -p 'Wheels-up approval complete, controlled low-speed test area clear? Type CONTROLLED_LOW_SPEED_TEST: ' confirm
   [[ $confirm == CONTROLLED_LOW_SPEED_TEST ]] || exit 1
 fi
-exec ros2 launch mpc_vehicle vehicle_mpc.launch.py "profile:=$profile" "mode:=$mode" "confirm:=$confirm"
+# ros2 launch rejects empty 'name:=' arguments; omit unset ones (launch defaults are '').
+launch_args=("profile:=$profile" "mode:=$mode")
+[[ -z $confirm ]] || launch_args+=("confirm:=$confirm")
+[[ -z $map_dir ]] || launch_args+=("map_dir:=$map_dir")
+exec ros2 launch mpc_vehicle vehicle_mpc.launch.py "${launch_args[@]}"

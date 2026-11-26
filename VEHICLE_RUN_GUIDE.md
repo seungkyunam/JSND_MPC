@@ -34,7 +34,7 @@ bash ./install_jazzy_shadow.sh \
 
 초기 프로파일의 속도 제한은 0.2m/s, 조향 0.15rad, 조향 변화 0.3rad/s, 가속 0.2m/s²다. **예시값이며 실제 장치의 검증값이 아니다.** 소프트웨어는 속도 0.5m/s, 조향 0.3rad, 각속도 1rad/s, 가속 0.5m/s²보다 큰 프로파일을 거부한다. 후진은 전달하지 않는다. 실차 고속 레이싱 기능을 승인하는 모드는 없다.
 
-새 노드는 공통 `controller.mpc.integrated_mpc.IntegratedMPC`로 속도와 조향을 함께 최적화한다. 가속·감속·횡가속도 상한도 프로파일에서 검증한다. `11_16_3/global_waypoints.json`의 IQP 글로벌 경로를 폐곡선으로 읽어 가까운 지점부터 로컬 구간을 추출한다. 기존 JSON 속도에 sector scaling의 최솟값을 보수적으로 적용하고 저속 상한을 씌운다(배율로 원래 JSON 속도를 높이지 않음). sector YAML의 `only_FTG=true`는 거부한다. 이 실차 경로는 전역 경로 추종 전용이며 기존 state_machine의 동적 회피·추월·FTG로 넘어가지 않는다. 장애물 앞에서는 정지한다. 기존 PP/state_machine의 실행 동작을 바꾸지 않는다.
+새 노드는 공통 `controller.mpc.integrated_mpc.IntegratedMPC`로 속도와 조향을 함께 최적화한다. 가속·감속·횡가속도 상한도 프로파일에서 검증한다. 특정 맵에 고정되지 않는다. shadow에서는 기존 스택이 선택한 맵의 `/global_waypoints`(IQP 글로벌 경로)를 구독해 폐곡선으로 검증하고 가까운 지점부터 로컬 구간을 추출한다. 맵이 바뀌어 새 경로가 오면 즉시 교체하고 warm start를 초기화한다. `/global_waypoints_scaled`가 같은 경로이면 속도를 낮추는 쪽으로만 반영하고 저속 상한을 씌운다. 경로가 없거나 5초 이상 갱신되지 않거나 유효하지 않거나(점 20개 미만, NaN, 음수 속도, 0.5 m 초과 간격) 차량이 경로에서 1 m 이상 떨어지면 MPC는 0 속도와 `ok=false`를 내고 gate는 정지한다. bench/drive에서는 실행 인자로 받은 맵의 경로를 `mpc_vehicle_waypoints`가 발행한다. 맵 정보는 `vehicle.json`에 넣지 않는다. 이 실차 경로는 전역 경로 추종 전용이며 기존 state_machine의 동적 회피·추월·FTG로 넘어가지 않는다. 장애물 앞에서는 정지한다. 기존 PP/state_machine의 실행 동작을 바꾸지 않는다.
 
 ## 2. 터미널 1: SSH, 소스 준비, Jazzy 의존성
 
@@ -93,7 +93,7 @@ done
 
 Jazzy를 설치한 기존 underlay를 읽어서 사용한다. 기존 JSND에서 rosdep/build를 실행하지 않는다. 기존 binary의 메시지/드라이버 API가 이 저장소와 다른 경우 먼저 검토해야 한다. 기존 실행 셸에 MPC overlay를 source하지 않는다. 새 프로세스의 Python bytecode는 비활성화한다.
 
-## 3. 터미널 1: 기존 `11_16_3`와 차량 설정을 독립 복사
+## 3. 터미널 1: 차량 설정을 독립 복사 (맵은 복사하지 않음)
 
 아직 MPC overlay를 source하지 않은 underlay 셸에서:
 
@@ -102,14 +102,12 @@ MPC_OLD_SHARE="$(ros2 pkg prefix stack_master)/share/stack_master"
 export MPC_ASSETS="$HOME/mpc_ws/mpc-build.vehicle-assets"
 test ! -e "$MPC_ASSETS"
 mkdir -p "$MPC_ASSETS"
-cp -aL "$MPC_OLD_SHARE/maps/11_16_3" "$MPC_ASSETS/11_16_3"
 cp -L "$MPC_OLD_SHARE/config/CAR/vehicle_config.yaml" "$MPC_ASSETS/vehicle_config.yaml"
 cp -L "$MPC_OLD_SHARE/config/CAR/static_transforms.yaml" "$MPC_ASSETS/static_transforms.yaml"
 python3 - <<'PY'
 import json, os, pathlib
 root = pathlib.Path(os.environ['MPC_ASSETS'])
 p = json.loads(pathlib.Path('mpc_vehicle/config/vehicle.example.json').read_text())
-p['map_dir'] = str(root/'11_16_3')
 p['vehicle_config'] = str(root/'vehicle_config.yaml')
 p['static_transforms'] = str(root/'static_transforms.yaml')
 (root/'vehicle.json').write_text(json.dumps(p, indent=2)+'\n')
@@ -117,7 +115,7 @@ print('확인·편집할 새 프로파일:', root/'vehicle.json')
 PY
 ```
 
-원본은 읽기만 하며 심볼릭 링크 대신 실제 파일을 복사한다. 새 `mpc-build.*` 디렉터리는 기존 .gitignore에 의해 Git 업로드에서 제외된다. `11_16_3.yaml`의 `image`는 폴더 내부 상대 경로여야 한다. 글로벌 JSON과 맵 origin/resolution/좌표계·주행 방향이 맞는 세트인지 확인한다. 저장소에는 이 실차 맵이 없으며 이름만 바꾼 다른 맵으로 대신하지 않는다.
+원본은 읽기만 하며 심볼릭 링크 대신 실제 파일을 복사한다. 새 `mpc-build.*` 디렉터리는 기존 .gitignore에 의해 Git 업로드에서 제외된다. `vehicle.json`은 차량 고유 값만 담으며 `map_dir`가 있으면 거부된다. 맵은 shadow에서는 실행 중인 기존 스택이 정하고, bench/drive에서는 `run_mpc_vehicle.sh`의 MAP 인자(underlay `stack_master/maps`의 맵 이름 또는 맵 폴더 경로)로 정한다. 맵 폴더의 `image`는 폴더 내부 상대 경로여야 한다.
 
 프로파일에서 실측할 항목:
 
@@ -196,24 +194,11 @@ shadow는 하드웨어 노드를 전혀 띄우지 않는다. 기존 센서 그�
 /mpc_vehicle/gate_status
 ```
 
-경로 입력은 ROS `/global_waypoints` 구독이 아니라 프로파일에 지정된 파일이다. 다음을 터미널 4의 공통 환경 설정 후 실행하여 실제 선택 파일과 내용을 확인한다.
+경로 입력은 기존 스택이 발행하는 `/global_waypoints`이다. 다음을 터미널 4의 공통 환경 설정 후 실행하여 실제 수신 경로와 계산 상태를 확인한다.
 
 ```bash
-export MPC_PROFILE="$HOME/mpc_ws/mpc-build.vehicle-assets/vehicle.json"
-python - <<'CHECK_PATH'
-import json, os, pathlib, hashlib, yaml
-p=json.loads(pathlib.Path(os.environ['MPC_PROFILE']).read_text())
-m=pathlib.Path(p['map_dir'])
-f=m/'global_waypoints.json'
-d=json.loads(f.read_text())
-w=d['global_traj_wpnts_iqp']['wpnts']
-print('Map:', m)
-print('Global path:', f, 'waypoints:', len(w))
-print('JSON SHA256:', hashlib.sha256(f.read_bytes()).hexdigest())
-print('JSON speed range:', min(x['vx_mps'] for x in w), max(x['vx_mps'] for x in w))
-print('Sector profile:', yaml.safe_load((m/'speed_scaling.yaml').read_text()))
-print('Commissioning speed cap:', p['speed_limit_mps'])
-CHECK_PATH
+ros2 topic info -v /global_waypoints
+ros2 topic echo /global_waypoints --once --field wpnts --no-arr
 ros2 param get /mpc_vehicle_controller mode
 ros2 param get /mpc_vehicle_controller profile
 ros2 topic echo /mpc_vehicle/controller_status --once
@@ -222,7 +207,7 @@ ros2 topic echo /mpc_vehicle/raw_command --once
 ros2 topic info -v /vesc/ackermann_cmd
 ```
 
-Shadow 계산 확인의 기준은 `mode=shadow`, 올바른 map/profile 경로, 신선한 map/base_link odom, `controller_status`의 `ok=true`와 `reason=solved`, 유한한 raw command다. 토픽이 존재하거나 대기 상태 메시지만 나오는 것은 MPC 계산 성공이 아니다. 실제 액추에이터 출력 없이 계산 결과만 관찰하며, 정지 입력이 없으면 gate가 disarmed/ready=false인 것이 정상이다. 여기에 기재된 명령은 차량에서 아직 실행되지 않았다.
+Shadow 계산 확인의 기준은 `mode=shadow`, 올바른 profile 경로, `/global_waypoints` 발행자 존재, 신선한 map/base_link odom, `controller_status`의 `ok=true`와 `reason=solved`, 유한한 raw command다. 토픽이 존재하거나 대기 상태 메시지만 나오는 것은 MPC 계산 성공이 아니다. 실제 액추에이터 출력 없이 계산 결과만 관찰하며, 정지 입력이 없으면 gate가 disarmed/ready=false인 것이 정상이다. 여기에 기재된 명령은 차량에서 아직 실행되지 않았다.
 
 새 경로에는 `/vesc/high_level/ackermann_cmd` 발행자가 없고 shadow에서는 새 `/vesc/ackermann_cmd` 발행자도 없다. 해당 토픽에 기존 PP 발행자가 있다면 그것은 별도 기존 프로세스다.
 
@@ -285,12 +270,12 @@ ros2 topic echo /mpc_vehicle/shadow_output
 기존 PP race/quali/base/localization/mux/VESC/LiDAR 프로세스를 **원래 실행 방법으로 모두 종료**한다. 이름만 변경하거나 다른 도메인으로 옮기는 것은 같은 물리 장치의 소유권을 해결하지 않는다. shadow도 종료한다. 실제 joy와 safety bridge만 남긴다. 차량은 모든 바퀴를 띄우고 차체를 고정하고, 담당자가 물리 정지 장치 옆에 있어야 한다.
 
 ```bash
-bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" bench
+bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" bench MAP_NAME   # 예: 오늘 사용할 맵 이름
 ```
 
 프롬프트에서 실제 조건을 확인한 뒤 `WHEELS_LIFTED`를 입력한다. launch를 직접 실행해도 동일 프로파일/preflight 검사가 적용된다. 기존 센서/control 발행자나 PP 노드가 있으면 하드웨어 노드를 만들기 전에 거부한다. launch는 PF/EKF 기준 새 센서 스택, 별도 mux, MPC, gate만 시작한다. 한 프로세스라도 종료되면 전체 launch를 종료하며 마지막 명령 차단은 독립 watchdog이 담당해야 한다.
 
-PF 초기 자세는 실제 `11_16_3` 위의 차량 위치로 설정한다. RViz의 2D Pose Estimate 또는 이미 검증한 초기 위치 절차를 사용한다. 위치·yaw 값을 임의로 생성한 명령은 제공하지 않는다. `map→odom→base_link`와 odom frame/child frame(`map`, `base_link`)이 맞아야 한다. 잘못된 자세나 오래된 센서는 무장/자동 출력을 막는다.
+PF 초기 자세는 MAP 인자로 선택한 실제 맵 위의 차량 위치로 설정한다. RViz의 2D Pose Estimate 또는 이미 검증한 초기 위치 절차를 사용한다. 위치·yaw 값을 임의로 생성한 명령은 제공하지 않는다. `map→odom→base_link`와 odom frame/child frame(`map`, `base_link`)이 맞아야 한다. 잘못된 자세나 오래된 센서는 무장/자동 출력을 막는다.
 
 터미널 4에서 상태가 정상이고 버튼을 모두 놓은 상태를 0.5초 이상 유지한 후:
 
@@ -317,7 +302,7 @@ ros2 service call /mpc_vehicle/stop std_srvs/srv/Trigger '{}'
 ## 9. simple_mux–VESC 연결 및 PP 중복 방지
 
 ```text
-11_16_3 JSON + /car_state/odom → 공통 IntegratedMPC solver
+/global_waypoints(선택된 맵) + /car_state/odom → 공통 IntegratedMPC solver
   → /mpc_vehicle/raw_command ───────────┐
 /joy (검증된 단일 입력) ────────────────┤
                                      ↓
@@ -354,16 +339,16 @@ Gate는 joystick·scan·map odom·wheel odom·estop 입력의 0.2초 freshness, 
 
 ```bash
 export MPC_PROFILE="$HOME/mpc_ws/mpc-build.vehicle-assets/vehicle.json"
-python -m mpc_vehicle.approve "$MPC_PROFILE" \
+python -m mpc_vehicle.approve "$MPC_PROFILE" --map-dir "$MPC_MAP_DIR" \
   "$HOME/mpc_ws/mpc-build.vehicle-assets/wheels_up_approval.json"
 ```
 
-생성한 파일 절대 경로를 새 프로파일의 `drive_approval`에 넣는다. 기록은 현재 profile(그 경로 필드 제외), 맵 파일, 차량 설정, 하드웨어 기록 및 설치된 MPC/게이트/launch/stack 설정의 해시에 묶인다. 관련 파일을 바꾸면 다시 검증해야 한다. 기록은 운영자의 진술이며 서명된 인증이나 실제 시험의 자동 증명이 아니다.
+생성한 파일 절대 경로를 새 프로파일의 `drive_approval`에 넣는다. `MPC_MAP_DIR`은 bench 시험에 사용한 맵 폴더이며 drive는 같은 맵으로만 허가된다. 맵을 바꾸면 해당 맵으로 wheels-up 확인을 다시 한다. 기록은 현재 profile(그 경로 필드 제외), 맵 파일, 차량 설정, 하드웨어 기록 및 설치된 MPC/게이트/launch/stack 설정의 해시에 묶인다. 관련 파일을 바꾸면 다시 검증해야 한다. 기록은 운영자의 진술이며 서명된 인증이나 실제 시험의 자동 증명이 아니다.
 
 bench를 종료하고 바퀴를 내린 통제된 저속 시험 환경에서만 터미널 1:
 
 ```bash
-bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" drive
+bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" drive MAP_NAME
 ```
 
 실제 조건을 확인하여 `CONTROLLED_LOW_SPEED_TEST`를 입력한다. 이전 승인 파일이 없거나 불일치하면 launch가 하드웨어를 만들기 전에 실패한다. 시작 후 다시 neutral→arm→LB/RB hold가 필요하다. 이 명령은 기존 PP를 자동 종료하지 않는다. drive에서도 0.5m/s 이하의 하드 상한과 모든 watchdog/정지 검사가 유지된다.
@@ -380,7 +365,7 @@ bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" drive
 
 새 안전 로직의 단위 검사와 localhost DDS shadow 검사를 수행한다. DDS 검사는 가짜 센서/명령만 사용하고 VESC/실차 드라이버/기존 Humble 주행 시뮬레이션을 띄우지 않는다. 시험 환경이 Humble인 경우 이는 새 adapter의 통신 호환 검사일 뿐 Jazzy 차량 검증 결과가 아니다.
 
-**아직 미검증:** 실제 Jazzy build/launch 및 기존 underlay 호환성, 실물 `11_16_3`, PF 초기화와 프레임, 차량 geometry/servo/ERPM, 물리 joystick 매핑과 ELRS fail-safe, 실제 독립 정지 bridge, watchdog/제동 거리, CPU 최악 실행시간, wheels-up 및 저속 주행. 이 중 필수 하드웨어 검증이 준비되지 않았으면 shadow에서 멈춘다.
+**아직 미검증:** 실제 Jazzy build/launch 및 기존 underlay 호환성, 실차 맵별 PF 초기화와 프레임, 차량 geometry/servo/ERPM, 물리 joystick 매핑과 ELRS fail-safe, 실제 독립 정지 bridge, watchdog/제동 거리, CPU 최악 실행시간, wheels-up 및 저속 주행. 이 중 필수 하드웨어 검증이 준비되지 않았으면 shadow에서 멈춘다.
 
 ## 12. 업로드 시점 검증 상태와 진행 중단 기준
 
@@ -390,7 +375,7 @@ bash "$HOME/mpc_ws/run_mpc_vehicle.sh" "$MPC_BUILD" "$MPC_PROFILE" drive
 | 별도 localhost shadow DDS 검사 | 이전 로컬 실행 1건 통과; 가짜 센서/명령, 실차·시뮬레이터 드라이버 없음 |
 | 새 패키지 설치 검사 | 로컬 Humble에서 통과; 실제 Jazzy 빌드는 미수행 |
 | 실제 차량 SSH | 대상 사용자/주소/workspace 미확정; 접속 미수행 |
-| 실제 `11_16_3` 및 속도 프로파일 복사·검증 | 미수행; 위 명령으로 차량 원본을 새 공간에 복사해야 함 |
+| 맵 입력 | 고정 맵 없음; shadow는 `/global_waypoints`, bench/drive는 MAP 인자 |
 | 차량 Shadow / Bench / Drive | 모두 미수행 |
 | 실제 주행 승인 | 불가: 필수 실차 검증과 안전 장치 연결을 확인하지 못함 |
 

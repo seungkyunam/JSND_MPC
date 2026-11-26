@@ -17,8 +17,9 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Joy, LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+from f110_msgs.msg import WpntArray
 from controller.mpc.integrated_mpc import IntegratedMPC, IntegratedConfig
-from .core import GatePolicy, load_profile
+from .core import GatePolicy, load_profile, validate_raceline, combine_speeds, solver_speed
 
 PREFIX = '/mpc_vehicle'
 RAW = PREFIX + '/raw_command'
@@ -28,6 +29,12 @@ HEALTH = PREFIX + '/solver_ok'
 APPLIED = PREFIX + '/applied_command'
 ACTUATORS = ('motor/speed', 'motor/brake', 'servo/position')
 DISABLED = ('motor/current', 'motor/duty_cycle', 'motor/position')
+# Raceline of whatever map the running stack selected (global_republisher, 2 s period)
+# and its sector-scaled copy (speed_sector_tuner, 0.5 s period).
+WAYPOINTS = '/global_waypoints'
+SCALED_WAYPOINTS = '/global_waypoints_scaled'
+WAYPOINT_TIMEOUT_S = 5.
+MAX_PATH_OFFSET_M = 1.
 
 
 def fqn(endpoint):
@@ -38,8 +45,10 @@ def profile_for(node):
     read_only = ParameterDescriptor(read_only=True)
     node.declare_parameter('profile', '', read_only)
     node.declare_parameter('mode', 'shadow', read_only)
+    node.declare_parameter('map_dir', '', read_only)
     mode = node.get_parameter('mode').value
-    p = load_profile(node.get_parameter('profile').value, mode)
+    p = load_profile(node.get_parameter('profile').value, mode,
+                     node.get_parameter('map_dir').value or None)
     if node.get_parameter('use_sim_time').value:
         raise ValueError('vehicle nodes require system ROS time')
     node.add_on_set_parameters_callback(lambda params: SetParametersResult(
@@ -67,27 +76,12 @@ class VehicleController(Node):
         super().__init__('mpc_vehicle_controller')
         self.p, self.mode = profile_for(self)
         p = self.p
-        data = json.loads((Path(p['map_dir'])/'global_waypoints.json').read_text())
-        waypoints = data['global_traj_wpnts_iqp']['wpnts']
-        self.path = np.array([[w['x_m'], w['y_m']] for w in waypoints], dtype=float)
-        self.speeds = np.array([w['vx_mps'] for w in waypoints], dtype=float)
-        if (len(self.path) < 20 or not np.isfinite(self.path).all()
-                or not np.isfinite(self.speeds).all() or np.any(self.speeds < 0)):
-            raise ValueError('invalid global raceline')
-        # Apply a conservative global floor of existing sector scales, never increase JSON speeds.
-        import yaml
-        sectors = yaml.safe_load((Path(p['map_dir'])/'speed_scaling.yaml').read_text())['speed_sector_tuner']['ros__parameters']
-        phase = float(sectors.get('phase_multiplier', 1.))
-        scales = [float(sectors[f'Sector{i}']['scaling']) for i in range(int(sectors['n_sectors']))]
-        if not scales or not all(math.isfinite(v) and v >= 0 for v in scales+[phase]):
-            raise ValueError('invalid sector speed scales')
-        if any(sectors[f'Sector{i}'].get('only_FTG', False) for i in range(int(sectors['n_sectors']))):
-            raise ValueError('FTG-only map sectors are unsupported by global MPC commissioning')
-        self.speeds *= min(1., min(scales)*phase)
-        if np.linalg.norm(self.path[0]-self.path[-1]) < 1.e-6:
-            self.path = self.path[:-1]; self.speeds = self.speeds[:-1]
-        if np.max(np.linalg.norm(np.roll(self.path, -1, axis=0)-self.path, axis=1)) > .5:
-            raise ValueError('global raceline is not a continuous closed loop (gap > 0.5 m)')
+        # No map is bound at start-up: the raceline arrives on WAYPOINTS from
+        # whichever map the running stack selected, and is replaced live when
+        # that map changes. Until a valid one is fresh, the command is a stop.
+        self.path = None; self.speeds = None; self.path_at = -math.inf
+        self.path_reason = 'waiting_for_global_waypoints'
+        self.scaled = None; self.scaled_at = -math.inf
         self.mpc = IntegratedMPC(IntegratedConfig(
             wheelbase=p['wheelbase'], max_steer=p['max_steer_rad'],
             max_steer_rate=p['max_steer_rate_radps'], horizon=20,
@@ -97,6 +91,8 @@ class VehicleController(Node):
         self.applied = None; self.applied_at = -math.inf
         self.create_subscription(Odometry, '/car_state/odom', self.odom_cb, qos_profile_sensor_data)
         self.create_subscription(AckermannDriveStamped, APPLIED, self.applied_cb, 1)
+        self.create_subscription(WpntArray, WAYPOINTS, self.waypoints_cb, QoSProfile(depth=1))
+        self.create_subscription(WpntArray, SCALED_WAYPOINTS, self.scaled_cb, QoSProfile(depth=1))
         self.pub = self.create_publisher(AckermannDriveStamped, RAW, 1)
         self.health = self.create_publisher(Bool, HEALTH, 1)
         self.status = self.create_publisher(String, PREFIX+'/controller_status', 1)
@@ -112,10 +108,48 @@ class VehicleController(Node):
         if stamp_ok(self, msg):
             self.applied = msg; self.applied_at = time.monotonic()
 
+    @staticmethod
+    def raceline(msg):
+        return validate_raceline([[w.x_m, w.y_m] for w in msg.wpnts], [w.vx_mps for w in msg.wpnts])
+
+    def waypoints_cb(self, msg):
+        try:
+            xy, speeds = self.raceline(msg)
+        except ValueError as exc:
+            # An invalid raceline withdraws the previous one; never keep following a stale map.
+            self.path = None; self.speeds = None; self.path_reason = 'invalid_global_waypoints:'+str(exc)
+            return
+        if self.path is None or self.path.shape != xy.shape or not np.allclose(self.path, xy, atol=1.e-6):
+            # The OSQP setup/factorization happens on the first solve of the process.
+            # Do that here, outside the 20 ms control tick, so the first real solve
+            # is not a cold one. The result and its warm start are discarded.
+            try:
+                heading = math.atan2(*(xy[1]-xy[0])[::-1])
+                window = slice(0, min(len(xy), 200))
+                self.mpc.solve([*xy[0], heading, 0.], np.column_stack(
+                    (xy[window], np.minimum(speeds[window], self.p['speed_limit_mps']))), 0.)
+            except Exception:
+                pass
+            self.mpc.reset()  # new map/raceline: no warm start from the old line or the priming solve
+        self.path = xy; self.speeds = speeds; self.path_at = time.monotonic()
+
+    def scaled_cb(self, msg):
+        try:
+            self.scaled = self.raceline(msg); self.scaled_at = time.monotonic()
+        except ValueError:
+            self.scaled = None
+
+    def current_raceline(self, now):
+        if self.path is None: raise ValueError(self.path_reason)
+        if now-self.path_at > WAYPOINT_TIMEOUT_S: raise ValueError('stale_global_waypoints')
+        scaled = self.scaled if now-self.scaled_at <= WAYPOINT_TIMEOUT_S else None
+        return self.path, combine_speeds(self.path, self.speeds, scaled)
+
     def tick(self):
         now = time.monotonic(); gap = now-self.last_tick; self.last_tick = now
         speed = 0.; steer = 0.; ok = False; reason = 'waiting_for_fresh_odometry_and_gate'
         try:
+            line, line_speeds = self.current_raceline(now)
             if (now-self.odom_at <= .2 and now-self.applied_at <= .2 and gap <= .1
                     and stamp_ok(self, self.odom) and stamp_ok(self, self.applied)):
                 pose = self.odom.pose.pose
@@ -127,15 +161,17 @@ class VehicleController(Node):
                 xy = np.array([pose.position.x, pose.position.y])
                 xy += self.p['pose_to_rear_axle_m'] * np.array([math.cos(yaw), math.sin(yaw)])
                 if not np.isfinite(xy).all(): raise ValueError('nonfinite pose')
-                nearest = int(np.argmin(np.linalg.norm(self.path-xy, axis=1)))
+                distances = np.linalg.norm(line-xy, axis=1)
+                nearest = int(np.argmin(distances))
+                if distances[nearest] > MAX_PATH_OFFSET_M:
+                    raise ValueError('pose_far_from_global_waypoints')  # wrong map or lost localization
                 # Keep a short segment behind the vehicle and forward points over the lap seam.
-                indices = (np.arange(-3, min(len(self.path)-3, 200)) + nearest) % len(self.path)
-                path = self.path[indices]
+                indices = (np.arange(-3, min(len(line)-3, 200)) + nearest) % len(line)
+                path = line[indices]
                 # Existing global profile is only reduced, never increased; no new race speed profile.
                 previous = self.applied.drive.steering_angle
-                measured = self.odom.twist.twist.linear.x
-                if not math.isfinite(measured): raise ValueError('nonfinite speed')
-                profile_path = np.column_stack((path, np.minimum(self.speeds[indices], self.p['speed_limit_mps'])))
+                measured = solver_speed(self.odom.twist.twist.linear.x)
+                profile_path = np.column_stack((path, np.minimum(line_speeds[indices], self.p['speed_limit_mps'])))
                 result = self.mpc.solve([*xy, yaw, measured], profile_path, previous)
                 speed = result.speed
                 ok = result.success
@@ -225,6 +261,7 @@ class VehicleGate(Node):
                         PREFIX+'/estop_clear': self.p['estop_source_node']}
             if self.mode != 'shadow':
                 expected[FINAL] = '/mpc_vehicle_gate'
+                expected[WAYPOINTS] = '/mpc_vehicle_waypoints'
                 for suffix in ACTUATORS:
                     expected[PREFIX+'/actuator/'+suffix] = '/vesc/ackermann_to_vesc_node'
             reasons = [topic for topic, name in expected.items() if not self.owned(topic, name)]
@@ -334,6 +371,85 @@ class VehicleGate(Node):
                           'speed': speed, 'steer': steer})))
 
 
+class EstopBridge(Node):
+    """ELRS kill switch (/joy buttons[0], 1 = kill) -> PREFIX/estop_clear.
+
+    Fail-safe: clear=True only after 1.0 s of continuous, fresh (<0.2 s, same as gate), well-formed
+    /joy from the sole configured joy source with the kill switch off. Any kill,
+    staleness, malformed message or foreign publisher latches False immediately and
+    restarts the 1.0 s hold. The gate additionally latches its own stop.
+    """
+    HOLD_S = 1.
+    FRESH_S = .2
+
+    def __init__(self):
+        super().__init__('mpc_vehicle_estop')
+        self.p, self.mode = profile_for(self)
+        self.last_ok = -math.inf
+        self.clear_since = None
+        self.graph_ok = False; self.graph_at = -math.inf
+        self.pub = self.create_publisher(Bool, PREFIX+'/estop_clear', 1)
+        self.create_subscription(Joy, '/joy', self.joy, qos_profile_sensor_data)
+        steady = Clock(clock_type=ClockType.STEADY_TIME)
+        self.create_timer(.1, self.inspect_graph, clock=steady)
+        self.create_timer(.02, self.tick, clock=steady)
+
+    def deny(self):
+        self.clear_since = None
+        self.pub.publish(Bool(data=False))
+
+    def inspect_graph(self):
+        try:
+            pubs = self.get_publishers_info_by_topic('/joy')
+            self.graph_ok = len(pubs) == 1 and fqn(pubs[0]) == self.p['joy_source_node']
+        except Exception:
+            self.graph_ok = False
+        self.graph_at = time.monotonic()
+        if not self.graph_ok: self.deny()
+
+    def joy(self, msg):
+        valid = (stamp_ok(self, msg, self.FRESH_S) and len(msg.buttons) >= 6 and len(msg.axes) >= 4
+                 and all(math.isfinite(v) and abs(v) <= 1.01 for v in msg.axes))
+        if not valid or msg.buttons[0] != 0:
+            self.last_ok = -math.inf
+            self.deny()
+            return
+        now = time.monotonic()
+        self.last_ok = now
+        if self.clear_since is None: self.clear_since = now
+
+    def tick(self):
+        now = time.monotonic()
+        ok = (self.graph_ok and now-self.graph_at <= .25 and now-self.last_ok <= self.FRESH_S
+              and self.clear_since is not None)
+        if not ok:
+            self.deny()
+            return
+        self.pub.publish(Bool(data=now-self.clear_since >= self.HOLD_S))
+
+
+class WaypointSource(Node):
+    """bench/drive only: the race stack (and its global_republisher) must be stopped there,
+    so republish the launch-selected map's raceline on WAYPOINTS. Shadow never starts this."""
+    def __init__(self):
+        super().__init__('mpc_vehicle_waypoints')
+        self.p, self.mode = profile_for(self)
+        if self.mode == 'shadow': raise ValueError('shadow uses the running stack /global_waypoints')
+        from rosidl_runtime_py.set_message import set_message_fields
+        data = json.loads((Path(self.p['map_dir'])/'global_waypoints.json').read_text())
+        self.msg = WpntArray()
+        set_message_fields(self.msg, data['global_traj_wpnts_iqp'])
+        VehicleController.raceline(self.msg)  # refuse to start on an unusable raceline
+        self.msg.header.frame_id = 'map'
+        self.pub = self.create_publisher(WpntArray, WAYPOINTS, 1)
+        self.create_timer(1., self.publish, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.publish()
+
+    def publish(self):
+        self.msg.header.stamp = self.get_clock().now().to_msg()
+        self.pub.publish(self.msg)
+
+
 def spin(cls):
     rclpy.init()
     node = None
@@ -344,9 +460,12 @@ def spin(cls):
     finally:
         if node is not None:
             if isinstance(node, VehicleGate): node.output.publish(command(node, 0., node.policy.steer))
+            if isinstance(node, EstopBridge): node.pub.publish(Bool(data=False))
             node.destroy_node()
         if rclpy.ok(): rclpy.shutdown()
 
 
 def controller_main(): spin(VehicleController)
 def gate_main(): spin(VehicleGate)
+def waypoints_main(): spin(WaypointSource)
+def estop_main(): spin(EstopBridge)

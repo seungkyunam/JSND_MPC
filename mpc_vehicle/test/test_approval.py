@@ -10,7 +10,7 @@ def test_drive_report_bound_to_map_config_and_code(tmp_path, monkeypatch):
     for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml', 'map.pgm'):
         (folder/name).write_text('{}')
     (folder/'custom_track.yaml').write_text('image: map.pgm\n')
-    p.update(map_dir=str(folder), vehicle_id='test-fixture', geometry_confirmed=True,
+    p.update(vehicle_id='test-fixture', geometry_confirmed=True,
              bench_authorized=True, independent_estop_verified=True,
              actuator_watchdog_verified=True, watchdog_timeout_s=.2)
     vehicle=tmp_path/'car.yaml'; vehicle.write_text('''
@@ -34,14 +34,15 @@ vesc/**:
     profile=tmp_path/'profile.json'; report=tmp_path/'approval.json'
     p['drive_approval']=str(report); profile.write_text(json.dumps(p))
     monkeypatch.setattr(core, 'software_id', lambda: 'test-only-code-id')
-    report.write_text(json.dumps({'binding':core.approval_binding(p), 'operator':'test', 'date':'test',
+    bound = dict(p, map_dir=str(folder))
+    report.write_text(json.dumps({'binding':core.approval_binding(bound), 'operator':'test', 'date':'test',
                                  'checks':{k:True for k in core.CHECKS}}))
-    assert core.load_profile(profile, 'drive')['vehicle_id']=='test-fixture'
+    assert core.load_profile(profile, 'drive', folder)['vehicle_id']=='test-fixture'
     (folder/'global_waypoints.json').write_text('{"changed":true}')
-    with pytest.raises(ValueError, match='stale'): core.load_profile(profile, 'drive')
+    with pytest.raises(ValueError, match='stale'): core.load_profile(profile, 'drive', folder)
     (folder/'global_waypoints.json').write_text('{}')
     monkeypatch.setattr(core, 'software_id', lambda: 'changed-code')
-    with pytest.raises(ValueError, match='stale'): core.load_profile(profile, 'drive')
+    with pytest.raises(ValueError, match='stale'): core.load_profile(profile, 'drive', folder)
 
 
 def test_launch_default_is_shadow_and_no_original_race_include():

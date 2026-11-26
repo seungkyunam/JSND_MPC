@@ -53,6 +53,60 @@ def map_yaml_path(folder):
     return candidates[0]
 
 
+def validate_map_dir(folder):
+    """Map folder used by bench/drive localization; never stored in the vehicle profile."""
+    folder = Path(folder)
+    map_yaml = map_yaml_path(folder)
+    for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml'):
+        if not (folder/name).is_file(): raise ValueError(f'missing map file: {name}')
+    import yaml
+    map_data = yaml.safe_load(map_yaml.read_text())
+    image = Path(map_data['image'])
+    if image.is_absolute() or '..' in image.parts or not (folder/image).is_file():
+        raise ValueError('map image must be copied inside map directory')
+    return folder
+
+
+def validate_raceline(xy, speeds, max_gap=.5):
+    """Closed global raceline -> (xy[N,2], speeds[N]); raises ValueError if unusable."""
+    import numpy as np
+    xy = np.asarray(xy, dtype=float); speeds = np.asarray(speeds, dtype=float)
+    if xy.ndim != 2 or xy.shape[1:] != (2,) or speeds.shape != (len(xy),):
+        raise ValueError('malformed_raceline')
+    if len(xy) >= 2 and np.linalg.norm(xy[0]-xy[-1]) < 1.e-6:
+        xy, speeds = xy[:-1], speeds[:-1]
+    if len(xy) < 20: raise ValueError('too_few_waypoints')
+    if not np.isfinite(xy).all() or not np.isfinite(speeds).all() or np.any(speeds < 0):
+        raise ValueError('nonfinite_or_negative_raceline')
+    if np.max(np.linalg.norm(np.roll(xy, -1, axis=0)-xy, axis=1)) > max_gap:
+        raise ValueError('raceline_not_closed_loop')
+    return xy, speeds
+
+
+STANDSTILL_NOISE_MPS = .02
+
+
+def solver_speed(measured):
+    """Measured forward speed for the solver (which rejects any negative speed).
+
+    Only standstill sensor noise (EKF jitter of ~1e-4 m/s while stopped) is
+    clamped to 0. Real reverse motion is still refused, never hidden.
+    """
+    measured = float(measured)
+    if not math.isfinite(measured): raise ValueError('nonfinite speed')
+    if measured < -STANDSTILL_NOISE_MPS: raise ValueError('reverse_motion')
+    return max(0., measured)
+
+
+def combine_speeds(xy, speeds, scaled=None):
+    """Use the sector-scaled profile only to lower speeds, and only if it is the same line."""
+    import numpy as np
+    if scaled is None: return speeds
+    scaled_xy, scaled_speeds = scaled
+    if scaled_xy.shape != xy.shape or np.max(np.abs(scaled_xy-xy)) > 1.e-3: return speeds
+    return np.minimum(speeds, scaled_speeds)
+
+
 def approval_binding(p):
     normalized = dict(p); normalized['drive_approval'] = ''
     h = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode())
@@ -66,10 +120,17 @@ def approval_binding(p):
     return h.hexdigest()
 
 
-def load_profile(path, mode):
+def load_profile(path, mode, map_dir=None):
+    """Vehicle-only profile. Maps are never part of it:
+
+    shadow follows the running stack's /global_waypoints; bench/drive take an
+    explicit map_dir argument for their own localization and waypoint source.
+    """
     if mode not in ('shadow', 'bench', 'drive'):
         raise ValueError('mode must be shadow, bench or drive')
     p = json.loads(Path(path).read_text())
+    if 'map_dir' in p:
+        raise ValueError('vehicle profile must not contain map_dir; pass the map at launch instead')
     for name, low, high in [('wheelbase', .1, 1.), ('max_steer_rad', .01, .3),
                           ('max_steer_rate_radps', .01, 1.), ('speed_limit_mps', .01, .5),
                           ('acceleration_mps2', .01, .5), ('deceleration_mps2', .01, 2.),
@@ -79,15 +140,14 @@ def load_profile(path, mode):
             raise ValueError(f'invalid commissioning limit: {name}')
     if not math.isfinite(p['pose_to_rear_axle_m']) or abs(p['pose_to_rear_axle_m']) > 1:
         raise ValueError('invalid signed rear axle offset')
-    folder = Path(p['map_dir'])
-    map_yaml = map_yaml_path(folder)
-    for name in ('global_waypoints.json', 'speed_scaling.yaml', 'ot_sectors.yaml'):
-        if not (folder/name).is_file(): raise ValueError(f'missing map file: {name}')
     import yaml
-    map_data = yaml.safe_load(map_yaml.read_text())
-    image = Path(map_data['image'])
-    if image.is_absolute() or '..' in image.parts or not (folder/image).is_file():
-        raise ValueError('map image must be copied inside map directory')
+    if mode == 'shadow':
+        if map_dir:
+            raise ValueError('shadow follows the running stack /global_waypoints; do not pass map_dir')
+    else:
+        if not map_dir:
+            raise ValueError(f'{mode} requires an explicit map_dir argument')
+        p['map_dir'] = str(validate_map_dir(map_dir))
     for key in ('vehicle_config', 'static_transforms'):
         if not Path(p[key]).is_file(): raise ValueError(f'missing {key}')
     for name in ('joy_source_node', 'estop_source_node'):
