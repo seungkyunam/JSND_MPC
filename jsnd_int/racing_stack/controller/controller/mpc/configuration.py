@@ -53,6 +53,7 @@ MPC_DEFAULTS = {
     # Step 47 (integrated only; 0 = previous behaviour)
     'mpc_brake_lead_s': 0.,
     'mpc_steer_preview_s': 0.,
+    'mpc_time_weighted_accel_cost': False,
 }
 
 
@@ -106,4 +107,5 @@ def make_config(values, wheelbase, wheelbase_explicit, loop_rate):
         max_heading_error=values['mpc_max_heading_error_rad'],
         brake_lead_s=float(values['mpc_brake_lead_s']),
         steer_preview_s=float(values['mpc_steer_preview_s']),
+        time_weighted_accel_cost=values['mpc_time_weighted_accel_cost'],
     )

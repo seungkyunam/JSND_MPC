@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 import controller.mpc
 ROOT = Path(__file__).resolve().parents[2]
-controller.mpc.__path__.insert(0, str(ROOT/'jsnd_int/racing_stack/controller/controller/mpc'))
+controller.mpc.__path__ = [str(ROOT/'jsnd_int/racing_stack/controller/controller/mpc'),
+                           *controller.mpc.__path__]
 from controller.mpc.integrated_mpc import IntegratedMPC, IntegratedConfig
 from offline_support import load_controller, make_controller, cycle, virtual_path
 
@@ -59,7 +60,9 @@ def test_obstacle_cap_and_invalid_input():
     p=virtual_path('straight'); m=IntegratedMPC(config())
     r=m.solve([0,0,0,.1],p,0,safety_speed_cap=.2)
     assert r.success and r.predicted[:,3].max()<=.2001
-    assert not m.solve([0,0,0,1.],p,0,safety_speed_cap=0).success
+    brake=m.solve([0,0,0,1.],p,0,safety_speed_cap=0)
+    assert brake.success and brake.status=='braking_recovery'
+    assert brake.acceleration <= -m.config.max_decel + .01
     assert not m.solve([0,0,0,0],None,0).success
 
 
@@ -75,13 +78,18 @@ def test_controller_trailing_and_speed_independence():
     cls=load_controller(ROOT/'jsnd_int/racing_stack/controller/controller/combined/src/Controller.py')
     outputs=[]
     for val in [0., 10., np.nan]:
-        c=make_controller(cls=cls,lateral_controller='MPC',lateral_mpc=IntegratedMPC(config()))
+        # This test checks speed-column independence/soft STOP, not host scheduling.
+        c=make_controller(cls=cls,lateral_controller='MPC',lateral_mpc=IntegratedMPC(
+            config(dt=.05, solver_time_limit=.04, deadline=.05)))
         p=virtual_path('straight');p[:,2]=val
         out=cycle(c,p,position=[0,0,0],speed=.1)
         assert c.mpc_result.success,c.mpc_result.status
         outputs.append(out[:4])
         out=cycle(c,p,position=[0,0,0],speed=.1,state='TRAILING',opponent=None)
-        assert out[0]==0 and not c.mpc_result.success
+        assert out[0]<outputs[-1][0] and not c.mpc_result.success
+        for _ in range(c.mpc_fallback_max_ticks+1):
+            out=cycle(c,p,position=[0,0,0],speed=.1,state='TRAILING',opponent=None)
+        assert out[0]==0
     np.testing.assert_allclose(outputs,np.tile(outputs[0],(3,1)),atol=1e-10)
 
 
@@ -149,14 +157,14 @@ def test_friction_polygon_axis_limits_and_inner_ellipse():
 
 
 @pytest.mark.parametrize('reason', IntegratedMPC.CONTINUATION_REASONS)
-def test_transient_failure_two_ticks_then_stop(reason, monkeypatch):
+def test_transient_failure_bounded_ticks_then_stop(reason, monkeypatch):
     m = IntegratedMPC(config()); p = virtual_path('straight')
     r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
     plan = m.plan
     # Deterministic wall clock; the logical control tick still advances.
     monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: plan['started']+.02)
     m._solve = lambda *args: m._fail(reason, 0.)
-    for tick in [1, 2]:
+    for tick in range(1, IntegratedMPC.MAX_CONTINUATION_TICKS+1):
         t = tick*m.config.dt
         state = np.array([np.interp(t, m.node_times, plan['predicted'][:, j]) for j in range(4)])
         out = m.solve(state, p, r.steering)
@@ -223,12 +231,15 @@ def test_osqp_failure_reuses_only_previously_verified_controls(status, monkeypat
     assert abs(continued.steering-r.steering) <= m.config.max_steer_rate*m.config.dt+1e-9
 
 
-def test_continuation_cannot_skip_over_control_stage(monkeypatch):
+def test_continuation_revalidates_short_stages_and_expires(monkeypatch):
     m = IntegratedMPC(config(preview_dt=.01)); p = virtual_path('straight')
     r = m.solve([0, 0, 0, .1], p, 0.); assert r.success
     then = m.plan['started']+.02
     monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: then)
     monkeypatch.setattr(m, '_solve', lambda *args: m._fail('deadline_exceeded', 0.))
+    out=m.solve(r.predicted[1], p, r.steering)
+    assert out.success and abs(out.acceleration)<=m.config.max_accel
+    monkeypatch.setattr('controller.mpc.integrated_mpc.perf_counter', lambda: then+1.)
     assert not m.solve(r.predicted[1], p, r.steering).success
 
 
@@ -257,16 +268,17 @@ def test_step26_standstill_far_behind_reference_is_not_stop():
         assert r.success, r.status
 
 
-def test_step26_braking_recovery_small_overshoot_brakes_large_stops():
+def test_step35_safety_cap_drop_brakes_without_losing_tracking():
     # Speed slightly above an (obstacle) cap the full deceleration cannot meet in
     # 20 ms: brake as hard as feasible while tracking instead of STOP.
     p = virtual_path('straight')
     r = IntegratedMPC(car_config()).solve([0., 0., 0., 1.2], p, 0., safety_speed_cap=1.)
     assert r.success and r.status == 'braking_recovery', r.status
     assert r.acceleration <= -5.+1e-2           # caps carry +1e-4 m/s numerical slack
-    # Overshoot beyond the continuation speed tolerance (0.30 m/s) still STOPs.
+    # Step 35: sudden obstacle cap drops also request maximum feasible braking.
     r = IntegratedMPC(car_config()).solve([0., 0., 0., 2.], p, 0., safety_speed_cap=1.)
-    assert not r.success and r.status == 'braking_envelope_infeasible'
+    assert r.success and r.status == 'braking_recovery'
+    assert r.acceleration <= -4.99
 
 
 def test_step26_stacked_matrix_equals_vstack():

@@ -1,5 +1,7 @@
 # NEXT_ACTION — 재개 절차 (새 Claude 세션은 이 문서부터)
 
+> **Step 51부터는 [STEP51_RUNBOOK.md](STEP51_RUNBOOK.md)를 우선한다.** Step50 최신 기반 검토 결과는 [STEP51_FINAL_OFFLINE_REVIEW.md](STEP51_FINAL_OFFLINE_REVIEW.md). 아래의 과거 재구축 지시는 현장에 재적용하지 않는다. 실차 적용은 사용자 승인 후이며 가속 개선 후보 기본값은 OFF다.
+
 > **2026-11-25 인수인계: 최신 상태는 [HANDOVER.md](HANDOVER.md)와 [STEP50_STEP49_RUN_ANALYSIS.md](STEP50_STEP49_RUN_ANALYSIS.md)를 먼저 본다.** 아래 내용은 11-22~24 기록이다.
 
 ## 0. 현재 위치 (2026-11-22 단계 12 — WORK_STATUS 참고)

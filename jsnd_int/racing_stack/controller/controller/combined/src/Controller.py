@@ -175,6 +175,7 @@ class Controller:
         self.pose_to_rear_axle_m = pose_to_rear_axle_m
         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
         self.mpc_result = None
+        self.mpc_speed_diagnostics = {}
         self.mpc_trailing_cap = None
         self.mpc_static_approach_decel_mps2 = float(mpc_static_approach_decel_mps2)
         self.mpc_envelope_recovery_speed_mps = max(0.0, float(mpc_envelope_recovery_speed_mps))
@@ -246,6 +247,8 @@ class Controller:
         (already within the profile/curvature/max_speed caps), never more than
         mpc_cmd_max_lead_mps above the measured speed (anti-windup), never < 0.
         """
+        self.mpc_speed_diagnostics = {'measured_mps': float(measured),
+                                      'status': str(result.status)}
         if not result.success:
             # Soft STOP (step 32): a STOP while moving ramps the setpoint down at the MPC's
             # own max_decel for at most mpc_fallback_max_ticks, instead of a 0 setpoint
@@ -276,6 +279,17 @@ class Controller:
         upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
+        self.mpc_speed_diagnostics.update(
+            optimal_accel_mps2=float(result.acceleration), applied_accel_mps2=accel,
+            predicted_first_mps=float(result.speed),
+            predicted_peak_mps=float(np.max(result.predicted[:, 3])),
+            predicted_speed_mps=result.predicted[:, 3].tolist(),
+            optimal_accel_horizon_mps2=result.controls[:, 0].tolist(),
+            command_unclipped_mps=float(command), command_clipped_mps=self.mpc_speed_cmd,
+            command_upper_mps=float(upper), lead_limit_mps=float(measured + self.mpc_cmd_max_lead_mps),
+            jerk_limited=bool(accel < result.acceleration - 1e-6),
+            lead_limited=bool(command > measured + self.mpc_cmd_max_lead_mps + 1e-6),
+            plan_limited=bool(command > float(np.max(result.predicted[:, 3])) + 1e-6))
         return self.mpc_speed_cmd
 
     # Behaviour/input STOPs keep the immediate 0 setpoint (state-machine semantics unchanged).
@@ -334,6 +348,7 @@ class Controller:
         # states stop rather than silently losing opponent-following safeguards.
         # TRAILING: the MPC tracks the local path with every waypoint speed cap clipped
         # to the PP trailing-controller command (target gap / static standoff).
+        self.mpc_speed_diagnostics = {}  # recovery must not publish the previous solve's fields
         measured = 0.0
         try:
             position = np.asarray(position, dtype=float)
@@ -409,6 +424,8 @@ class Controller:
         if self.mpc_trailing_cap is not None:
             speed_cmd = min(speed_cmd, self.mpc_trailing_cap)
             self.mpc_speed_cmd = speed_cmd
+        self.mpc_speed_diagnostics.update(controller_speed_mps=float(speed_cmd),
+                                         trailing_cap_mps=self.mpc_trailing_cap)
         point = result.reference[-1, :2] if result.success else rear[:2]
         nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
         return (speed_cmd, result.acceleration, 0., steering,

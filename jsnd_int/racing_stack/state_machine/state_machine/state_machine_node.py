@@ -1048,7 +1048,12 @@ class StateMachine(Node):
         gap=12.5m) and OVERTAKE never sees the 'no enemy in front' exit. Same idea as
         the 0.5*track_length windows used for the dynamic-opponent checks below."""
         if self.track_length and self.track_length > 0.0:
-            return min(float(horizon_m), max(0.0, self.track_length - self.obstacle_rear_exclusion_m))
+            # Step 51: L-rear_exclusion only rejects the last two metres behind
+            # ego. A passed obstacle 3--4 m behind on the 13.9 m lap still looked
+            # 10--11 m ahead. Use the unambiguous forward half-lap, as the dynamic
+            # opponent checks do, while retaining a larger configured exclusion.
+            return min(float(horizon_m), 0.5 * self.track_length,
+                       max(0.0, self.track_length - self.obstacle_rear_exclusion_m))
         return float(horizon_m)
 
     def _check_enemy_in_front(self) -> bool:

@@ -5,7 +5,7 @@ Only autodrive segments with actual speed > 0.5 m/s count for tracking/steering.
 Braking event = mux output speed cmd drops to <=0.05 while actual speed > 1.0 m/s;
 distance/time measured until actual speed < 0.1 m/s (car_state/odom pose).
 Criteria are suggestions for the go/no-go to the next profile; nothing is changed."""
-import sys, math, argparse, bisect
+import sys, math, argparse, bisect, json
 import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
@@ -16,6 +16,7 @@ r = rosbag2_py.SequentialReader()
 r.open(rosbag2_py.StorageOptions(uri=a.bag, storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
 types = {t.name: get_message(t.type) for t in r.get_all_topics_and_types()}
 odom, fren, out, ctl, host, estop, st, el = [], [], [], [], [], [], [], []
+mpc_diagnostics = []
 while r.has_next():
     topic, raw, t = r.read_next(); t *= 1e-9; m = deserialize_message(raw, types[topic])
     if topic == '/car_state/odom':
@@ -27,6 +28,11 @@ while r.has_next():
     elif topic == '/simple_mux/estop_state': estop.append((t, m.data))
     elif topic == '/controller/mpc_status': st.append((t, m.data))
     elif topic == '/controller/mpc_elapsed_ms': el.append((t, m.data))
+    elif topic == '/controller/mpc_diagnostics':
+        try:
+            mpc_diagnostics.append((t, json.loads(m.data)))
+        except (ValueError, TypeError):
+            pass
 
 def at(seq, t, default=None):
     i = bisect.bisect_right([s[0] for s in seq], t) - 1 if seq else -1
@@ -47,6 +53,20 @@ dur = (odom[-1][0] - odom[0][0]) if len(odom) > 1 else 0
 vmax = max((o[3] for o in odom), default=0)
 print(f"== {a.bag}\n   span {dur:.0f} s | max speed {vmax:.2f} m/s | autodrive samples "
       f"{sum(1 for h in host if h[1]=='autodrive')}/{len(host)}")
+
+# Step 51: use actual MPC optimizer/output layers, never infer optimal acceleration
+# from a sparse VESC braking log. Report absence explicitly for old bags.
+diag = [d for t, d in mpc_diagnostics if is_auto(t) and
+        isinstance(d.get('optimal_accel_mps2'), (int, float))]
+if diag:
+    for key in ('optimal_accel_mps2', 'applied_accel_mps2', 'predicted_first_mps',
+                'predicted_peak_mps', 'command_unclipped_mps', 'command_clipped_mps'):
+        values = [d[key] for d in diag if isinstance(d.get(key), (int, float))]
+        print(f'[MPC LAYERS] {key}: p50={pct(values,.5):.3f} p95={pct(values,.95):.3f}')
+    for key in ('lead_limited', 'jerk_limited', 'plan_limited'):
+        print(f'[MPC LAYERS] {key}: {100*sum(bool(d.get(key)) for d in diag)/len(diag):.1f}% of solved autodrive samples')
+else:
+    print('[MPC LAYERS] no solved autodrive diagnostics; optimizer bottleneck cannot be identified from this bag')
 
 # --- tracking (frenet d = lateral offset from raceline)
 d = [abs(f[2]) for f in fren if is_auto(f[0]) and speed(f[0]) > 0.5]

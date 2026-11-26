@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Local-only Step 45 overlay install/rollback. Never connects to a vehicle.
+"""Local-only manifest-based overlay install/rollback. Never connects to a vehicle.
 
-Refuses unknown destination revisions; copies only the reviewed five files.
-Vehicle YAML, maps, EKF, simple_mux and E-stop are never deployment targets.
+Refuses unknown destination revisions; copies only files in the selected manifest.
+The default is the historical Step 45 manifest; Step 51 supplies --manifest.
 """
 import argparse
 import hashlib
@@ -25,7 +25,7 @@ def check(target):
         if digest(OVERLAY / name) != hashes['new_sha256']:
             raise RuntimeError(f'checkout differs from release manifest: {name}')
         if digest(target / name) != hashes['base_sha256']:
-            raise RuntimeError(f'destination differs from Step 44 baseline: {name}; review local changes, do not force-copy')
+            raise RuntimeError(f'destination differs from manifest baseline: {name}; review local changes, do not force-copy')
     return manifest
 
 
@@ -43,7 +43,7 @@ def apply(target, backup):
         dst = target / name
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(OVERLAY / name, dst)
-    print(f'Applied five files. Rollback backup: {backup}')
+    print(f'Applied {len(manifest["files"])} files. Rollback backup: {backup}')
 
 
 def restore(backup):
@@ -60,20 +60,23 @@ def restore(backup):
             (target / name).unlink(missing_ok=True)
         else:
             shutil.copy2(backup / 'original' / name, target / name)
-    print(f'Restored source in {target}; rebuild controller and stack_master before launch.')
+    print(f'Restored source in {target}; rebuild the affected ROS packages before launch.')
 
 
 def main():
+    global MANIFEST
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['check', 'apply', 'restore'])
     parser.add_argument('--target', type=Path, default=Path.home() / 'JSND_INT/src/racing_stack')
     parser.add_argument('--backup', type=Path)
+    parser.add_argument('--manifest', type=Path, default=MANIFEST)
     args = parser.parse_args()
+    MANIFEST = args.manifest
     if args.action != 'check' and args.backup is None:
         parser.error('--backup is required for apply/restore')
     if args.action == 'check':
         check(args.target.resolve())
-        print('Five destination files match Step 44; configuration and maps will remain untouched.')
+        print('All destination files match the selected manifest baseline.')
     elif args.action == 'apply':
         apply(args.target.resolve(), args.backup.resolve())
     else:

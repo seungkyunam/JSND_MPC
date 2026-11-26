@@ -16,7 +16,9 @@ OUT=$H/bench_logs/bags/step45_${M}_$(date +%Y%m%d_%H%M%S)
 T="/car_state/odom /car_state/odom_frenet /pf/pose/odom /vesc/sensors/imu_corrected /imu/data \
 /vesc/high_level/ackermann_cmd /vesc/ackermann_cmd /vesc/sensors/core /state_machine \
 /simple_mux/active_host /simple_mux/estop_state /scan \
-/controller/mpc_status /controller/mpc_elapsed_ms /controller/mpc_cycle_ms /controller/mpc_loop_period_ms"
+/controller/mpc_status /controller/mpc_elapsed_ms /controller/mpc_cycle_ms /controller/mpc_loop_period_ms \
+/controller/mpc_diagnostics /tracking/obstacles /local_waypoints /global_waypoints \
+/behavior_strategy /state_machine/debug /state_machine/trailing_target"
 tmux new-session -d -s rec "bash -c 'source /opt/ros/jazzy/setup.bash; source $H/JSND/install/local_setup.bash; \
 source $H/JSND_INT/install/local_setup.bash; \
 export ROS_DOMAIN_ID=173 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI=file://$H/JSND/src/racing_stack/cyclonedds.xml; \

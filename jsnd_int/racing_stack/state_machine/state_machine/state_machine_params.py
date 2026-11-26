@@ -138,7 +138,7 @@ class StateMachineParams:
             ParameterDescriptor(
                 description="Short-track guard: obstacle gaps are forward Frenet distances modulo the lap, so an "
                             "obstacle just behind the car reads as almost one lap ahead. interest/gb horizons are "
-                            "capped at track_length - this [m] (no effect when the horizons are shorter than that)",
+                            "capped at min(half a lap, track_length - this [m])",
                 type=ParameterType.PARAMETER_DOUBLE,
             ),
         )

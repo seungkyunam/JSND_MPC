@@ -29,12 +29,17 @@ class IntegratedConfig(MPCConfig):
     # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
     # starts before the corner, tightening only). steer_preview_s: steering
     # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
-    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s')   # class attribute, not a field
+    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s', 'time_weighted_accel_cost')
     brake_lead_s: float = 0.
     steer_preview_s: float = 0.
+    # Opt-in until command/pose delay is measured: equal stage penalties charge
+    # the 20 ms executed action as much as a 50 ms future action (postponement).
+    time_weighted_accel_cost: bool = False
 
     def __post_init__(self):
         super().__post_init__()
+        if type(self.time_weighted_accel_cost) is not bool:
+            raise ValueError('time_weighted_accel_cost must be boolean')
         if self.braking_preview_ratio > 1.:
             raise ValueError('braking preview cannot exceed maximum deceleration')
         for name in ('brake_lead_s', 'steer_preview_s'):
@@ -131,7 +136,10 @@ class IntegratedMPC:
             d[k, 2*k+1] = 1.
             if k: d[k, 2*k-1] = -1.
         self.d = d
-        self.h_base = np.diag(np.tile([config.r_accel, config.r_steer], n)) + config.r_rate*d.T@d
+        penalties = np.tile([config.r_accel, config.r_steer], n)
+        if config.time_weighted_accel_cost:
+            penalties[0::2] *= self.periods / config.preview_dt
+        self.h_base = np.diag(penalties) + config.r_rate*d.T@d
         # Speed rows of the condensed prediction: v_{k+1} = v_0 + sum_j<=k periods_j*a_j.
         # Row 3 of every linearised A_k is [0,0,0,1] and B_k[3] = [period_k, 0], so these
         # rows never change; appended friction rows have fixed sparsity but variable values.

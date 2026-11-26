@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import json
 import time
 import numpy as np
 import rclpy
@@ -181,6 +182,7 @@ class ControllerManager(Node):
                                      self.mux_host_cb, 10)
             self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
             self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
+            self.mpc_diag_pub = self.create_publisher(String, '/controller/mpc_diagnostics', 10)
             # Output period vs computation, reported separately: wall time between
             # control-loop starts, and the whole loop's compute time (MPC solve
             # alone is /controller/mpc_elapsed_ms).
@@ -534,6 +536,16 @@ class ControllerManager(Node):
         if result is not None and self.state != "FTGONLY":
             self.mpc_time_pub.publish(Float32(data=float(1000 * result.elapsed_s)))
             self.mpc_status_pub.publish(String(data=str(result.status)))
+            if self.controller.mpc_speed_source == 'integrated':
+                diagnostic = dict(self.controller.mpc_speed_diagnostics)
+                diagnostic.update(stamp_ns=self.get_clock().now().nanoseconds,
+                                  state=str(self.state), guarded_speed_mps=float(speed),
+                                  steering_rad=float(self.controller.curr_applied_steering), iterations=int(result.iterations),
+                                  solver_ms=float(result.solver_s * 1000),
+                                  status=str(result.status))
+                diagnostic = {k: (None if isinstance(v, float) and not np.isfinite(v) else v)
+                              for k, v in diagnostic.items()}
+                self.mpc_diag_pub.publish(String(data=json.dumps(diagnostic, allow_nan=False)))
         return speed, acceleration
 
     def mapping_loop(self):

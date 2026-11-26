@@ -85,7 +85,7 @@ def test_legacy_prediction_preserved_and_history_replaces_it():
     # Capture solver input without running OSQP; verifies the wiring, not just helper math.
     for enabled in (False, True):
         c, _ = env.lap_sim.build('mpc', '8p88', {'mpc_speed_source': 'integrated',
-            'mpc_history_prediction': enabled}, 50)
+            'mpc_history_prediction': enabled, 'mpc_latency_comp_s': .1}, 50)
         c.pose_prediction.clock = lambda: .1
         c.curr_applied_steering = .2
         captured = []
