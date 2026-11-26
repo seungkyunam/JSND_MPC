@@ -1,0 +1,179 @@
+From 69b9193dd8c00c1ab7d5ebd839cb625d017b008f Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Thu, 26 Nov 2026 20:11:27 +0900
+Subject: [PATCH] Step 55: latch avoidance side once inside the transition for
+ the same first obstacle
+
+19:55 lowspeed run (Step 54): side flips RIGHT->LEFT 0.9 m before the
+obstacle when group membership changed (group_key mismatch disables
+hysteresis; ladder opposite/wider rungs then win) -> MPC heading envelope
+STOP -> group_track_too_narrow -> TRAILING stop. While committed (same first
+blocker bucket +-1, inside pre_dist, |vs| >= side_commit_min_speed_mps 0.3)
+only the committed side is tried; failure publishes no path (TRAILING, safety
+unchanged). Releases at standstill so a re-plan is possible. 0 disables.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../spliner/spliner/static_avoidance_node.py  | 40 ++++++++++++++++++-
+ planner/spliner/test/test_static_avoidance.py | 34 +++++++++++++++-
+ 2 files changed, 71 insertions(+), 3 deletions(-)
+
+diff --git a/planner/spliner/spliner/static_avoidance_node.py b/planner/spliner/spliner/static_avoidance_node.py
+index 9783b81..601e166 100644
+--- a/planner/spliner/spliner/static_avoidance_node.py
++++ b/planner/spliner/spliner/static_avoidance_node.py
+@@ -137,6 +137,11 @@ class StaticObstacleSpliner(Node):
+         # --- planner memory ---
+         self.last_side: Optional[str] = None
+         self.last_side_obs_id: Optional[int] = None
++        # Step 55: s-bucket of the first blocker the last path was built for. The
++        # side commit below is keyed on it, not on the whole group key, because
++        # group membership churns (a member appears/leaves) while the car is
++        # already moving over for the same first obstacle.
++        self.last_side_first_bucket: Optional[int] = None
+         # Absolute s at which the lateral transition for `latched_group` was first
+         # decided to begin. Latched for the same reason `last_side` is: the shape
+         # of the manoeuvre has to stop being re-decided every frame.
+@@ -221,6 +226,7 @@ class StaticObstacleSpliner(Node):
+             # --- stability ---
+             "path_hold_s": 0.25,
+             "side_hysteresis_m": 0.10,
++            "side_commit_min_speed_mps": 0.3,
+         }
+         for key, value in defaults.items():
+             self.declare_parameter(key, value)
+@@ -256,6 +262,7 @@ class StaticObstacleSpliner(Node):
+         "max_speed_mps": "max_speed_mps",
+         "path_hold_s": "path_hold_s",
+         "side_hysteresis_m": "side_hysteresis_m",
++        "side_commit_min_speed_mps": "side_commit_min_speed_mps",
+     }
+ 
+     def _load_parameters(self):
+@@ -488,6 +495,7 @@ class StaticObstacleSpliner(Node):
+             # judged on its own geometry.
+             self.last_side = None
+             self.last_side_obs_id = None
++            self.last_side_first_bucket = None
+             self.latched_group = None
+             self.latched_move_start = None
+             dbg["obs_present"] = False
+@@ -550,7 +558,20 @@ class StaticObstacleSpliner(Node):
+ 
+         preferred = self._preferred_group_side(group_key, left_room, right_room)
+         wider = "left" if left_room >= right_room else "right"
+-        sides = {"preferred": preferred, "opposite": _opposite(preferred), "wider": wider}
++        first_bucket = int(round(first.s_center / self._GROUP_KEY_BUCKET_M))
++        committed = self._side_committed(first_bucket, first_u, pre_dist)
++        if committed:
++            # Step 55: already moving over for this obstacle -- never re-plan to
++            # the other side. 19:55 run: RIGHT->LEFT flips 0.9 m before the
++            # obstacle (group key changed, so hysteresis did not apply) gave the
++            # MPC a path the car could not reach -> heading envelope STOP. If the
++            # committed side no longer fits, publish nothing (state machine
++            # TRAILING); the commit releases below side_commit_min_speed_mps.
++            preferred = wider = self.last_side
++            sides = {"preferred": preferred, "opposite": preferred, "wider": preferred}
++        else:
++            sides = {"preferred": preferred, "opposite": _opposite(preferred), "wider": wider}
++        dbg["side_committed"] = committed
+ 
+         tried = set()
+         last_reason = "no_valid_candidate"
+@@ -581,6 +602,7 @@ class StaticObstacleSpliner(Node):
+                 )
+             self.last_side = side
+             self.last_side_obs_id = group_key
++            self.last_side_first_bucket = first_bucket
+             dbg.update({"side": side.upper(), "candidate_valid": True,
+                         "apex_d": apex_d, "rung": rung})
+             self._fill_msg(out, sample_s, sample_d, xy, psi, kappa, side)
+@@ -773,6 +795,20 @@ class StaticObstacleSpliner(Node):
+         return (float(np.min(self.gb_d_left[idx])) - left_apex,
+                 float(np.min(self.gb_d_right[idx])) + right_apex)
+ 
++    def _side_committed(self, first_bucket: int, first_u: float, pre_dist: float) -> bool:
++        """True once the car is inside the lateral transition for the same first
++        blocker it last planned around, at speed. A side change from there needs a
++        lateral jump the car cannot follow."""
++        if self.last_side is None or self.last_side_first_bucket is None:
++            return False
++        if self.side_commit_min_speed_mps <= 0.0:
++            return False    # disabled
++        if abs(self.cur_vs) < self.side_commit_min_speed_mps:
++            return False    # (near) standstill: free to re-decide
++        if abs(first_bucket - self.last_side_first_bucket) > 1:
++            return False
++        return (first_u - self.cur_s) <= pre_dist
++
+     def _preferred_group_side(self, group_key, left_room, right_room) -> str:
+         """Sticky same-side choice for a complete obstacle group."""
+         bias = 0.0
+@@ -1127,7 +1163,7 @@ class StaticObstacleSpliner(Node):
+                  f"obs_s={fmt('obs_s')} ego_s={fmt('ego_s')} side={fmt('side')}"]
+         lines.append(f"  left_clearance={fmt('left_clearance')} right_clearance={fmt('right_clearance')} "
+                      f"candidate_valid={str(dbg.get('candidate_valid', False)).lower()} "
+-                     f"rung={fmt('rung')} pre_dist={fmt('pre_dist')}m")
++                     f"rung={fmt('rung')} pre_dist={fmt('pre_dist')}m commit={int(bool(dbg.get('side_committed')))}")
+         lines.append(f"  cache_used={str(dbg.get('cache_used', False)).lower()} "
+                      f"path_age={fmt('path_age', '.3f')} path_points={dbg.get('path_points', 0)} "
+                      f"planning_time_ms={fmt('planning_time_ms', '.1f')}")
+diff --git a/planner/spliner/test/test_static_avoidance.py b/planner/spliner/test/test_static_avoidance.py
+index a5c6da5..11eeb1d 100644
+--- a/planner/spliner/test/test_static_avoidance.py
++++ b/planner/spliner/test/test_static_avoidance.py
+@@ -116,7 +116,7 @@ def build_node(track, cur_s, cur_d=0.0, cur_vs=3.0):
+         tail_m=4.0, min_path_end_m=11.0, min_apex_lead_m=0.5,
+         boundary_margin=0.19, ego_width_m=EGO_WIDTH, min_free_dist_m=MIN_FREE_DIST,
+         ego_grace_m=1.0, use_map_filter=True, kernel_size=4, max_speed_mps=2.0,
+-        path_hold_s=0.25, side_hysteresis_m=0.10,
++        path_hold_s=0.25, side_hysteresis_m=0.10, side_commit_min_speed_mps=0.3,
+         # _approach_dist -> _corner_exit_limit reads these. Absent, every test that
+         # reached _plan died with AttributeError instead of testing anything.
+         pre_dist_kappa_max=0.30, pre_dist_corner_min_m=4.0,
+@@ -147,6 +147,7 @@ def build_node(track, cur_s, cur_d=0.0, cur_vs=3.0):
+     node.cur_yaw = float(node.gb_psi[int(cur_s / node.wpnt_dist)])
+     node.cur_x = node.cur_y = 0.0
+     node.last_side = node.last_side_obs_id = None
++    node.last_side_first_bucket = None
+     node.last_good_path = node.last_good_obs_id = None
+     node.last_good_generated = 0
+     # Approach-shape latch (_latch_move_start) and the held-path bookkeeping
+@@ -498,3 +499,34 @@ def test_approach_latch_survives_an_obstacle_id_change():
+ 
+     assert node.latched_move_start == pytest.approx(move_start_on_first_sight), (
+         "an id change re-latched the approach and restarted the manoeuvre")
++
++
++# ---------------------------------------------------------------- Step 55
++def _committed_then_wider_other_side(cur_vs):
++    """Car 1.5 m before the obstacle (inside pre_dist), side already chosen; then
++    the obstacle reading jumps so the OTHER side is now clearly wider."""
++    node = build_node(make_track(), cur_s=20.0, cur_vs=cur_vs)
++    node.obstacles = [obstacle(7, 21.5, 0.05)]
++    first = {}
++    node._plan(first)
++    assert first.get("candidate_valid"), first
++    first_side = first["side"]
++    shift = -0.45 if first_side == "RIGHT" else 0.45    # move it onto that side's line
++    node.obstacles = [obstacle(9, 21.5, shift)]         # new id, same place bucket
++    dbg = {}
++    node._plan(dbg)
++    return first_side, dbg
++
++
++def test_committed_side_never_flips_close_to_the_obstacle():
++    first_side, dbg = _committed_then_wider_other_side(cur_vs=1.0)
++    assert dbg.get("side_committed") is True
++    if dbg.get("candidate_valid"):
++        assert dbg["side"] == first_side, dbg
++    else:
++        assert dbg.get("side") in (first_side, "-")
++
++
++def test_commit_releases_at_standstill():
++    first_side, dbg = _committed_then_wider_other_side(cur_vs=0.1)
++    assert dbg.get("side_committed") is False
+-- 
+2.43.0
+

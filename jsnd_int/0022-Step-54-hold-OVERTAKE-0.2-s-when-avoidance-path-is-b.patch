@@ -1,0 +1,117 @@
+From e05e225997c9f26b7676bdf97e1d0c5d7fbaa775 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Thu, 26 Nov 2026 19:46:01 +0900
+Subject: [PATCH] Step 54: hold OVERTAKE <=0.2 s when avoidance path is blocked
+ only by far (>=1.5 m) obstacles
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../state_machine/state_transitions.py        | 33 +++++++++++++-
+ state_machine/test/test_ot_flicker_hold.py    | 44 +++++++++++++++++++
+ 2 files changed, 76 insertions(+), 1 deletion(-)
+ create mode 100644 state_machine/test/test_ot_flicker_hold.py
+
+diff --git a/state_machine/state_machine/state_transitions.py b/state_machine/state_machine/state_transitions.py
+index 5d92291..036489d 100644
+--- a/state_machine/state_machine/state_transitions.py
++++ b/state_machine/state_machine/state_transitions.py
+@@ -73,6 +73,11 @@ def OvertakingTransition(state_machine: "StateMachine") -> Tuple[StateType, Stat
+         return StateType.OVERTAKE, StateType.OVERTAKE
+     if ot_sustainability and state_machine.overtaking_ttl_count < state_machine.overtaking_ttl_count_threshold:
+         state_machine.overtaking_ttl_count += 1
++        state_machine.ot_flicker_hold_count = 0
++        return StateType.OVERTAKE, StateType.OVERTAKE
++    if ot_sustainability:
++        state_machine.ot_flicker_hold_count = 0
++    elif _ot_flicker_hold(state_machine):
+         return StateType.OVERTAKE, StateType.OVERTAKE
+     state_machine.overtaking_ttl_count = 0
+     close_to_raceline = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
+@@ -179,7 +184,33 @@ def ObstacleTransition(state_machine: "StateMachine", close_to_raceline) -> Tupl
+             return StateType.TRAILING, StateType.GB_TRACK
+ 
+ 
+-GB_RETURN_MAX_D_M = 1.2       # step 52: largest |d| treated as a direct return to the raceline
++OT_FLICKER_HOLD_S = 0.2       # step 54: max OVERTAKE hold while the avoidance path is momentarily not free
++OT_FLICKER_MIN_GAP_M = 1.5    # step 54: hold only if every blocking obstacle is at least this far ahead
++
++
++def _ot_flicker_hold(state_machine: "StateMachine") -> bool:
++    """Step 54 (bag 19:31): OVERTAKE<->TRAILING chattered every 0.02-0.3 s because the
++    avoidance path was judged blocked for a few ticks by a static obstacle 2.5-3.6 m
++    ahead (or the path dropped for a frame), each TRAILING tick capping speed. Keep
++    OVERTAKE for at most OT_FLICKER_HOLD_S when a path still exists and every blocking
++    obstacle is >= OT_FLICKER_MIN_GAP_M ahead. A close blocker (or no path) leaves
++    OVERTAKE immediately, as before; a persistent far blocker leaves after the hold."""
++    wpnts = (state_machine.cur_static_avoidance_wpnts if state_machine.static_overtaking_mode
++             else state_machine.cur_avoidance_wpnts)
++    count = getattr(state_machine, "ot_flicker_hold_count", 0)
++    limit = max(1, int(OT_FLICKER_HOLD_S * state_machine.rate_hz))
++    dbg = getattr(wpnts, "free_dbg", None) or {}
++    blockers = [o for o in dbg.get("obs", []) if o.get("blocked")]
++    ok = (
++        bool(getattr(wpnts, "is_init", False))
++        and count < limit
++        and all(o.get("gap") is not None and o["gap"] >= OT_FLICKER_MIN_GAP_M for o in blockers)
++    )
++    state_machine.ot_flicker_hold_count = count + 1 if ok else 0
++    return ok
++
++
++GB_RETURN_MAX_D_M = 1.2      # step 52: largest |d| treated as a direct return to the raceline
+ GB_RETURN_GAP_M = 2.5         # step 52: obstacles this far ahead (or 0.5 m behind) must clear the corridor
+ 
+ 
+diff --git a/state_machine/test/test_ot_flicker_hold.py b/state_machine/test/test_ot_flicker_hold.py
+new file mode 100644
+index 0000000..3d94ec5
+--- /dev/null
++++ b/state_machine/test/test_ot_flicker_hold.py
+@@ -0,0 +1,44 @@
++"""Step 54: OVERTAKE is held briefly (<= 0.2 s) when the avoidance path is blocked only
++by far static obstacles (bag 19:31, id 115 gap 3.6 m), and left at once for a close one."""
++import os
++import sys
++from types import SimpleNamespace
++
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
++
++from state_machine import state_transitions as st  # noqa: E402
++from state_machine.states_types import StateType  # noqa: E402
++
++
++def _sm(gap):
++    w = SimpleNamespace(is_init=True, free_dbg={"obs": [
++        {"id": 115, "gap": gap, "blocked": True}, {"id": 107, "gap": 0.4, "blocked": False}]})
++    return SimpleNamespace(
++        static_overtaking_mode=True, cur_static_avoidance_wpnts=w, cur_avoidance_wpnts=w,
++        rate_hz=50.0, overtaking_ttl_count=0, overtaking_ttl_count_threshold=10,
++        _check_overtaking_mode_sustainability=lambda: False,
++        _check_enemy_in_front=lambda: True,
++        _check_close_to_raceline=lambda *_: False,
++        _check_close_to_raceline_heading=lambda *_: False,
++    )
++
++
++def test_far_blocker_holds_then_releases(monkeypatch):
++    monkeypatch.setattr(st, "GlobalTrackingTransition", lambda *_: (StateType.TRAILING, StateType.GB_TRACK))
++    sm = _sm(3.6)
++    out = [st.OvertakingTransition(sm)[0] for _ in range(12)]
++    assert out[:10] == [StateType.OVERTAKE] * 10
++    assert out[10] == StateType.TRAILING
++
++
++def test_close_blocker_leaves_immediately(monkeypatch):
++    monkeypatch.setattr(st, "GlobalTrackingTransition", lambda *_: (StateType.TRAILING, StateType.GB_TRACK))
++    sm = _sm(1.0)
++    assert st.OvertakingTransition(sm)[0] == StateType.TRAILING
++
++
++def test_no_path_leaves_immediately(monkeypatch):
++    monkeypatch.setattr(st, "GlobalTrackingTransition", lambda *_: (StateType.TRAILING, StateType.GB_TRACK))
++    sm = _sm(3.6)
++    sm.cur_static_avoidance_wpnts.is_init = False
++    assert st.OvertakingTransition(sm)[0] == StateType.TRAILING
+-- 
+2.43.0
+

@@ -1,0 +1,210 @@
+From c8620be5c416b0c9f7e518b7ca96865fcac5920b Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Thu, 26 Nov 2026 18:07:18 +0900
+Subject: [PATCH] Step 51 deploy (GitHub 7ec7263): obstacle half-lap horizon,
+ MPC diagnostics, step51_5p0 profile (accel cost OFF by default)
+
+---
+ .../controller/combined/src/Controller.py       | 17 +++++++++++++++++
+ controller/controller/controller_manager.py     | 12 ++++++++++++
+ controller/controller/mpc/configuration.py      |  2 ++
+ controller/controller/mpc/integrated_mpc.py     | 12 ++++++++++--
+ stack_master/config/mpc_profile_step51_5p0.yaml |  7 +++++++
+ .../state_machine/state_machine_node.py         |  7 ++++++-
+ .../state_machine/state_machine_params.py       |  2 +-
+ 7 files changed, 55 insertions(+), 4 deletions(-)
+ create mode 100644 stack_master/config/mpc_profile_step51_5p0.yaml
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index 967a2c8..724706a 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -175,6 +175,7 @@ class Controller:
+         self.pose_to_rear_axle_m = pose_to_rear_axle_m
+         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
+         self.mpc_result = None
++        self.mpc_speed_diagnostics = {}
+         self.mpc_trailing_cap = None
+         self.mpc_static_approach_decel_mps2 = float(mpc_static_approach_decel_mps2)
+         self.mpc_envelope_recovery_speed_mps = max(0.0, float(mpc_envelope_recovery_speed_mps))
+@@ -246,6 +247,8 @@ class Controller:
+         (already within the profile/curvature/max_speed caps), never more than
+         mpc_cmd_max_lead_mps above the measured speed (anti-windup), never < 0.
+         """
++        self.mpc_speed_diagnostics = {'measured_mps': float(measured),
++                                      'status': str(result.status)}
+         if not result.success:
+             # Soft STOP (step 32): a STOP while moving ramps the setpoint down at the MPC's
+             # own max_decel for at most mpc_fallback_max_ticks, instead of a 0 setpoint
+@@ -276,6 +279,17 @@ class Controller:
+         upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
+                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
+         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
++        self.mpc_speed_diagnostics.update(
++            optimal_accel_mps2=float(result.acceleration), applied_accel_mps2=accel,
++            predicted_first_mps=float(result.speed),
++            predicted_peak_mps=float(np.max(result.predicted[:, 3])),
++            predicted_speed_mps=result.predicted[:, 3].tolist(),
++            optimal_accel_horizon_mps2=result.controls[:, 0].tolist(),
++            command_unclipped_mps=float(command), command_clipped_mps=self.mpc_speed_cmd,
++            command_upper_mps=float(upper), lead_limit_mps=float(measured + self.mpc_cmd_max_lead_mps),
++            jerk_limited=bool(accel < result.acceleration - 1e-6),
++            lead_limited=bool(command > measured + self.mpc_cmd_max_lead_mps + 1e-6),
++            plan_limited=bool(command > float(np.max(result.predicted[:, 3])) + 1e-6))
+         return self.mpc_speed_cmd
+ 
+     # Behaviour/input STOPs keep the immediate 0 setpoint (state-machine semantics unchanged).
+@@ -334,6 +348,7 @@ class Controller:
+         # states stop rather than silently losing opponent-following safeguards.
+         # TRAILING: the MPC tracks the local path with every waypoint speed cap clipped
+         # to the PP trailing-controller command (target gap / static standoff).
++        self.mpc_speed_diagnostics = {}  # recovery must not publish the previous solve's fields
+         measured = 0.0
+         try:
+             position = np.asarray(position, dtype=float)
+@@ -409,6 +424,8 @@ class Controller:
+         if self.mpc_trailing_cap is not None:
+             speed_cmd = min(speed_cmd, self.mpc_trailing_cap)
+             self.mpc_speed_cmd = speed_cmd
++        self.mpc_speed_diagnostics.update(controller_speed_mps=float(speed_cmd),
++                                         trailing_cap_mps=self.mpc_trailing_cap)
+         point = result.reference[-1, :2] if result.success else rear[:2]
+         nearest = int(np.argmin(np.linalg.norm(waypoints[:, :2]-rear[:2], axis=1))) if result.success else 0
+         return (speed_cmd, result.acceleration, 0., steering,
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 05c92cc..6b158e2 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env python3
+ 
+ import os
++import json
+ import time
+ import numpy as np
+ import rclpy
+@@ -181,6 +182,7 @@ class ControllerManager(Node):
+                                      self.mux_host_cb, 10)
+             self.mpc_time_pub = self.create_publisher(Float32, '/controller/mpc_elapsed_ms', 10)
+             self.mpc_status_pub = self.create_publisher(String, '/controller/mpc_status', 10)
++            self.mpc_diag_pub = self.create_publisher(String, '/controller/mpc_diagnostics', 10)
+             # Output period vs computation, reported separately: wall time between
+             # control-loop starts, and the whole loop's compute time (MPC solve
+             # alone is /controller/mpc_elapsed_ms).
+@@ -534,6 +536,16 @@ class ControllerManager(Node):
+         if result is not None and self.state != "FTGONLY":
+             self.mpc_time_pub.publish(Float32(data=float(1000 * result.elapsed_s)))
+             self.mpc_status_pub.publish(String(data=str(result.status)))
++            if self.controller.mpc_speed_source == 'integrated':
++                diagnostic = dict(self.controller.mpc_speed_diagnostics)
++                diagnostic.update(stamp_ns=self.get_clock().now().nanoseconds,
++                                  state=str(self.state), guarded_speed_mps=float(speed),
++                                  steering_rad=float(self.controller.curr_applied_steering), iterations=int(result.iterations),
++                                  solver_ms=float(result.solver_s * 1000),
++                                  status=str(result.status))
++                diagnostic = {k: (None if isinstance(v, float) and not np.isfinite(v) else v)
++                              for k, v in diagnostic.items()}
++                self.mpc_diag_pub.publish(String(data=json.dumps(diagnostic, allow_nan=False)))
+         return speed, acceleration
+ 
+     def mapping_loop(self):
+diff --git a/controller/controller/mpc/configuration.py b/controller/controller/mpc/configuration.py
+index 6d6fa57..2f37acc 100644
+--- a/controller/controller/mpc/configuration.py
++++ b/controller/controller/mpc/configuration.py
+@@ -53,6 +53,7 @@ MPC_DEFAULTS = {
+     # Step 47 (integrated only; 0 = previous behaviour)
+     'mpc_brake_lead_s': 0.,
+     'mpc_steer_preview_s': 0.,
++    'mpc_time_weighted_accel_cost': False,
+ }
+ 
+ 
+@@ -106,4 +107,5 @@ def make_config(values, wheelbase, wheelbase_explicit, loop_rate):
+         max_heading_error=values['mpc_max_heading_error_rad'],
+         brake_lead_s=float(values['mpc_brake_lead_s']),
+         steer_preview_s=float(values['mpc_steer_preview_s']),
++        time_weighted_accel_cost=values['mpc_time_weighted_accel_cost'],
+     )
+diff --git a/controller/controller/mpc/integrated_mpc.py b/controller/controller/mpc/integrated_mpc.py
+index e648bc1..d99c9a8 100644
+--- a/controller/controller/mpc/integrated_mpc.py
++++ b/controller/controller/mpc/integrated_mpc.py
+@@ -29,12 +29,17 @@ class IntegratedConfig(MPCConfig):
+     # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
+     # starts before the corner, tightening only). steer_preview_s: steering
+     # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
+-    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s')   # class attribute, not a field
++    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s', 'time_weighted_accel_cost')
+     brake_lead_s: float = 0.
+     steer_preview_s: float = 0.
++    # Opt-in until command/pose delay is measured: equal stage penalties charge
++    # the 20 ms executed action as much as a 50 ms future action (postponement).
++    time_weighted_accel_cost: bool = False
+ 
+     def __post_init__(self):
+         super().__post_init__()
++        if type(self.time_weighted_accel_cost) is not bool:
++            raise ValueError('time_weighted_accel_cost must be boolean')
+         if self.braking_preview_ratio > 1.:
+             raise ValueError('braking preview cannot exceed maximum deceleration')
+         for name in ('brake_lead_s', 'steer_preview_s'):
+@@ -131,7 +136,10 @@ class IntegratedMPC:
+             d[k, 2*k+1] = 1.
+             if k: d[k, 2*k-1] = -1.
+         self.d = d
+-        self.h_base = np.diag(np.tile([config.r_accel, config.r_steer], n)) + config.r_rate*d.T@d
++        penalties = np.tile([config.r_accel, config.r_steer], n)
++        if config.time_weighted_accel_cost:
++            penalties[0::2] *= self.periods / config.preview_dt
++        self.h_base = np.diag(penalties) + config.r_rate*d.T@d
+         # Speed rows of the condensed prediction: v_{k+1} = v_0 + sum_j<=k periods_j*a_j.
+         # Row 3 of every linearised A_k is [0,0,0,1] and B_k[3] = [period_k, 0], so these
+         # rows never change; appended friction rows have fixed sparsity but variable values.
+diff --git a/stack_master/config/mpc_profile_step51_5p0.yaml b/stack_master/config/mpc_profile_step51_5p0.yaml
+new file mode 100644
+index 0000000..753bcd1
+--- /dev/null
++++ b/stack_master/config/mpc_profile_step51_5p0.yaml
+@@ -0,0 +1,7 @@
++# Offline candidate ONLY. Requires operator approval and verified pose/servo delay.
++# Same 5 m/s ceiling and physical limits as 5p0; no command multiplication.
++# Delay mismatch tests can violate actual-plant lateral limits: not the default.
++controller_manager:
++  ros__parameters:
++    mpc_max_speed_mps: 5.0
++    mpc_time_weighted_accel_cost: true
+diff --git a/state_machine/state_machine/state_machine_node.py b/state_machine/state_machine/state_machine_node.py
+index aa2e520..3d0159d 100644
+--- a/state_machine/state_machine/state_machine_node.py
++++ b/state_machine/state_machine/state_machine_node.py
+@@ -1048,7 +1048,12 @@ class StateMachine(Node):
+         gap=12.5m) and OVERTAKE never sees the 'no enemy in front' exit. Same idea as
+         the 0.5*track_length windows used for the dynamic-opponent checks below."""
+         if self.track_length and self.track_length > 0.0:
+-            return min(float(horizon_m), max(0.0, self.track_length - self.obstacle_rear_exclusion_m))
++            # Step 51: L-rear_exclusion only rejects the last two metres behind
++            # ego. A passed obstacle 3--4 m behind on the 13.9 m lap still looked
++            # 10--11 m ahead. Use the unambiguous forward half-lap, as the dynamic
++            # opponent checks do, while retaining a larger configured exclusion.
++            return min(float(horizon_m), 0.5 * self.track_length,
++                       max(0.0, self.track_length - self.obstacle_rear_exclusion_m))
+         return float(horizon_m)
+ 
+     def _check_enemy_in_front(self) -> bool:
+diff --git a/state_machine/state_machine/state_machine_params.py b/state_machine/state_machine/state_machine_params.py
+index ad60b02..bf9658b 100644
+--- a/state_machine/state_machine/state_machine_params.py
++++ b/state_machine/state_machine/state_machine_params.py
+@@ -138,7 +138,7 @@ class StateMachineParams:
+             ParameterDescriptor(
+                 description="Short-track guard: obstacle gaps are forward Frenet distances modulo the lap, so an "
+                             "obstacle just behind the car reads as almost one lap ahead. interest/gb horizons are "
+-                            "capped at track_length - this [m] (no effect when the horizons are shorter than that)",
++                            "capped at min(half a lap, track_length - this [m])",
+                 type=ParameterType.PARAMETER_DOUBLE,
+             ),
+         )
+-- 
+2.43.0
+

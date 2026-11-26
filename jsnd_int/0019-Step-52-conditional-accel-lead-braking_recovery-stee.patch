@@ -1,0 +1,203 @@
+From d0654e6f82640187f7a2a89bb214c7a8d04a45b3 Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Thu, 26 Nov 2026 18:42:25 +0900
+Subject: [PATCH] Step 52: conditional accel lead, braking_recovery steering
+ reserve, hairpin off-line GB return
+
+---
+ .../controller/combined/src/Controller.py     | 17 ++++++++--
+ controller/controller/controller_manager.py   |  2 ++
+ controller/controller/mpc/integrated_mpc.py   | 28 ++++++++++++++--
+ stack_master/config/mpc_car.yaml              |  1 +
+ .../state_machine/state_transitions.py        | 32 +++++++++++++++++++
+ 5 files changed, 75 insertions(+), 5 deletions(-)
+
+diff --git a/controller/controller/combined/src/Controller.py b/controller/controller/combined/src/Controller.py
+index 724706a..a50de08 100644
+--- a/controller/controller/combined/src/Controller.py
++++ b/controller/controller/combined/src/Controller.py
+@@ -77,6 +77,7 @@ class Controller:
+                 lateral_mpc=None,
+                 pose_to_rear_axle_m=0.0,
+                 mpc_cmd_max_lead_mps=0.5,
++                mpc_cmd_accel_lead_mps=0.0,
+                 mpc_speed_source="integrated",
+                 mpc_plan_lateral_accel_limit=4.5,
+                 mpc_fallback_max_ticks=10,
+@@ -174,6 +175,7 @@ class Controller:
+         self.lateral_mpc = lateral_mpc
+         self.pose_to_rear_axle_m = pose_to_rear_axle_m
+         self.mpc_cmd_max_lead_mps = float(mpc_cmd_max_lead_mps)
++        self.mpc_cmd_accel_lead_mps = float(mpc_cmd_accel_lead_mps)  # step 52, 0 = off
+         self.mpc_result = None
+         self.mpc_speed_diagnostics = {}
+         self.mpc_trailing_cap = None
+@@ -276,7 +278,16 @@ class Controller:
+                         + self.mpc_accel_jerk_mps3 * self.lateral_mpc.config.dt)
+         self.mpc_applied_accel = accel
+         command = base + accel * self.lateral_mpc.config.dt
+-        upper = min(float(np.max(result.predicted[:, 3])), measured + self.mpc_cmd_max_lead_mps,
++        # Step 52 (vehicle bag 18:20): on straights the 0.5 m/s lead clipped 62% of the
++        # accelerating ticks (optimal 2.4 m/s^2, real 1.4-1.6, motor current p95 27 A).
++        # A larger lead is allowed only while a fully solved plan accelerates and never
++        # brakes inside its horizon; the plan peak / max_speed caps below still apply,
++        # and braking_recovery, continuation, late/inexact and STOP keep the 0.5 lead.
++        lead = self.mpc_cmd_max_lead_mps
++        if (self.mpc_cmd_accel_lead_mps > lead and result.status in ('solved', 'solved_late') and accel > 0.0
++                and float(np.min(np.diff(result.predicted[:, 3]))) >= -1e-3):
++            lead = self.mpc_cmd_accel_lead_mps
++        upper = min(float(np.max(result.predicted[:, 3])), measured + lead,
+                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
+         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
+         self.mpc_speed_diagnostics.update(
+@@ -286,9 +297,9 @@ class Controller:
+             predicted_speed_mps=result.predicted[:, 3].tolist(),
+             optimal_accel_horizon_mps2=result.controls[:, 0].tolist(),
+             command_unclipped_mps=float(command), command_clipped_mps=self.mpc_speed_cmd,
+-            command_upper_mps=float(upper), lead_limit_mps=float(measured + self.mpc_cmd_max_lead_mps),
++            command_upper_mps=float(upper), lead_limit_mps=float(measured + lead), lead_mps=float(lead),
+             jerk_limited=bool(accel < result.acceleration - 1e-6),
+-            lead_limited=bool(command > measured + self.mpc_cmd_max_lead_mps + 1e-6),
++            lead_limited=bool(command > measured + lead + 1e-6),
+             plan_limited=bool(command > float(np.max(result.predicted[:, 3])) + 1e-6))
+         return self.mpc_speed_cmd
+ 
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 6b158e2..8670c98 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -108,6 +108,7 @@ class ControllerManager(Node):
+         self.mpc_values = mpc_values  # also read later in global_wpnts_cb (Controller construction)
+         self.pose_to_rear_axle_m = mpc_values['mpc_pose_to_rear_axle_m']
+         self.mpc_cmd_max_lead_mps = float(self._get_param('mpc_cmd_max_lead_mps', 0.5))
++        self.mpc_cmd_accel_lead_mps = float(self._get_param('mpc_cmd_accel_lead_mps', 0.0))  # step 52, 0 = off
+         self.mpc_static_approach_decel_mps2 = float(self._get_param('mpc_static_approach_decel_mps2', 1.5))
+         self.mpc_envelope_recovery_speed_mps = float(self._get_param('mpc_envelope_recovery_speed_mps', 0.5))
+         self.mpc_accel_jerk_mps3 = float(self._get_param('mpc_accel_jerk_mps3', 0.0))  # step 47, 0 = off
+@@ -273,6 +274,7 @@ class ControllerManager(Node):
+             lateral_mpc=self.lateral_mpc,
+             pose_to_rear_axle_m=self.pose_to_rear_axle_m,
+             mpc_cmd_max_lead_mps=self.mpc_cmd_max_lead_mps,
++            mpc_cmd_accel_lead_mps=self.mpc_cmd_accel_lead_mps,
+             mpc_speed_source=self.mpc_speed_source,
+             mpc_plan_lateral_accel_limit=float(self.mpc_values['mpc_plan_lateral_accel_limit_mps2']),
+             mpc_fallback_max_ticks=max(1, int(round(float(self.mpc_values['mpc_fallback_max_s']) * self.loop_rate))),
+diff --git a/controller/controller/mpc/integrated_mpc.py b/controller/controller/mpc/integrated_mpc.py
+index d99c9a8..c028efd 100644
+--- a/controller/controller/mpc/integrated_mpc.py
++++ b/controller/controller/mpc/integrated_mpc.py
+@@ -104,6 +104,12 @@ class IntegratedMPC:
+     CONTINUATION_TOL = (.10, .15, .50)  # measured vs planned: cross-track m, heading rad, speed (faster) m/s
+     CONTINUATION_ALONG_TOL = .30        # step 49: along-track (behind/ahead of the plan) m
+     BRAKING_RECOVERY_TOL = .30          # braking-envelope overshoot answered by max braking (unchanged)
++    # Step 52 (vehicle bag 18:20): braking_recovery forced the QP onto the pure max-decel
++    # envelope, which uses the whole friction polygon -> steering p50 0.001 rad in corner 2
++    # (solved: 0.128) -> heading envelope STOP. With this on, the recovery floor reserves the
++    # lateral share the reference steering needs (same 16-gon) and brakes with the rest,
++    # never more than BRAKING_RECOVERY_TOL above the caps. False = Step 51 behaviour.
++    BRAKING_RECOVERY_STEER_RESERVE = True
+     # Step 48: OSQP eps 1e-5 -> 1e-4 (+ adaptive rho every 10 iterations). The QP residual is
+     # then up to ~1e-3, so the row check uses this tolerance; every safety property is still
+     # enforced after it on the clipped controls and the NONLINEAR prediction (coupled/lateral
+@@ -500,6 +506,22 @@ class IntegratedMPC:
+             # which leaves the corner). Bounded by the existing speed tolerance of
+             # plan continuation; a larger overshoot still STOPs. A cap is never raised
+             # above what that braking from the measured speed reaches.
++            # Step 52: speed reached when braking with the friction left after the reference
++            # steering (|delta_ref|; stage 0 at least the steering the rate limit keeps).
++            turn_reach = reachable
++            if self.BRAKING_RECOVERY_STEER_RESERVE:
++                need = np.minimum(np.abs(np.clip(delta_ref, -c.max_steer, c.max_steer)), c.max_steer)
++                need[0] = max(need[0], steer0)
++                turn_reach, vk = np.empty(n), v0
++                for k in range(n):
++                    bk = min(c.max_steer, np.arctan(c.max_lateral_accel*c.wheelbase/max(vk*vk, 1e-6)))
++                    dk_ = min(need[k], bk)
++                    eta = max(vk*vk, 1e-6)*np.tan(bk)/bk*dk_/(c.wheelbase*c.max_lateral_accel)
++                    dec = float(np.min(-c.max_decel*(np.cos(np.pi/16)-np.sin(theta[back])*eta)/np.cos(theta[back])))
++                    vk = max(0., vk-min(c.max_decel, max(0., dec))*periods[k])
++                    turn_reach[k] = vk
++                turn_reach = np.maximum(reachable, turn_reach)
++            recovery_floor = reachable
+             deficit = float(np.max(reachable-caps))
+             braking_recovery = deficit > 1e-4
+             if braking_recovery:
+@@ -514,7 +536,8 @@ class IntegratedMPC:
+                         or float(np.max(reachable-self._reference(state, path, periods)[2]))
+                         > self.BRAKING_RECOVERY_TOL):
+                     return self._fail('braking_envelope_infeasible', previous_steering, started)
+-                caps = np.maximum(caps, reachable+1e-4)
++                recovery_floor = np.maximum(reachable, np.minimum(turn_reach, caps+self.BRAKING_RECOVERY_TOL))
++                caps = np.maximum(caps, recovery_floor+1e-4)
+             m = np.zeros((4, 2*n))
+             b = np.array([0., 0., state[2], state[3]])
+             h = self.h_base.copy()
+@@ -682,8 +705,9 @@ class IntegratedMPC:
+                 short = float(np.max(reachable-actual_caps))
+                 if not braking_recovery and 0. < short <= self.BRAKING_RECOVERY_TOL:
+                     braking_recovery = True
++                    recovery_floor = np.maximum(reachable, np.minimum(turn_reach, actual_caps+self.BRAKING_RECOVERY_TOL))
+                 if braking_recovery:
+-                    floor = reachable+2*self.QP_ROW_TOL+1e-4   # QP residual above the brake floor
++                    floor = recovery_floor+2*self.QP_ROW_TOL+1e-4   # QP residual above the brake floor
+                     actual_caps = np.maximum(actual_caps, floor)
+                     caps = np.maximum(caps, np.minimum(floor, caps+self.BRAKING_RECOVERY_TOL))
+                 violation = predicted[1:, 3] > actual_caps+self.QP_ROW_TOL   # step 48: QP residual (2 mm/s)
+diff --git a/stack_master/config/mpc_car.yaml b/stack_master/config/mpc_car.yaml
+index 1de9274..98313e8 100644
+--- a/stack_master/config/mpc_car.yaml
++++ b/stack_master/config/mpc_car.yaml
+@@ -100,6 +100,7 @@ controller_manager:
+     mpc_accel_jerk_mps3: 20.0     # corner-exit acceleration ramp (0 -> 5 m/s^2 in 0.25 s); braking never limited
+     # --- acceleration -> VESC speed setpoint ---
+     mpc_cmd_max_lead_mps: 0.5         # setpoint may lead measured odom speed by at most this
++    mpc_cmd_accel_lead_mps: 1.2       # step 52: lead while a solved plan only accelerates (straights); 0 = off
+     mpc_static_approach_decel_mps2: 1.5  # TRAILING static obstacle: cap = sqrt(crawl^2 + 2*a*(gap-standoff)) (0 = old flat crawl cap)
+     mpc_envelope_recovery_speed_mps: 0.5  # stopped outside heading envelope: PP creep back to the path (0 = old permanent STOP)
+     mpc_odom_timeout_s: 0.2           # stale /car_state/odom -> 0 speed
+diff --git a/state_machine/state_machine/state_transitions.py b/state_machine/state_machine/state_transitions.py
+index 235a888..8374c56 100644
+--- a/state_machine/state_machine/state_transitions.py
++++ b/state_machine/state_machine/state_transitions.py
+@@ -165,6 +165,38 @@ def ObstacleTransition(state_machine: "StateMachine", close_to_raceline) -> Tupl
+         elif recovery_availability:
+             return StateType.TRAILING, StateType.RECOVERY
+         elif state_machine._check_free_frenet(state_machine.cur_gb_wpnts):
++            # Step 52 (vehicle bag 18:20): in the hairpin cur_d jumps to ~-0.9 every lap,
++            # so close_to_raceline is False; with any non-blocking obstacle in interest this
++            # branch returned TRAILING with no target -> MPC trailing_without_target STOP,
++            # the car stood off the line (1.7 s, 454 ticks, all at s 3-5). If the raceline
++            # is free, the offset is a returnable one and no obstacle lies in the lateral
++            # corridor between the car and the raceline just ahead, track back to the line
++            # exactly as NonObstacleTransition does (LOSTLINE, GB source).
++            if _gb_return_clear(state_machine):
++                return StateType.LOSTLINE, StateType.GB_TRACK
+             return StateType.TRAILING, StateType.GB_TRACK
+         else:
+             return StateType.TRAILING, StateType.GB_TRACK
++
++
++GB_RETURN_MAX_D_M = 1.2       # step 52: largest |d| treated as a direct return to the raceline
++GB_RETURN_GAP_M = 2.5         # step 52: obstacles this far ahead (or 0.5 m behind) must clear the corridor
++
++
++def _gb_return_clear(state_machine: "StateMachine") -> bool:
++    cur_d = float(state_machine.cur_d)
++    if not abs(cur_d) <= GB_RETURN_MAX_D_M:
++        return False
++    margin = float(state_machine.gb_ego_width_m)
++    lo, hi = min(cur_d, 0.0) - margin, max(cur_d, 0.0) + margin
++    max_s = float(state_machine.max_s)
++    if max_s <= 0.0:
++        return False
++    for obs in state_machine.cur_obstacles_in_interest:
++        gap = (float(obs.s_center) - float(state_machine.cur_s)) % max_s
++        if gap > GB_RETURN_GAP_M and gap < max_s - 0.5:
++            continue
++        half = 0.5 * float(getattr(obs, "size", 0.0) or 0.0)
++        if float(obs.d_center) + half >= lo and float(obs.d_center) - half <= hi:
++            return False
++    return True
+-- 
+2.43.0
+

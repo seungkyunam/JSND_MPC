@@ -73,6 +73,11 @@ def OvertakingTransition(state_machine: "StateMachine") -> Tuple[StateType, Stat
         return StateType.OVERTAKE, StateType.OVERTAKE
     if ot_sustainability and state_machine.overtaking_ttl_count < state_machine.overtaking_ttl_count_threshold:
         state_machine.overtaking_ttl_count += 1
+        state_machine.ot_flicker_hold_count = 0
+        return StateType.OVERTAKE, StateType.OVERTAKE
+    if ot_sustainability:
+        state_machine.ot_flicker_hold_count = 0
+    elif _ot_flicker_hold(state_machine):
         return StateType.OVERTAKE, StateType.OVERTAKE
     state_machine.overtaking_ttl_count = 0
     close_to_raceline = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
@@ -179,7 +184,33 @@ def ObstacleTransition(state_machine: "StateMachine", close_to_raceline) -> Tupl
             return StateType.TRAILING, StateType.GB_TRACK
 
 
-GB_RETURN_MAX_D_M = 1.2       # step 52: largest |d| treated as a direct return to the raceline
+OT_FLICKER_HOLD_S = 0.2       # step 54: max OVERTAKE hold while the avoidance path is momentarily not free
+OT_FLICKER_MIN_GAP_M = 1.5    # step 54: hold only if every blocking obstacle is at least this far ahead
+
+
+def _ot_flicker_hold(state_machine: "StateMachine") -> bool:
+    """Step 54 (bag 19:31): OVERTAKE<->TRAILING chattered every 0.02-0.3 s because the
+    avoidance path was judged blocked for a few ticks by a static obstacle 2.5-3.6 m
+    ahead (or the path dropped for a frame), each TRAILING tick capping speed. Keep
+    OVERTAKE for at most OT_FLICKER_HOLD_S when a path still exists and every blocking
+    obstacle is >= OT_FLICKER_MIN_GAP_M ahead. A close blocker (or no path) leaves
+    OVERTAKE immediately, as before; a persistent far blocker leaves after the hold."""
+    wpnts = (state_machine.cur_static_avoidance_wpnts if state_machine.static_overtaking_mode
+             else state_machine.cur_avoidance_wpnts)
+    count = getattr(state_machine, "ot_flicker_hold_count", 0)
+    limit = max(1, int(OT_FLICKER_HOLD_S * state_machine.rate_hz))
+    dbg = getattr(wpnts, "free_dbg", None) or {}
+    blockers = [o for o in dbg.get("obs", []) if o.get("blocked")]
+    ok = (
+        bool(getattr(wpnts, "is_init", False))
+        and count < limit
+        and all(o.get("gap") is not None and o["gap"] >= OT_FLICKER_MIN_GAP_M for o in blockers)
+    )
+    state_machine.ot_flicker_hold_count = count + 1 if ok else 0
+    return ok
+
+
+GB_RETURN_MAX_D_M = 1.2      # step 52: largest |d| treated as a direct return to the raceline
 GB_RETURN_GAP_M = 2.5         # step 52: obstacles this far ahead (or 0.5 m behind) must clear the corridor
 
 

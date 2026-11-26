@@ -1,0 +1,73 @@
+From aa8e1464733fcc2fd2a4df3026916248ffeb0bed Mon Sep 17 00:00:00 2001
+From: jsnd <jsnd@localhost>
+Date: Thu, 26 Nov 2026 20:13:29 +0900
+Subject: [PATCH] Step 56: publish MPC predicted XY path as RViz marker
+ (/controller/mpc_predicted_path)
+
+Visualisation only: LINE_STRIP of result.predicted (map frame, rear axle),
+20 Hz max, DELETE when no valid prediction. No control/param change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ controller/controller/controller_manager.py | 36 +++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/controller/controller/controller_manager.py b/controller/controller/controller_manager.py
+index 8670c98..062d3bb 100644
+--- a/controller/controller/controller_manager.py
++++ b/controller/controller/controller_manager.py
+@@ -189,6 +189,11 @@ class ControllerManager(Node):
+             # alone is /controller/mpc_elapsed_ms).
+             self.mpc_period_pub = self.create_publisher(Float32, '/controller/mpc_loop_period_ms', 10)
+             self.mpc_cycle_pub = self.create_publisher(Float32, '/controller/mpc_cycle_ms', 10)
++            # Visualisation only: the XY trajectory the MPC actually predicted
++            # (result.predicted, map frame). Throttled; never feeds control.
++            self.mpc_pred_pub = self.create_publisher(Marker, '/controller/mpc_predicted_path', 1)
++            self._mpc_pred_last_ns = 0
++            self._mpc_pred_shown = False
+             self._mpc_last_loop_start = None
+ 
+         # FTG controller (params injected from /state_machine/* equivalents)
+@@ -548,8 +553,39 @@ class ControllerManager(Node):
+                 diagnostic = {k: (None if isinstance(v, float) and not np.isfinite(v) else v)
+                               for k, v in diagnostic.items()}
+                 self.mpc_diag_pub.publish(String(data=json.dumps(diagnostic, allow_nan=False)))
++        self._publish_mpc_prediction(result)
+         return speed, acceleration
+ 
++    def _publish_mpc_prediction(self, result):
++        """RViz marker of the MPC's predicted XY path (20 Hz max). Cleared when
++        there is no valid prediction so a stale line is never shown."""
++        try:
++            now_ns = self.get_clock().now().nanoseconds
++            if now_ns - self._mpc_pred_last_ns < 50_000_000:
++                return
++            self._mpc_pred_last_ns = now_ns
++            pred = None if result is None or self.state == "FTGONLY" or not result.success \
++                else getattr(result, 'predicted', None)
++            marker = Marker()
++            marker.header.frame_id = "map"
++            marker.header.stamp = self.get_clock().now().to_msg()
++            marker.ns, marker.id = "mpc_predicted_path", 0
++            if pred is None or len(pred) < 2 or not np.isfinite(np.asarray(pred)[:, :2]).all():
++                if self._mpc_pred_shown:
++                    marker.action = Marker.DELETE
++                    self.mpc_pred_pub.publish(marker)
++                    self._mpc_pred_shown = False
++                return
++            marker.type, marker.action = Marker.LINE_STRIP, Marker.ADD
++            marker.pose.orientation.w = 1.0
++            marker.scale.x = 0.04
++            marker.color.r, marker.color.g, marker.color.b, marker.color.a = 1.0, 0.0, 1.0, 1.0
++            marker.points = [Point(x=float(p[0]), y=float(p[1]), z=0.05) for p in np.asarray(pred)]
++            self.mpc_pred_pub.publish(marker)
++            self._mpc_pred_shown = True
++        except Exception as exc:  # visualisation must never affect control
++            self.get_logger().warn(f"[MPC] prediction marker skipped: {exc}", throttle_duration_sec=5.0)
++
+     def mapping_loop(self):
+         if self.scan is None:
+             return
+-- 
+2.43.0
+
