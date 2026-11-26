@@ -197,6 +197,15 @@ def _gb_return_clear(state_machine: "StateMachine") -> bool:
         if gap > GB_RETURN_GAP_M and gap < max_s - 0.5:
             continue
         half = 0.5 * float(getattr(obs, "size", 0.0) or 0.0)
-        if float(obs.d_center) + half >= lo and float(obs.d_center) - half <= hi:
+        obs_d = float(obs.d_center)
+        # Step 53b (bag 18:47, 12/14 laps): after the s~4 overtake the car returns from
+        # d +0.3..0.5 while an off-line static object sits further out (s~5.7, d~0.85).
+        # Returning moves away from it, yet the margin on the car's outer side flagged it
+        # -> TRAILING / trailing_without_target slow-down every lap. An obstacle wholly
+        # outside the car's current body, on the side away from the raceline, cannot be
+        # hit by the return.
+        if cur_d * obs_d > 0.0 and abs(obs_d) - half >= abs(cur_d) + 0.5 * margin:
+            continue
+        if obs_d + half >= lo and obs_d - half <= hi:
             return False
     return True
