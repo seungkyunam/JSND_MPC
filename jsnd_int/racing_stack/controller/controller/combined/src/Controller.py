@@ -187,6 +187,7 @@ class Controller:
         # Step 47: corner-exit acceleration ramps in at this jerk (0 = off). Braking is never limited.
         self.mpc_accel_jerk_mps3 = max(0.0, float(mpc_accel_jerk_mps3))
         self.mpc_applied_accel = 0.0
+        self.mpc_cmd_lead = self.mpc_cmd_max_lead_mps  # step 53: lead actually applied last tick
         # Step 23: 'jsnd' = legacy JSND/PP speed pipeline + steering-only MPC (SteeringMPC);
         # 'integrated' = previous joint speed+steering IntegratedMPC.
         if mpc_speed_source not in ("jsnd", "integrated"):
@@ -217,6 +218,7 @@ class Controller:
         """Next MPC command restarts from the measured speed (stop, FTG, input loss)."""
         self.mpc_speed_cmd = None
         self.mpc_applied_accel = 0.0
+        self.mpc_cmd_lead = self.mpc_cmd_max_lead_mps
 
     def record_applied_steering(self, steering, published=True):
         """Manager feedback of the steering actually published (FTG / input-loss stop)."""
@@ -261,6 +263,7 @@ class Controller:
                 cfg = self.lateral_mpc.config
                 self.mpc_speed_cmd = max(0.0, self.mpc_speed_cmd - cfg.max_decel * cfg.dt)
                 self.mpc_applied_accel = 0.0
+                self.mpc_cmd_lead = self.mpc_cmd_max_lead_mps
                 return self.mpc_speed_cmd
             self.reset_mpc_speed_command()
             return 0.0
@@ -285,8 +288,15 @@ class Controller:
         # and braking_recovery, continuation, late/inexact and STOP keep the 0.5 lead.
         lead = self.mpc_cmd_max_lead_mps
         if (self.mpc_cmd_accel_lead_mps > lead and result.status in ('solved', 'solved_late') and accel > 0.0
-                and float(np.min(np.diff(result.predicted[:, 3]))) >= -1e-3):
+                and self._plan_never_brakes(result.predicted[:, 3])):
             lead = self.mpc_cmd_accel_lead_mps
+        elif result.status in ('solved', 'solved_late') and accel > 0.0 and self.mpc_cmd_lead > lead:
+            # Step 53: still accelerating but the plan brakes later -> shrink the lead
+            # gradually instead of 1.2 -> 0.5 in one tick (0.7 m/s setpoint drop at corner
+            # exit). Plan peak / max_speed caps below still bound the command; any
+            # decelerating tick or other status drops to the 0.5 lead immediately.
+            lead = max(lead, self.mpc_cmd_lead - self.ACCEL_LEAD_RAMP_PER_TICK_MPS)
+        self.mpc_cmd_lead = lead
         upper = min(float(np.max(result.predicted[:, 3])), measured + lead,
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
         self.mpc_speed_cmd = float(np.clip(command, 0.0, max(0.0, upper)))
@@ -302,6 +312,19 @@ class Controller:
             lead_limited=bool(command > measured + lead + 1e-6),
             plan_limited=bool(command > float(np.max(result.predicted[:, 3])) + 1e-6))
         return self.mpc_speed_cmd
+
+    # Step 53 (bag 18:47): at corner exit the plan plateaus at the speed cap and OSQP noise
+    # makes it dip 0.002-0.03 m/s; the old 1e-3 per-step test then dropped the lead
+    # 1.2 -> 0.5 for one tick = 0.7 m/s command drop (hesitation). Real braking inside the
+    # horizon (>= 0.2 m/s in the bag) still counts as braking.
+    ACCEL_LEAD_PLAN_DROP_TOL_MPS = 0.05
+    ACCEL_LEAD_RAMP_PER_TICK_MPS = 0.05  # 1.2 -> 0.5 lead over ~14 ticks (~0.3 s)
+
+    @classmethod
+    def _plan_never_brakes(cls, speeds):
+        speeds = np.asarray(speeds, dtype=float)
+        drop = np.maximum.accumulate(speeds) - speeds
+        return float(np.max(drop)) <= cls.ACCEL_LEAD_PLAN_DROP_TOL_MPS
 
     # Behaviour/input STOPs keep the immediate 0 setpoint (state-machine semantics unchanged).
     # Step 49: trailing_without_target (TRAILING while the target list is momentarily empty,
