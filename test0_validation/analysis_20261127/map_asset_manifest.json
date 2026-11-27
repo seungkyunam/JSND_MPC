@@ -1,0 +1,22 @@
+{
+  "test0.png": {
+    "bytes": 16886,
+    "sha256": "999ed49babf813f6a45fee52d6c10db9725ba7e67d1b752a7314e9e21886daf1"
+  },
+  "test0.yaml": {
+    "bytes": 125,
+    "sha256": "8eaf84d9d114bd5742ff7e51d3f6ae2feab7b0deb20c3a532dbd80320b9068d5"
+  },
+  "global_waypoints.json": {
+    "bytes": 2605034,
+    "sha256": "2a957a86a1269e1ece1813ecb18d38401d849b097ec267ef7c717dd21eca1741"
+  },
+  "speed_scaling.yaml": {
+    "bytes": 632,
+    "sha256": "d010c68c323f4fa021cc69a97d9b10b7ded356d4b13a8e1c9d6d378b3828cda5"
+  },
+  "ot_sectors.yaml": {
+    "bytes": 217,
+    "sha256": "2c0f820d30362b268ca04a3c5c5c00fdb9fa95345237e5db2b30019c5e85eeb6"
+  }
+}

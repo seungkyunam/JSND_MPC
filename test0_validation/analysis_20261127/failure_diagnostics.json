@@ -1,0 +1,89 @@
+{
+  "mpc_final__clear": {
+    "total_failure_count": 164,
+    "failure_status_counts": {
+      "braking_envelope_infeasible": 160,
+      "osqp:primal infeasible": 2,
+      "deadline_exceeded": 1,
+      "nonlinear_braking_envelope_violation": 1
+    },
+    "failure_in_avoidance_pct": 0.0,
+    "avoidance_failure_pct": null,
+    "global_path_failure_pct": 2.991608901860635,
+    "avoidance_tracking_rmse_m": null,
+    "avoidance_abs_d_max_m": null,
+    "command_steer_abs_p99_rad": null
+  },
+  "mpc_final__obstacles": {
+    "total_failure_count": 445,
+    "failure_status_counts": {
+      "braking_envelope_infeasible": 86,
+      "nonlinear_prediction_outside_envelope:tracking": 38,
+      "nonlinear_prediction_outside_envelope:heading": 317,
+      "osqp:maximum iterations reached": 3,
+      "osqp:solved inaccurate": 1
+    },
+    "failure_in_avoidance_pct": 87.19101123595505,
+    "avoidance_failure_pct": 50.78534031413613,
+    "global_path_failure_pct": 9.35960591133005,
+    "avoidance_tracking_rmse_m": 0.5116106061423271,
+    "avoidance_abs_d_max_m": 0.6908431669572308,
+    "command_steer_abs_p99_rad": 0.4
+  },
+  "mpc_final__obstacles_realistic": {
+    "total_failure_count": 483,
+    "failure_status_counts": {
+      "braking_envelope_infeasible": 468,
+      "deadline_exceeded": 9,
+      "osqp:primal infeasible": 1,
+      "osqp:run time limit reached": 4,
+      "osqp:solved inaccurate": 1
+    },
+    "failure_in_avoidance_pct": 79.91718426501035,
+    "avoidance_failure_pct": 17.11751662971175,
+    "global_path_failure_pct": 2.7401129943502824,
+    "avoidance_tracking_rmse_m": 0.28678060079072554,
+    "avoidance_abs_d_max_m": 0.5623469258320835,
+    "command_steer_abs_p99_rad": 0.1606344131511974
+  },
+  "mpc_legacy057__clear": {
+    "total_failure_count": 1,
+    "failure_status_counts": {
+      "deadline_exceeded": 1
+    },
+    "failure_in_avoidance_pct": 0.0,
+    "avoidance_failure_pct": null,
+    "global_path_failure_pct": 0.01772735330615139,
+    "avoidance_tracking_rmse_m": null,
+    "avoidance_abs_d_max_m": null,
+    "command_steer_abs_p99_rad": null
+  },
+  "mpc_legacy057__obstacles": {
+    "total_failure_count": 315,
+    "failure_status_counts": {
+      "braking_envelope_infeasible": 312,
+      "nonlinear_prediction_outside_envelope:heading": 2,
+      "deadline_exceeded": 1
+    },
+    "failure_in_avoidance_pct": 100.0,
+    "avoidance_failure_pct": 11.954459203036052,
+    "global_path_failure_pct": 0.0,
+    "avoidance_tracking_rmse_m": 0.35275700905145335,
+    "avoidance_abs_d_max_m": 0.7289667557601687,
+    "command_steer_abs_p99_rad": 0.2212198562683665
+  },
+  "mpc_legacy057__obstacles_realistic": {
+    "total_failure_count": 103,
+    "failure_status_counts": {
+      "braking_envelope_infeasible": 93,
+      "ValueError:outside_heading_envelope": 5,
+      "deadline_exceeded": 5
+    },
+    "failure_in_avoidance_pct": 96.11650485436894,
+    "avoidance_failure_pct": 3.419689119170984,
+    "global_path_failure_pct": 0.10512483574244415,
+    "avoidance_tracking_rmse_m": 0.3538078258885976,
+    "avoidance_abs_d_max_m": 0.5215928951845374,
+    "command_steer_abs_p99_rad": 0.18837344547377669
+  }
+}
