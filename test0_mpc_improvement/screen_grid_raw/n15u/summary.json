@@ -1,0 +1,131 @@
+{
+  "controller": "mpc",
+  "profile": "n15u",
+  "scenario": "obstacles",
+  "map": "test0",
+  "completed_laps": 3,
+  "excluded_laps": 1,
+  "lap_times_s": [
+    12.620000000000001,
+    14.379999999999999
+  ],
+  "best_lap_s": 12.620000000000001,
+  "worst_lap_s": 14.379999999999999,
+  "mean_lap_s": 13.5,
+  "lap_std_s": 1.2445079348883221,
+  "max_speed_mps": 4.981622719779443,
+  "mean_speed_mps": 3.0512514626366958,
+  "tracking_rmse_m": 0.3216351847488072,
+  "solver_ms": {
+    "p50": 1.1864045,
+    "p95": 6.669882799999999,
+    "p99": 10.029901299999999,
+    "max": 14.86089
+  },
+  "cycle_overrun_pct": 9.11111111111111,
+  "solver_failure_pct": 13.333333333333334,
+  "collision_events": 0,
+  "terminal_stop": false,
+  "stop_events": 0,
+  "physical_violation_pct": 0.0,
+  "avoidance_success_pct": 100.0,
+  "passages": [
+    {
+      "lap": 2,
+      "obstacle": "corner_entry",
+      "min_clearance_m": 0.2746035237115113,
+      "speed_before_mps": 4.708805238670076,
+      "speed_after_mps": 2.7393683718644137,
+      "collision": false,
+      "success": true
+    },
+    {
+      "lap": 2,
+      "obstacle": "straight",
+      "min_clearance_m": 0.1898305678784468,
+      "speed_before_mps": 3.7730047294468787,
+      "speed_after_mps": 2.413806550836687,
+      "collision": false,
+      "success": true
+    },
+    {
+      "lap": 3,
+      "obstacle": "corner_entry",
+      "min_clearance_m": 0.28203469070060905,
+      "speed_before_mps": 4.7137958520167516,
+      "speed_after_mps": 2.9336809097259677,
+      "collision": false,
+      "success": true
+    },
+    {
+      "lap": 3,
+      "obstacle": "straight",
+      "min_clearance_m": 0.1389953640388141,
+      "speed_before_mps": 3.254655641532887,
+      "speed_after_mps": 1.8468543963454918,
+      "collision": false,
+      "success": true
+    }
+  ],
+  "config": {
+    "wheelbase": 0.324,
+    "max_steer": 0.4,
+    "max_steer_rate": 3.2,
+    "dt": 0.02,
+    "horizon": 15,
+    "q_position": 12.0,
+    "q_heading": 16.0,
+    "r_steer": 0.2,
+    "r_rate": 3.0,
+    "terminal_scale": 3.0,
+    "solver_time_limit": 0.02,
+    "deadline": 0.02,
+    "max_iter": 4000,
+    "max_tracking_error": 1.0,
+    "max_heading_error": 0.7,
+    "preview_dt": 0.06999999999999999,
+    "preview_grid_power": 1.5,
+    "max_speed": 5.0,
+    "max_accel": 5.0,
+    "max_decel": 5.0,
+    "max_lateral_accel": 4.5,
+    "q_speed": 10.0,
+    "r_accel": 0.05,
+    "braking_preview_ratio": 1.0,
+    "brake_lead_s": 0.08,
+    "steer_preview_s": 0.03,
+    "time_weighted_accel_cost": false,
+    "time_scaled_objective": true
+  },
+  "assumptions": {
+    "vehicle_length_m": 0.52,
+    "vehicle_width_m": 0.29,
+    "obstacle_size_m": 0.3,
+    "obstacle_placements": [
+      {
+        "id": 101,
+        "label": "corner_entry",
+        "s": 15.18,
+        "d": 0.0,
+        "size": 0.3
+      },
+      {
+        "id": 102,
+        "label": "straight",
+        "s": 28.97,
+        "d": 0.0,
+        "size": 0.3
+      }
+    ],
+    "planner_input": "synthetic tracked Obstacle messages",
+    "full_perception_and_ros_state_machine": false,
+    "obstacles": true,
+    "pose_delay": 0,
+    "servo_delay": 0,
+    "noise_xy": 0.0,
+    "noise_yaw": 0.0,
+    "noise_v": 0.0,
+    "obstacle_noise": false,
+    "seed": 0
+  }
+}

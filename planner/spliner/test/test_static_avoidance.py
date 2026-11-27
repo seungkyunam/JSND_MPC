@@ -117,6 +117,7 @@ def build_node(track, cur_s, cur_d=0.0, cur_vs=3.0):
         boundary_margin=0.19, ego_width_m=EGO_WIDTH, min_free_dist_m=MIN_FREE_DIST,
         ego_grace_m=1.0, use_map_filter=True, kernel_size=4, max_speed_mps=2.0,
         path_hold_s=0.25, side_hysteresis_m=0.10,
+        path_refresh_s=0.0,
         # _approach_dist -> _corner_exit_limit reads these. Absent, every test that
         # reached _plan died with AttributeError instead of testing anything.
         pre_dist_kappa_max=0.30, pre_dist_corner_min_m=4.0,
@@ -241,6 +242,19 @@ def test_hold_expires_after_path_hold_s():
     node._clock.t += node.path_hold_s + 0.05
     node.loop()
     assert not node.published[-1].wpnts
+
+
+def test_valid_path_geometry_is_stable_between_refreshes():
+    node = build_node(make_track(), cur_s=20.0)
+    node.path_refresh_s = 0.5
+    node.obstacles = [obstacle(3, 28.0, 0.05)]
+    node.loop()
+    first = [(w.x_m, w.y_m, w.psi_rad, w.kappa_radpm) for w in node.published[-1].wpnts]
+    node.cur_s += 0.05
+    node._clock.t += 0.05
+    node.loop()
+    second = [(w.x_m, w.y_m, w.psi_rad, w.kappa_radpm) for w in node.published[-1].wpnts]
+    assert second == first
 
 
 # ---------------------------------------------------------------- Case 3

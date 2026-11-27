@@ -197,7 +197,7 @@ class StaticObstacleSpliner(Node):
             "raceline_clearance_m": 0.35,
             "max_group_obstacles": 3,
             # --- path shape ---
-            "evasion_distance": 0.30,
+            "evasion_distance": 0.35,
             "spline_resolution": 0.10,
             "pre_dist_gain": 1.6,
             "pre_dist_min": 2.0,
@@ -220,6 +220,11 @@ class StaticObstacleSpliner(Node):
             "max_speed_mps": 2.0,
             # --- stability ---
             "path_hold_s": 0.25,
+            # Minimum geometry lifetime for a valid, rechecked path. The planner
+            # may publish it with a fresh stamp, but never without revalidating it
+            # against the current obstacle measurements. This prevents 10-20 Hz
+            # ego-anchored splines from moving under the controller every frame.
+            "path_refresh_s": 0.5,
             "side_hysteresis_m": 0.10,
         }
         for key, value in defaults.items():
@@ -255,6 +260,7 @@ class StaticObstacleSpliner(Node):
         "kernel_size": "kernel_size",
         "max_speed_mps": "max_speed_mps",
         "path_hold_s": "path_hold_s",
+        "path_refresh_s": "path_refresh_s",
         "side_hysteresis_m": "side_hysteresis_m",
     }
 
@@ -385,17 +391,18 @@ class StaticObstacleSpliner(Node):
     def loop(self):
         started = time.perf_counter()
         dbg = {}
-        path = self._plan(dbg)
+        path = self._select_stable_path(self._plan(dbg), dbg)
 
         cache_used = False
         if path.wpnts:
-            # New valid path: it becomes the held path. Its stamp is now, so the
-            # state machine sees it as fresh.
+            # New valid path (or freshly revalidated stable geometry): it becomes
+            # the held message, so the state machine sees a current stamp.
             self.last_good_path = path
             self.last_good_obs_id = dbg.get("obs_id")
-            self.last_good_generated = int(dbg.get("generated_count", len(path.wpnts)))
-            self.last_good_origin_s = self.cur_s
-            self.last_good_reach = float(dbg.get("reach", 0.0))
+            if not dbg.get("stable_reuse", False):
+                self.last_good_generated = int(dbg.get("generated_count", len(path.wpnts)))
+                self.last_good_origin_s = self.cur_s
+                self.last_good_reach = float(dbg.get("reach", 0.0))
             dbg["path_age"] = 0.0
         else:
             held, reason = self._usable_cache(dbg)
@@ -424,6 +431,34 @@ class StaticObstacleSpliner(Node):
         if self.measure:
             self.latency_pub.publish(Float32(data=float(time.perf_counter() - started)))
 
+    def _select_stable_path(self, candidate: OTWpntArray, dbg) -> OTWpntArray:
+        """Hold revalidated geometry briefly instead of moving it every planner tick.
+
+        A newly generated spline is still required on the first sighting and after
+        the refresh interval. During the interval the old geometry is reused only
+        if `_usable_cache` proves it still covers the car and clears every current
+        obstacle. Its message stamp is refreshed because this is a current safety
+        decision, not the dropped-frame hold handled by `loop`.
+        """
+        refresh = float(getattr(self, "path_refresh_s", 0.0))
+        now = self.get_clock().now().nanoseconds*1e-9
+        built = getattr(self, "last_good_geometry_time", -np.inf)
+        if candidate.wpnts and refresh > 0.0:
+            held, reason = self._usable_cache(dbg, max_age=np.inf)
+            timed_hold = now-built < refresh
+            if held is not None and timed_hold:
+                # The cached message is owned by this node and is safe to refresh
+                # in place after `_usable_cache` has rechecked its geometry.
+                held.header.stamp = self.get_clock().now().to_msg()
+                dbg["stable_reuse"] = True
+                dbg["candidate_replaced"] = True
+                return held
+            dbg["stable_reuse_reason"] = reason
+        if candidate.wpnts:
+            self.last_good_geometry_time = now
+        dbg["stable_reuse"] = False
+        return candidate
+
     ###############
     # PATH CACHE  #
     ###############
@@ -431,7 +466,7 @@ class StaticObstacleSpliner(Node):
         stamp = msg.header.stamp
         return self.get_clock().now().nanoseconds * 1e-9 - (stamp.sec + stamp.nanosec * 1e-9)
 
-    def _usable_cache(self, dbg) -> Tuple[Optional[OTWpntArray], str]:
+    def _usable_cache(self, dbg, max_age=None) -> Tuple[Optional[OTWpntArray], str]:
         """The held path, or None plus the reason it was discarded.
 
         A held path is never kept indefinitely. It is dropped as soon as any of
@@ -447,7 +482,7 @@ class StaticObstacleSpliner(Node):
                 and self.last_good_obs_id != dbg["obs_id"]:
             return None, "different_obstacle"
         age = self._age(path)
-        if age > self.path_hold_s:
+        if age > (self.path_hold_s if max_age is None else max_age):
             return None, "cache_expired"
         # How much of the held path is still ahead. Measured from how far the car has
         # travelled SINCE the path was built, not as (path_end_s - cur_s) % max_s:

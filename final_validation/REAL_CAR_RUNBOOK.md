@@ -35,6 +35,18 @@ bash ~/JSND_INT/run/race_mpc.sh 5p0 11_18_6 integrated
 bash ~/JSND_INT/run/race_mpc.sh final_1s 11_18_6 integrated
 ```
 
+test0 장애물 시뮬레이션에서 선정한 비균일 1초 프로파일(실차에서는 아래 단계별 속도 gate부터
+시작하며 5 m/s로 바로 실행하지 않는다):
+
+```bash
+ros2 launch stack_master race.launch.xml map:=test0 controller:=mpc \
+  mpc_profile:=obstacle_1s mpc_speed_source:=integrated \
+  use_estop:=true safety_mode:=true virtual:=false gp_predictor:=false
+```
+
+이 프로파일은 시뮬레이션에서 PP보다 느렸고 최소 차체 여유가 0.049 m였으므로 장애물 실차
+주행 승인을 뜻하지 않는다. 첫 실차 검증은 장애물이 없는 트랙과 1.0 m/s ceiling에서 수행한다.
+
 ## 단계별 속도 프로파일
 
 같은 최종 N=10/1초/가중치 설정에서 속도 ceiling만 올린다. 각 단계의 분석 gate가 통과하기

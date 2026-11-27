@@ -385,7 +385,10 @@ static_avoidance_planner:
     # obstacle disappears, a different obstacle becomes the target, the car
     # drives off the path's end, or the path has become a collision.
     path_hold_s: 0.25
-
+    # Keep a collision-rechecked spline geometry for this long before rebuilding
+    # it from the latest ego pose. Reduces position/heading/curvature discontinuity
+    # at the 50 Hz controller without weakening obstacle or boundary checks.
+    path_refresh_s: 0.5
     # [m] How much wider the other side must be before the planner switches
     # sides. Left and right room are often within a couple of centimetres of
     # each other and the obstacle's measured edges move by about that much

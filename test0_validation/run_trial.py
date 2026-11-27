@@ -27,9 +27,16 @@ ROOT = Path(__file__).resolve().parents[1]
 MAP_DIR = ROOT / "stack_master/maps/test0"
 sys.path[:0] = [str(ROOT/'jsnd_int/racing_stack/controller'), str(ROOT/'controller/test'),
                 str(ROOT/'race_utils/f110_utils/libs/frenet_conversion'),
+                str(ROOT/'planner/spliner'), str(ROOT/'planner/grid_filter'),
                 str(ROOT/'jsnd_int/tests_offline')]
+# Some development shells also expose another checkout containing a regular
+# `controller` package. A regular package wins over this repository's namespace
+# package even when our path is first, silently mixing the old Controller with
+# the current MPC. Pin the offline validation to this checkout explicitly.
+controller_pkg = types.ModuleType('controller')
+controller_pkg.__path__ = [str(ROOT/'jsnd_int/racing_stack/controller/controller')]
+sys.modules['controller'] = controller_pkg
 import controller.mpc
-controller.mpc.__path__.insert(0, str(ROOT/'jsnd_int/racing_stack/controller/controller/mpc'))
 from offline_support import install_marker_shims
 install_marker_shims()
 os.environ['JSND_LAP_STACK_ROOT'] = str(ROOT/'jsnd_int/racing_stack/stack_master')
@@ -51,6 +58,16 @@ OBSTACLES = (
     dict(id=101, label='corner_entry', s=15.18, d=0.00, size=OBSTACLE_SIZE),
     dict(id=102, label='straight', s=28.97, d=0.00, size=OBSTACLE_SIZE),
 )
+OBSTACLE_LAYOUTS = {
+    'baseline': OBSTACLES,
+    # Independent feasible placement: a mild corner and the long straight.
+    # Both retain >0.70 m on at least one side of the centre line after the
+    # 0.30 m obstacle is placed.
+    'alternate': (
+        dict(id=201, label='mild_corner', s=9.00, d=0.00, size=OBSTACLE_SIZE),
+        dict(id=202, label='long_straight', s=34.00, d=0.00, size=OBSTACLE_SIZE),
+    ),
+}
 
 _INI = configparser.ConfigParser()
 _INI.read(ROOT/'stack_master/config/CAR/racecar_f110.ini')
@@ -167,6 +184,19 @@ def profile(name):
         return {**base, 'mpc_horizon':10, 'mpc_preview_dt':.98/9,
             'mpc_time_scaled_objective':True, 'mpc_q_speed':10.0, 'mpc_r_accel':.05,
             'mpc_cmd_accel_lead_mps':1.2, 'mpc_brake_lead_s':.08, 'mpc_steer_preview_s':.03}
+    if name in ('n10','n15','n20','n10u','n15u','n20u'):
+        n=int(name[1:3].rstrip('u'))
+        return {**base, 'mpc_horizon':n, 'mpc_preview_dt':.98/(n-1),
+            'mpc_preview_grid_power':1.5 if name.endswith('u') else 1.0,
+            'mpc_time_scaled_objective':True, 'mpc_q_speed':10.0, 'mpc_r_accel':.05,
+            'mpc_cmd_accel_lead_mps':1.2, 'mpc_brake_lead_s':.08, 'mpc_steer_preview_s':.03}
+    if name == 'improved1s':
+        return {**base, 'mpc_horizon':10, 'mpc_preview_dt':.98/9,
+            'mpc_preview_grid_power':1.5, 'mpc_time_scaled_objective':True,
+            'mpc_q_position':20.0, 'mpc_q_speed':20.0, 'mpc_r_accel':.05, 'mpc_cmd_accel_lead_mps':1.2,
+            'mpc_brake_lead_s':.08, 'mpc_steer_preview_s':.03,
+            'mpc_braking_recovery_max_mps':1.0, 'mpc_lateral_plan_fraction':.85,
+            }
     if name == 'pp': return {}
     raise ValueError(name)
 
@@ -226,18 +256,25 @@ def body_clearance(x, y, yaw, spec):
     return outside+inside-spec['size']/2
 
 
-def run(controller_name, profile_name, scenario_name, output, laps=11):
+def run(controller_name, profile_name, scenario_name, output, laps=11, path_refresh_s=None,
+        extra_overrides=None, seed=None, obstacle_layout='baseline'):
     kind = 'pp' if controller_name == 'pp' else 'mpc'
-    c, params = sim.build(kind, '5p0', profile(profile_name), 50)
+    overrides=profile(profile_name); overrides.update(extra_overrides or {})
+    c, params = sim.build(kind, '5p0', overrides, 50)
     if kind == 'mpc': c.mpc_cmd_accel_lead_mps = params['mpc_cmd_accel_lead_mps']
-    cfg, rng, planner = scenario(scenario_name), np.random.default_rng(scenario(scenario_name)['seed']), build_planner()
+    cfg, planner = scenario(scenario_name), build_planner()
+    if seed is not None: cfg['seed'] = int(seed)
+    rng = np.random.default_rng(cfg['seed'])
+    obstacles = OBSTACLE_LAYOUTS[obstacle_layout]
+    if path_refresh_s is not None: planner.path_refresh_s=float(path_refresh_s)
+    planner.last_good_geometry_time=-np.inf
     dt, wheelbase = .02, .324
     x,y,yaw = map(float, sim.FULL[0,[0,1,6]])
     v = delta = t = total = 0.0
     prev_s = float(c.converter.get_frenet([x],[y])[0,0])
     poses = collections.deque([(x,y,yaw)]*max(1,cfg['pose_delay']))
     servo = collections.deque([0.]*max(1,cfg['servo_delay']))
-    obstacle_measurements = collections.deque([[make_obstacle(o) for o in OBSTACLES]]*max(1,cfg['pose_delay']))
+    obstacle_measurements = collections.deque([[make_obstacle(o) for o in obstacles]]*max(1,cfg['pose_delay']))
     accel_history, lap_marks, rows, planner_log = np.zeros(10), [], [], []
     active_path = None
     c.pose_prediction.clock = lambda: t
@@ -248,15 +285,19 @@ def run(controller_name, profile_name, scenario_name, output, laps=11):
         while total >= TRACK_LEN*(len(lap_marks)+1): lap_marks.append(t)
         if len(lap_marks) >= laps: break
         if cfg['obstacles'] and tick % 5 == 0:
-            measured = [make_obstacle(o,rng,cfg['obstacle_noise']) for o in OBSTACLES]
+            measured = [make_obstacle(o,rng,cfg['obstacle_noise']) for o in obstacles]
             if cfg['pose_delay']:
                 obstacle_measurements.append(measured); measured = obstacle_measurements.popleft()
             planner._clock.t, planner.cur_s, planner.cur_d = t, s, d
             planner.cur_x, planner.cur_y, planner.cur_yaw, planner.cur_vs = x,y,yaw,v
             planner.obstacles = measured
             dbg = {}
-            planned = planner._plan(dbg)
+            planned = planner._select_stable_path(planner._plan(dbg), dbg)
             if planned.wpnts:
+                planner.last_good_path=planned; planner.last_good_obs_id=dbg.get('obs_id')
+                if not dbg.get('stable_reuse',False):
+                    planner.last_good_generated=int(dbg.get('generated_count',len(planned.wpnts)))
+                    planner.last_good_origin_s=s; planner.last_good_reach=float(dbg.get('reach',0.0))
                 reprofile(planned, v); active_path = planned
             else: active_path = None
             safe_dbg = {}
@@ -294,7 +335,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11):
         desired=(motor-v)/sim.VESC_TAU; long_lim=sim.VESC_ACC if desired>=0 else sim.VESC_DEC
         available=long_lim*math.sqrt(max(0.,1-(ay/4.5)**2)); accel=float(np.clip(desired,-available,available))
         combined=(accel/long_lim)**2+(ay/4.5)**2
-        clearances=[body_clearance(x,y,yaw,o) for o in OBSTACLES]
+        clearances=[body_clearance(x,y,yaw,o) for o in obstacles]
         rows.append(dict(t=t,lap=len(lap_marks)+1,s=s,d=d,x=x,y=y,yaw=yaw,speed=v,measured_speed=measured_v,
             command_speed=command,motor_command=motor,command_steer=steer,actual_steer=delta,accel=accel,lateral_accel=ay,
             combined_limit=combined,status=status,solver_ms=solver_ms,elapsed_ms=elapsed_ms,iterations=iterations,
@@ -321,7 +362,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11):
     passages=[]
     for lap in range(2,laps+1) if cfg['obstacles'] else ():
         rr=[r for r in rows if r['lap']==lap]
-        for spec,field in zip(OBSTACLES,('clearance_corner_m','clearance_straight_m')):
+        for spec,field in zip(obstacles,('clearance_corner_m','clearance_straight_m')):
             near=[r for r in rr if abs(signed_gap(r['s'],spec['s']))<1.5]
             before=[r['speed'] for r in rr if -1.5<signed_gap(r['s'],spec['s'])<-.5]
             after=[r['speed'] for r in rr if .5<signed_gap(r['s'],spec['s'])<1.5]
@@ -341,15 +382,24 @@ def run(controller_name, profile_name, scenario_name, output, laps=11):
         avoidance_success_pct=float(100*np.mean([p['success'] for p in passages])) if passages else None,passages=passages,
         config=dataclasses.asdict(c.lateral_mpc.config) if kind=='mpc' else dict(pp_physical_governor_lat_mps2=4.3,brake_mps2=5.0),
         assumptions=dict(vehicle_length_m=VEHICLE_LENGTH,vehicle_width_m=VEHICLE_WIDTH,obstacle_size_m=OBSTACLE_SIZE,
-            obstacle_placements=OBSTACLES,planner_input='synthetic tracked Obstacle messages',full_perception_and_ros_state_machine=False,**cfg))
+            obstacle_layout=obstacle_layout, obstacle_placements=obstacles,
+            planner_input='synthetic tracked Obstacle messages',full_perception_and_ros_state_machine=False,**cfg))
     (output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print(json.dumps(summary)); return 0 if len(lap_marks)==laps else 1
 
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--controller',choices=['pp','mpc'],required=True)
-    p.add_argument('--profile',choices=['pp','legacy057','final'],required=True)
+    p.add_argument('--profile',choices=['pp','legacy057','final','n10','n15','n20','n10u','n15u','n20u','improved1s'],required=True)
     p.add_argument('--scenario',choices=['clear','obstacles','obstacles_realistic'],required=True)
     p.add_argument('--output',type=Path,required=True); p.add_argument('--laps',type=int,default=11)
-    a=p.parse_args(); return run(a.controller,a.profile,a.scenario,a.output,a.laps)
+    p.add_argument('--path-refresh-s',type=float,default=None)
+    p.add_argument('--seed',type=int,default=None)
+    p.add_argument('--obstacle-layout',choices=sorted(OBSTACLE_LAYOUTS),default='baseline')
+    p.add_argument('--set',nargs='*',default=[],metavar='KEY=VALUE')
+    a=p.parse_args(); extra={}
+    for item in a.set:
+        key,value=item.split('=',1); extra[key]=yaml.safe_load(value)
+    return run(a.controller,a.profile,a.scenario,a.output,a.laps,a.path_refresh_s,
+               extra,a.seed,a.obstacle_layout)
 if __name__=='__main__': raise SystemExit(main())

@@ -150,3 +150,14 @@ def test_preview_target_lag_does_not_relax_original_profile_cap():
     # An actual profile overrun remains infeasible and still requests STOP.
     result=IntegratedMPC(c).solve([0.,0.,0.,2.1],straight(.5),0.)
     assert not result.success and result.speed==0.
+
+
+def test_nonuniform_grid_preserves_total_time_and_densifies_near_term():
+    uniform=IntegratedMPC(config(horizon=10,dt=.02,preview_dt=.98/9,
+                                 preview_grid_power=1.0))
+    dense=IntegratedMPC(config(horizon=10,dt=.02,preview_dt=.98/9,
+                               preview_grid_power=1.5))
+    assert uniform.periods.sum()==pytest.approx(1.0)
+    assert dense.periods.sum()==pytest.approx(1.0)
+    assert dense.periods[1]<uniform.periods[1]
+    assert np.all(np.diff(dense.periods[1:])>0.)

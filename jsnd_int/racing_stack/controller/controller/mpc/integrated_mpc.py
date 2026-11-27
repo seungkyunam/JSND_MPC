@@ -1,7 +1,8 @@
 """ROS-independent joint acceleration/steering LTV MPC with bounded verified-plan continuation.
 
-Inputs are rear-axle [x,y,yaw,v] and ordered local XY points. Extra columns
-are ignored. Geometry, operator ceiling and an explicit obstacle safety cap
+Inputs are rear-axle [x,y,yaw,v] and ordered local waypoints. When the standard
+stack columns are present, column 5 curvature and column 6 heading are used;
+otherwise geometry is derived from XY. Geometry, operator ceiling and an explicit obstacle safety cap
 define a backward braking envelope; no racing speed profile is consumed.
 The first stage is the control period; later stages use the preview period.
 """
@@ -16,15 +17,25 @@ class IntegratedConfig(MPCConfig):
     horizon: int = 20
     max_iter: int = 1000
     preview_dt: float = .1
+    # 1.0 retains the uniform grid. Values above one keep the same total
+    # prediction time while putting shorter stages near the executed action.
+    preview_grid_power: float = 1.0
     max_speed: float = 3.0
     # Configured conservative actuator limits, NOT optional tuning caps.
     # No measured replacement is available; never infer these from waypoint speeds.
     max_accel: float = 1.5
     max_decel: float = 2.5
     max_lateral_accel: float = 3.0
+    lateral_plan_fraction: float = .85
     q_speed: float = 8.0
     r_accel: float = .15
     braking_preview_ratio: float = .85
+    # Maximum transient amount by which a verified maximum-braking trajectory
+    # may remain above a newly lower path-geometry speed envelope. The original
+    # behaviour is 0.30 m/s. Larger values are opt-in for profiles with rapid
+    # avoidance-path curvature changes; all nonlinear tracking, heading,
+    # friction and lateral-acceleration checks still have to pass.
+    braking_recovery_max_mps: float = .30
     # Step 47 (0 = previous behaviour). brake_lead_s: each curvature speed cap also
     # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
     # starts before the corner, tightening only). steer_preview_s: steering
@@ -49,6 +60,14 @@ class IntegratedConfig(MPCConfig):
             raise ValueError('objective scaling flags must be boolean')
         if self.braking_preview_ratio > 1.:
             raise ValueError('braking preview cannot exceed maximum deceleration')
+        if (not np.isfinite(self.lateral_plan_fraction)
+                or not .70 <= self.lateral_plan_fraction <= 1.0):
+            raise ValueError('lateral_plan_fraction must be within [0.70, 1.0]')
+        if (not np.isfinite(self.braking_recovery_max_mps)
+                or not .30 <= self.braking_recovery_max_mps <= 2.0):
+            raise ValueError('braking_recovery_max_mps must be within [0.30, 2.0]')
+        if not np.isfinite(self.preview_grid_power) or not 1. <= self.preview_grid_power <= 3.:
+            raise ValueError('preview_grid_power must be within [1, 3]')
         for name in ('brake_lead_s', 'steer_preview_s'):
             value = getattr(self, name)
             if not np.isfinite(value) or not 0. <= value <= .5:
@@ -97,6 +116,18 @@ class IntegratedMPC:
     # profile, infeasibility and input failures are never continued: they STOP.
     CONTINUATION_REASONS = ('deadline_exceeded', 'osqp:run time limit reached',
                             'osqp:maximum iterations reached', 'osqp:solved inaccurate')
+    # A regenerated avoidance path can make the new QP fail its full-horizon
+    # envelope check for one or two ticks. The last accepted plan may bridge that
+    # handoff only through `_continue_plan`, which rechecks measured-state match,
+    # the CURRENT path's tracking/heading/speed caps, steering rate and coupled
+    # acceleration before serving one stage. Any failed check retains STOP.
+    PATH_HANDOFF_REASONS = ('braking_envelope_infeasible',
+                            'first_speed_bound_infeasible',
+                            'ValueError:outside_heading_envelope',
+                            'nonlinear_prediction_outside_envelope:tracking',
+                            'nonlinear_prediction_outside_envelope:heading',
+                            'nonlinear_prediction_outside_envelope:tracking,heading',
+                            'osqp:primal infeasible', 'osqp:dual infeasible')
     ACCEPT_VERIFIED_INEXACT = True
     ACCEPT_VERIFIED_LATE = True   # step 34: verified solve late vs deadline but within dt is served
     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
@@ -140,7 +171,9 @@ class IntegratedMPC:
         self.p_indptr = np.concatenate(([0], np.cumsum(np.arange(1, size+1))))
         self.p_cols = np.repeat(np.arange(size), np.arange(1, size+1))
         # Everything below depends only on the configuration and is built once.
-        self.periods = np.concatenate(([config.dt], np.full(n-1, config.preview_dt)))
+        preview_total = (n-1)*config.preview_dt
+        edges = np.linspace(0., 1., n)**config.preview_grid_power
+        self.periods = np.concatenate(([config.dt], preview_total*np.diff(edges)))
         self.preview_times = np.concatenate(([0.], np.cumsum(self.periods[:-1])))
         self.end_times = np.cumsum(self.periods)          # time at which v_{k+1} is reached
         self.node_times = np.concatenate(([0.], self.end_times))
@@ -249,7 +282,8 @@ class IntegratedMPC:
 
     def _geometry_caps(self, path, safety_speed_cap):
         # Same path and cap within one tick (reference, profile check): compute once.
-        key = (float(safety_speed_cap), path.shape, path[:, :2].tobytes())
+        geometry = path[:, [0, 1, 5, 6]] if path.shape[1] >= 7 else path[:, :2]
+        key = (float(safety_speed_cap), path.shape, geometry.tobytes())
         cached = getattr(self, '_caps_cache', None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -260,13 +294,11 @@ class IntegratedMPC:
     def _geometry_caps_uncached(self, path, safety_speed_cap):
         c = self.config
         arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1))]
-        tangent = _gradient(path[:, :2], arc)
-        yaw = np.unwrap(np.arctan2(tangent[:, 1], tangent[:, 0]))
-        curvature = _gradient(yaw, arc)
+        yaw, curvature = self._path_geometry(path, arc)
         # Full friction-ellipse limits (step 26): no Y/sqrt(2) allocation, no 0.85
         # curvature factor. Lateral cap = sqrt(Y/|kappa|) (a_long = 0 at the limit).
         kappa = np.maximum(abs(curvature), 1e-6)
-        lateral_cap = np.sqrt(self.LATERAL_PLAN_FRACTION*c.max_lateral_accel/kappa)
+        lateral_cap = np.sqrt(c.lateral_plan_fraction*c.max_lateral_accel/kappa)
         if c.brake_lead_s > 0.:
             # Step 47: a corner cap also holds brake_lead_s*v before it (only lowers caps).
             reach = np.searchsorted(arc, arc+c.brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
@@ -287,6 +319,23 @@ class IntegratedMPC:
                 vv[i] = min(vv[i], nxt + 2.*dec*np.sqrt(max(0., 1.-r*r))*ds[i])
         return arc, np.sqrt(np.asarray(vv))
 
+    @staticmethod
+    def _path_geometry(path, arc):
+        """Return continuous heading and curvature for the supplied path.
+
+        Avoidance waypoints already carry the spline's analytic heading and
+        curvature. Differentiating the concatenated XY window creates a false
+        curvature spike where that spline joins the global path; the backward
+        braking pass then slows the car metres before a geometrically smooth
+        join. The standard waypoint fields avoid that numerical artifact. Raw
+        XY callers retain the original finite-difference behaviour.
+        """
+        if (path.shape[1] >= 7 and np.isfinite(path[:, 5:7]).all()):
+            return np.unwrap(path[:, 6]), np.asarray(path[:, 5], float)
+        tangent = _gradient(path[:, :2], arc)
+        yaw = np.unwrap(np.arctan2(tangent[:, 1], tangent[:, 0]))
+        return yaw, _gradient(yaw, arc)
+
     def _reference(self, state, path, periods, safety_speed_cap=np.inf):
         c = self.config
         keep = np.concatenate(([True], np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1) > 1e-6))
@@ -303,12 +352,10 @@ class IntegratedMPC:
         if np.linalg.norm(projected[idx]) > c.max_tracking_error:
             raise ValueError('outside_tracking_envelope')
         start = arc[idx]+fraction[idx]*ds[idx]
-        tangent = _gradient(xy, arc)
-        yaw = np.unwrap(np.arctan2(tangent[:, 1], tangent[:, 0]))
+        yaw, curvature = self._path_geometry(path, arc)
         yaw += 2*np.pi*np.round((state[2]-np.interp(start, arc, yaw))/(2*np.pi))
         if abs(np.interp(start, arc, yaw)-state[2]) > c.max_heading_error:
             raise ValueError('outside_heading_envelope')
-        curvature = _gradient(yaw, arc)
         _, caps = self._geometry_caps(path, safety_speed_cap)
         hard_caps = caps
         sample, velocity = float(start), float(state[3])
@@ -368,14 +415,14 @@ class IntegratedMPC:
             return self.reject('invalid_state_path_or_steering', previous_steering, started)
         if getattr(self, '_context', None) is not None:
             old_path, old_cap = self._context
-            if old_cap != safety_speed_cap or not self._same_path(old_path, context[0]):
+            if old_cap != safety_speed_cap:
                 self.plan = None
         self._context = context
         result = self._solve(state, waypoints, previous_steering, started, safety_speed_cap)
         if result.success:
             self.continuation = 0
             return result
-        if result.status in self.CONTINUATION_REASONS:
+        if result.status in self.CONTINUATION_REASONS or result.status in self.PATH_HANDOFF_REASONS:
             continued = self._continue_plan(state, previous_steering, result.status, started)
             if continued is not None:
                 return continued
@@ -452,12 +499,16 @@ class IntegratedMPC:
             actual_cap = np.interp(arc[idx]+fraction[idx]*(arc[idx+1]-arc[idx]), arc, geometric_caps)
             if np.linalg.norm(projection[idx]-end_xy) > c.max_tracking_error:
                 return None
+            path_heading = np.arctan2(segments[idx, 1], segments[idx, 0])
+            heading_error = (state[2]-path_heading+np.pi) % (2*np.pi)-np.pi
+            if abs(heading_error) > c.max_heading_error:
+                return None
             if v1 > actual_cap+1e-4:
                 # Step 49: same rule as braking_recovery in _solve. The measured speed lags the
                 # planned braking (VESC speed loop); within BRAKING_RECOVERY_TOL brake at the
                 # strongest deceleration the friction ellipse leaves with the planned steering
                 # (re-checked below) instead of STOP.
-                if v1-actual_cap > self.BRAKING_RECOVERY_TOL:
+                if v1-actual_cap > c.braking_recovery_max_mps:
                     return None
                 ratio = v0*v0*abs(np.tan(steer))/c.wheelbase/c.max_lateral_accel
                 if ratio > 1.:
@@ -534,6 +585,7 @@ class IntegratedMPC:
                     turn_reach[k] = vk
                 turn_reach = np.maximum(reachable, turn_reach)
             recovery_floor = reachable
+            recovery_tol = c.braking_recovery_max_mps
             deficit = float(np.max(reachable-caps))
             braking_recovery = deficit > 1e-4
             if braking_recovery:
@@ -543,12 +595,12 @@ class IntegratedMPC:
                 # rate and keep tracking. Before, it STOPped (5 ticks) and the soft-STOP ramp
                 # drove the setpoint to 0 -> VESC current braking 0.97->0.78 m/s (stutter).
                 # A deficit the geometry/endpoint alone causes still STOPs as before.
-                if deficit > self.BRAKING_RECOVERY_TOL and (
+                if deficit > recovery_tol and (
                         not np.isfinite(safety_speed_cap)
                         or float(np.max(reachable-self._reference(state, path, periods)[2]))
-                        > self.BRAKING_RECOVERY_TOL):
+                        > recovery_tol):
                     return self._fail('braking_envelope_infeasible', previous_steering, started)
-                recovery_floor = np.maximum(reachable, np.minimum(turn_reach, caps+self.BRAKING_RECOVERY_TOL))
+                recovery_floor = np.maximum(reachable, np.minimum(turn_reach, caps+recovery_tol))
                 caps = np.maximum(caps, recovery_floor+1e-4)
             m = np.zeros((4, 2*n))
             b = np.array([0., 0., state[2], state[3]])
@@ -715,13 +767,13 @@ class IntegratedMPC:
                 # braking_recovery above: brake at the strongest feasible rate and keep
                 # tracking (same 0.30 m/s bound) instead of STOP + soft-stop ramp.
                 short = float(np.max(reachable-actual_caps))
-                if not braking_recovery and 0. < short <= self.BRAKING_RECOVERY_TOL:
+                if not braking_recovery and 0. < short <= recovery_tol:
                     braking_recovery = True
-                    recovery_floor = np.maximum(reachable, np.minimum(turn_reach, actual_caps+self.BRAKING_RECOVERY_TOL))
+                    recovery_floor = np.maximum(reachable, np.minimum(turn_reach, actual_caps+recovery_tol))
                 if braking_recovery:
                     floor = recovery_floor+2*self.QP_ROW_TOL+1e-4   # QP residual above the brake floor
                     actual_caps = np.maximum(actual_caps, floor)
-                    caps = np.maximum(caps, np.minimum(floor, caps+self.BRAKING_RECOVERY_TOL))
+                    caps = np.maximum(caps, np.minimum(floor, caps+recovery_tol))
                 violation = predicted[1:, 3] > actual_caps+self.QP_ROW_TOL   # step 48: QP residual (2 mm/s)
                 if not np.any(violation):
                     break
