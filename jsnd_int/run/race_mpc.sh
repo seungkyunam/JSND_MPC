@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Step 18: launch JSND race stack with integrated MPC at a given speed profile, logging for stall comparison.
-# usage: bash ~/JSND_INT/run/race_mpc.sh <lowspeed|1p5|2p25|3p0|4p0|5p0|6p0|7p0> [map=11_18_6] [jsnd|integrated]
+# usage: bash ~/JSND_INT/run/race_mpc.sh <lowspeed|1p5|2p25|3p0|4p0|5p0|final_1s> [map=11_18_6] [jsnd|integrated]
 #   3rd arg (step 26): mpc_speed_source, jsnd = steering-only MPC (default), integrated = accel+steer MPC v2
 # Runs in tmux session "race" (foreground log tee). Stop: Ctrl-C in tmux, or `tmux kill-session -t race`.
 set -eo pipefail

@@ -1,0 +1,18 @@
+{
+  "solved": 2796,
+  "braking_recovery": 285,
+  "solved_late": 22,
+  "nonlinear_braking_envelope_violation": 47,
+  "plan_continuation:osqp:run time limit reached": 17,
+  "nonlinear_prediction_outside_envelope:tracking": 68,
+  "osqp:run time limit reached": 10,
+  "ValueError:outside_heading_envelope": 38,
+  "solved_inexact_verified_late": 3,
+  "plan_continuation:deadline_exceeded": 5,
+  "osqp:primal infeasible": 1,
+  "solved_inexact_verified": 8,
+  "plan_continuation:osqp:solved inaccurate": 3,
+  "osqp:solved inaccurate": 1,
+  "deadline_exceeded": 1,
+  "nonlinear_prediction_outside_envelope:heading": 2
+}

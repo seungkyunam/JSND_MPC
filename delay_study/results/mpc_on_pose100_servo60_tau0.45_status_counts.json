@@ -1,0 +1,10 @@
+{
+  "solved": 2089,
+  "braking_recovery": 874,
+  "braking_envelope_infeasible": 234,
+  "braking_recovery_late": 1,
+  "osqp:run time limit reached": 3,
+  "plan_continuation:osqp:run time limit reached": 2,
+  "plan_continuation:deadline_exceeded": 1,
+  "nonlinear_braking_envelope_violation": 12
+}

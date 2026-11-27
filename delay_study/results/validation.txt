@@ -1,0 +1,7 @@
+PASS: 31 cases; 6 reused traces/diagnostics byte-identical; 327 total completed laps.
+PASS: 6 fractional-delay cases, plus all other new pose inputs match time interpolation to <1e-9.
+PASS: same plant for paired conditions, unchanged optimizer config, OFF runtime prediction horizon only.
+PASS: speed/acceleration/steering limits, state integration, finite traces, completed-lap accounting.
+PASS: original benchmark manifest hashes and tracked production git diff unchanged.
+TIMEOUTS (kept, not discarded): ['mpc_off_pose180_servo60_tau0.12', 'mpc_off_pose200_servo60_tau0.12']
+NOT CERTIFIED: full delayed localization pipeline, tire friction/contact dynamics, real-car delay identification or matched real-vs-sim performance.

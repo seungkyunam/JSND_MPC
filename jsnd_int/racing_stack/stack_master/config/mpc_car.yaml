@@ -94,6 +94,9 @@ controller_manager:
     # 2026-11-25 step 47: 2.0 -> 3.0 (straight-line left/right steering oscillation; also used by
     #   the jsnd steering-only MPC). Rollback: 2.0 here (yaml is symlinked into install, restart only).
     mpc_r_rate: 3.0
+    # Opt-in for fixed-time, variable-N profiles. State/input terms are integrated
+    # in time and steering-increment cost is normalized by step duration.
+    mpc_time_scaled_objective: false
     # --- step 47 corner entry/exit (integrated only, 0 = step 46 behaviour) ---
     mpc_brake_lead_s: 0.12        # curvature speed cap applied 0.12*v m earlier (VESC speed-loop lag); lowers caps only
     mpc_steer_preview_s: 0.03     # steering feed-forward/linearisation sampled 0.03*v m ahead

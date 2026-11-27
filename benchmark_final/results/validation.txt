@@ -1,0 +1,3 @@
+PASS: six runs; 66 total / 60 statistical laps; identical physical model parameters; MPC config identical across delays; speed/accel/steering constraints; finite traces; integration and lap/sector accounting.
+Production tracked files unchanged: git diff --exit-code passed.
+NOT CERTIFIED: combined tire friction, footprint collisions, real-car performance.

@@ -1,0 +1,9 @@
+{
+  "solved": 2706,
+  "braking_recovery": 235,
+  "plan_continuation:deadline_exceeded": 2,
+  "osqp:primal infeasible": 1,
+  "solved_late": 1,
+  "osqp:solved inaccurate": 1,
+  "osqp:run time limit reached": 1
+}

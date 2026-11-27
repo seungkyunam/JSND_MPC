@@ -32,6 +32,22 @@ def test_speed_columns_independent():
     for u in outputs[1:]: np.testing.assert_allclose(u, outputs[0], atol=1e-10)
 
 
+def test_variable_grid_objective_uses_time_quadrature():
+    m = IntegratedMPC(config(horizon=4, preview_dt=.14, time_scaled_objective=True))
+    np.testing.assert_allclose(m.periods, [.02, .14, .14, .14])
+    np.testing.assert_allclose(m.steer_linear_weights, m.periods/.05)
+    np.testing.assert_allclose(m.rate_weights, .05/m.periods)
+    np.testing.assert_allclose(m.state_weights[:-1, 0], m.config.q_position*m.periods[:-1]/.05)
+    # Progress is a displacement sum, so its q_speed term is deliberately not
+    # multiplied by the number of stages or their duration.
+    assert m.config.q_speed == config().q_speed
+
+
+def test_objective_scaling_flag_requires_bool():
+    with pytest.raises(ValueError):
+        config(time_scaled_objective=1)
+
+
 @pytest.mark.parametrize('name', ['straight','s_curve','static_avoidance'])
 def test_physics_and_convexity(name):
     p = virtual_path(name); m = IntegratedMPC(config()); yaw=p[np.argmin(abs(p[:,0])),6]

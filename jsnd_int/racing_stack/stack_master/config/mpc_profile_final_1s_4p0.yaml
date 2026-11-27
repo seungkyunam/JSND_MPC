@@ -1,0 +1,12 @@
+# Staged real-car validation profile; advance only after the 3.0 m/s gate passes.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 4.0
+    mpc_horizon: 10
+    mpc_preview_dt: 0.1088888888888889
+    mpc_time_scaled_objective: true
+    mpc_q_speed: 10.0
+    mpc_r_accel: 0.05
+    mpc_brake_lead_s: 0.08
+    mpc_steer_preview_s: 0.03
+    mpc_cmd_accel_lead_mps: 1.2

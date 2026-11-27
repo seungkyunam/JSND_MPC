@@ -1,0 +1,15 @@
+# Final simulation-selected candidate for the next controlled vehicle validation.
+# It retains mpc_car.yaml's emergency-stop path and physical actuator constraints.
+# Prediction grid: 0.02 + 9 * (0.98/9) = exactly 1.0 s at a 50 Hz control rate.
+# Selection evidence and limitations are in final_validation/REPORT.md.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 5.0
+    mpc_horizon: 10
+    mpc_preview_dt: 0.1088888888888889
+    mpc_time_scaled_objective: true
+    mpc_q_speed: 10.0
+    mpc_r_accel: 0.05
+    mpc_brake_lead_s: 0.08
+    mpc_steer_preview_s: 0.03
+    mpc_cmd_accel_lead_mps: 1.2

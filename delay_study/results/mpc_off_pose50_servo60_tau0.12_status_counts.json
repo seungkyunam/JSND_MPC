@@ -1,0 +1,10 @@
+{
+  "solved": 2633,
+  "braking_recovery": 261,
+  "braking_envelope_infeasible": 34,
+  "solved_inexact_verified": 3,
+  "nonlinear_prediction_outside_envelope:lateral_accel": 2,
+  "nonlinear_braking_envelope_violation": 3,
+  "plan_continuation:deadline_exceeded": 2,
+  "plan_continuation:osqp:solved inaccurate": 1
+}

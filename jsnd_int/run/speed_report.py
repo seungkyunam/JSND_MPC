@@ -15,7 +15,7 @@ a = ap.parse_args()
 r = rosbag2_py.SequentialReader()
 r.open(rosbag2_py.StorageOptions(uri=a.bag, storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
 types = {t.name: get_message(t.type) for t in r.get_all_topics_and_types()}
-odom, fren, out, ctl, host, estop, st, el = [], [], [], [], [], [], [], []
+odom, fren, out, ctl, host, estop, st, el, period, cycle = [], [], [], [], [], [], [], [], [], []
 mpc_diagnostics = []
 while r.has_next():
     topic, raw, t = r.read_next(); t *= 1e-9; m = deserialize_message(raw, types[topic])
@@ -28,6 +28,8 @@ while r.has_next():
     elif topic == '/simple_mux/estop_state': estop.append((t, m.data))
     elif topic == '/controller/mpc_status': st.append((t, m.data))
     elif topic == '/controller/mpc_elapsed_ms': el.append((t, m.data))
+    elif topic == '/controller/mpc_loop_period_ms': period.append((t, m.data))
+    elif topic == '/controller/mpc_cycle_ms': cycle.append((t, m.data))
     elif topic == '/controller/mpc_diagnostics':
         try:
             mpc_diagnostics.append((t, json.loads(m.data)))
@@ -75,6 +77,18 @@ for p, q in zip(odom, odom[1:]):
     if is_auto(q[0]) and q[3] > 0.3: dist += math.hypot(q[1]-p[1], q[2]-p[2])
 print(f"[TRACK] n={len(d)} dist {dist:.1f} m | |d| mean {sum(d)/len(d) if d else float('nan'):.3f} "
       f"p95 {pct(d,.95):.3f} max {max(d, default=float('nan')):.3f} m")
+# Frenet s wraps once per lap. Exclude the first completed lap, matching the
+# offline comparison protocol.
+auto_fren = [f for f in fren if is_auto(f[0]) and speed(f[0]) > .3]
+span_s = max((f[1] for f in auto_fren), default=0)-min((f[1] for f in auto_fren), default=0)
+marks = [b[0] for a_, b in zip(auto_fren, auto_fren[1:]) if a_[1]-b[1] > .5*span_s]
+laps = [b-a_ for a_, b in zip(marks, marks[1:])]
+if laps:
+    mean_lap = sum(laps)/len(laps)
+    lap_std = math.sqrt(sum((x-mean_lap)**2 for x in laps)/(len(laps)-1)) if len(laps)>1 else 0.
+    print(f"[LAPS] n={len(laps)} best {min(laps):.3f} mean {mean_lap:.3f} std {lap_std:.3f} s (first lap excluded)")
+else:
+    print('[LAPS] insufficient completed laps')
 vs = [(c[1], speed(c[0])) for c in ctl if is_auto(c[0]) and c[1] > 0.5]
 if vs:
     err = [abs(c - v) for c, v in vs]
@@ -132,8 +146,16 @@ bad = [x for _, x in mov if not x.startswith(OK)]
 reasons = {}
 for x in bad: reasons[x.split(':')[0]] = reasons.get(x.split(':')[0], 0) + 1
 el = [x for t, x in el if is_auto(t) and speed(t) > 0.3]   # autodrive moving only
-print(f"[MPC] autodrive moving ticks {len(mov)} | STOP {len(bad)} {reasons} | elapsed p50 {pct(el,.5):.1f} "
-      f"p99 {pct(el,.99):.1f} max {max(el, default=float('nan')):.1f} ms")
+solver = [d.get('solver_ms') for t, d in mpc_diagnostics if is_auto(t)
+          and isinstance(d.get('solver_ms'), (int, float))]
+per = [x for t, x in period if is_auto(t) and speed(t) > .3]
+cyc = [x for t, x in cycle if is_auto(t) and speed(t) > .3]
+def timing(name, values):
+    if values:
+        print(f"[{name}] p50 {pct(values,.5):.2f} p95 {pct(values,.95):.2f} p99 {pct(values,.99):.2f} "
+              f"max {max(values):.2f} ms | >20 ms {100*sum(x>20 for x in values)/len(values):.3f}%")
+print(f"[MPC] autodrive moving ticks {len(mov)} | STOP {len(bad)} {reasons}")
+timing('OSQP', solver); timing('MPC ELAPSED', el); timing('CONTROL PERIOD', per); timing('CONTROL CYCLE', cyc)
 
 # --- localisation consistency (step 35): |d| comes from the PF pose. Pose speed over
 # 0.2 s vs wheel speed; outside [0.4, 2.0]x = pose stalled/jumped (|d| unreliable there).

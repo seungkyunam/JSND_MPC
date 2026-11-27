@@ -1,0 +1,9 @@
+{
+  "solved": 2722,
+  "braking_recovery": 246,
+  "plan_continuation:osqp:solved inaccurate": 1,
+  "braking_recovery_late": 1,
+  "nonlinear_braking_envelope_violation": 2,
+  "braking_recovery_inexact_verified": 1,
+  "solved_inexact_verified": 3
+}

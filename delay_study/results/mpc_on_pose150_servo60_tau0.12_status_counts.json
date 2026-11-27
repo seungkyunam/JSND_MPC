@@ -1,0 +1,6 @@
+{
+  "solved": 2587,
+  "braking_recovery": 272,
+  "plan_continuation:osqp:solved inaccurate": 1,
+  "plan_continuation:deadline_exceeded": 1
+}

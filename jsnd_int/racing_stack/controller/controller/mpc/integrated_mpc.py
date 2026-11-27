@@ -29,17 +29,24 @@ class IntegratedConfig(MPCConfig):
     # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
     # starts before the corner, tightening only). steer_preview_s: steering
     # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
-    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s', 'time_weighted_accel_cost')
+    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s', 'time_weighted_accel_cost',
+                    'time_scaled_objective')
     brake_lead_s: float = 0.
     steer_preview_s: float = 0.
     # Opt-in until command/pose delay is measured: equal stage penalties charge
     # the 20 ms executed action as much as a 50 ms future action (postponement).
     time_weighted_accel_cost: bool = False
+    # Normalize the discrete objective as a 50 ms quadrature.  This makes the
+    # one-second N=10/15/20/25 grids comparable: state and absolute-input costs
+    # scale with dt, while the steering-increment cost scales with 1/dt.  The
+    # progress reward already sums physical displacement and needs no dt factor.
+    time_scaled_objective: bool = False
 
     def __post_init__(self):
         super().__post_init__()
-        if type(self.time_weighted_accel_cost) is not bool:
-            raise ValueError('time_weighted_accel_cost must be boolean')
+        if (type(self.time_weighted_accel_cost) is not bool
+                or type(self.time_scaled_objective) is not bool):
+            raise ValueError('objective scaling flags must be boolean')
         if self.braking_preview_ratio > 1.:
             raise ValueError('braking preview cannot exceed maximum deceleration')
         for name in ('brake_lead_s', 'steer_preview_s'):
@@ -143,9 +150,13 @@ class IntegratedMPC:
             if k: d[k, 2*k-1] = -1.
         self.d = d
         penalties = np.tile([config.r_accel, config.r_steer], n)
-        if config.time_weighted_accel_cost:
+        objective_scale = self.periods/.05 if config.time_scaled_objective else np.ones(n)
+        penalties *= np.repeat(objective_scale, 2)
+        if config.time_weighted_accel_cost and not config.time_scaled_objective:
             penalties[0::2] *= self.periods / config.preview_dt
-        self.h_base = np.diag(penalties) + config.r_rate*d.T@d
+        self.rate_weights = .05/self.periods if config.time_scaled_objective else np.ones(n)
+        self.h_base = np.diag(penalties) + config.r_rate*d.T@(self.rate_weights[:, None]*d)
+        self.steer_linear_weights = objective_scale
         # Speed rows of the condensed prediction: v_{k+1} = v_0 + sum_j<=k periods_j*a_j.
         # Row 3 of every linearised A_k is [0,0,0,1] and B_k[3] = [period_k, 0], so these
         # rows never change; appended friction rows have fixed sparsity but variable values.
@@ -169,6 +180,7 @@ class IntegratedMPC:
         self._stack_mask = mask
         self._stack_order = (stacked.data[mask]-1e9).astype(int)
         self.state_weights = np.tile([config.q_position, config.q_position, config.q_heading, 0.], (n, 1))
+        self.state_weights *= objective_scale[:, None]
         self.state_weights[-1] *= config.terminal_scale
         self.box_accel_lo = np.full(n, -config.max_decel)
         self.box_accel_hi = np.full(n, config.max_accel)
@@ -544,7 +556,7 @@ class IntegratedMPC:
             d = self.d
             prev = np.zeros(n)
             prev[0] = previous_steering
-            g = -c.r_rate*(d.T@prev)
+            g = -c.r_rate*(d.T@(self.rate_weights*prev))
             # Batch linearization and quadratic cost assembly. The small state
             # recursion is sequential; forming N separate Hessians is unnecessary.
             v, yaw = ref[:-1, 3], ref[:-1, 2]
@@ -576,7 +588,7 @@ class IntegratedMPC:
             dm = all_m[:, :2] - np.concatenate((np.zeros((1, 2, 2*n)), all_m[:-1, :2]))
             tangents = np.column_stack((np.cos(yaw), np.sin(yaw)))
             g -= .5*c.q_speed*np.einsum('ki,kij->j', tangents, dm)
-            g[1::2] -= c.r_steer*delta
+            g[1::2] -= c.r_steer*self.steer_linear_weights*delta
             lower = -all_b[:, 3]
             # Base speed/rate rows are constant; friction rows depend on caps.
             rate = c.max_steer_rate*periods

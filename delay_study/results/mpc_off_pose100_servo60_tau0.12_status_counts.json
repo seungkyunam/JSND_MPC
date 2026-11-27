@@ -1,0 +1,12 @@
+{
+  "solved": 2444,
+  "braking_recovery": 299,
+  "solved_late": 8,
+  "braking_envelope_infeasible": 35,
+  "nonlinear_braking_envelope_violation": 11,
+  "plan_continuation:osqp:solved inaccurate": 2,
+  "solved_inexact_verified": 4,
+  "plan_continuation:osqp:run time limit reached": 2,
+  "plan_continuation:deadline_exceeded": 1,
+  "solved_inexact_verified_late": 1
+}

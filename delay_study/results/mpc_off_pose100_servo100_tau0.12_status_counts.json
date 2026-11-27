@@ -1,0 +1,14 @@
+{
+  "solved": 2970,
+  "braking_recovery": 274,
+  "nonlinear_braking_envelope_violation": 40,
+  "nonlinear_prediction_outside_envelope:tracking": 86,
+  "solved_late": 5,
+  "osqp:run time limit reached": 4,
+  "solved_inexact_verified": 8,
+  "plan_continuation:osqp:run time limit reached": 14,
+  "osqp:solved inaccurate": 3,
+  "plan_continuation:deadline_exceeded": 1,
+  "ValueError:outside_heading_envelope": 3,
+  "plan_continuation:osqp:solved inaccurate": 2
+}
