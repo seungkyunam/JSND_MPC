@@ -9,8 +9,10 @@ import collections
 import csv
 import dataclasses
 import json
+import math
 import os
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'jsnd_int/racing_stack/controller'), str(ROOT/'controller/test'),
                 str(ROOT/'race_utils/f110_utils/libs/frenet_conversion'),
                 str(ROOT/'jsnd_int/tests_offline')]
+controller_pkg = types.ModuleType('controller')
+controller_pkg.__path__ = [str(ROOT/'jsnd_int/racing_stack/controller/controller')]
+sys.modules['controller'] = controller_pkg
 import controller.mpc
-controller.mpc.__path__.insert(0, str(ROOT/'jsnd_int/racing_stack/controller/controller/mpc'))
 from offline_support import install_marker_shims
 install_marker_shims()
 os.environ['JSND_LAP_STACK_ROOT'] = str(ROOT/'jsnd_int/racing_stack/stack_master')
@@ -79,7 +83,8 @@ def scenario(name):
     raise ValueError(name)
 
 
-def run(controller_name, profile_name, scenario_name, output, laps, extra_overrides=None):
+def run(controller_name, profile_name, scenario_name, output, laps, extra_overrides=None,
+        local_waypoint_count=80, plant_max_speed_mps=23250/4614):
     ctrl_kind = 'pp' if controller_name == 'pp' else 'mpc'
     overrides = profile(profile_name)
     overrides.update(extra_overrides or {})
@@ -89,7 +94,7 @@ def run(controller_name, profile_name, scenario_name, output, laps, extra_overri
     cfg = scenario(scenario_name)
     rng = np.random.default_rng(cfg['seed'])
     dt, wheelbase = .02, .324
-    motor_max = 23250/4614
+    motor_max = float(plant_max_speed_mps)
     conv = c.converter
     x, y, yaw = map(float, sim.FULL[0, [0, 1, 6]])
     v = delta = t = total = 0.
@@ -117,7 +122,7 @@ def run(controller_name, profile_name, scenario_name, output, laps, extra_overri
             lap_marks.append(t)
             if len(lap_marks) >= laps:
                 break
-        wp = local_waypoints(s, fair_pp=(ctrl_kind == 'pp'))
+        wp = local_waypoints(s, fair_pp=(ctrl_kind == 'pp'), n=local_waypoint_count)
         if cfg['pose_delay']:
             poses.append((x, y, yaw)); px, py, pyaw = poses.popleft()
         else:
@@ -142,10 +147,16 @@ def run(controller_name, profile_name, scenario_name, output, laps, extra_overri
                 c.reset_mpc_speed_command()
             c.record_applied_steering(steer)
         motor = float(np.clip(command, 0., motor_max))
-        target_delta = float(np.clip(steer, -sim.SERVO_LIMIT, sim.SERVO_LIMIT))
+        # Apply the same tire/actuator envelope used by the test0 comparison to
+        # both controllers.  This prevents the kinematic plant from granting PP
+        # lateral acceleration that the configured vehicle cannot produce.
+        lateral_steer_limit = math.atan(4.5*wheelbase/max(v*v, 1e-6))
+        steer_limit = min(sim.SERVO_LIMIT, lateral_steer_limit)
+        target_delta = float(np.clip(steer, -steer_limit, steer_limit))
         if cfg['servo_delay']:
             servo.append(target_delta); target_delta = servo.popleft()
         delta += float(np.clip(target_delta-delta, -sim.SERVO_RATE*dt, sim.SERVO_RATE*dt))
+        delta = float(np.clip(delta, -lateral_steer_limit, lateral_steer_limit))
         ay = v*v*abs(np.tan(delta))/wheelbase
         desired_accel = (motor-v)/sim.VESC_TAU
         longitudinal_limit = sim.VESC_ACC if desired_accel >= 0 else sim.VESC_DEC
@@ -202,6 +213,7 @@ def run(controller_name, profile_name, scenario_name, output, laps, extra_overri
                    combined_limit_violation_pct=float(100*np.mean(np.array([row['combined_limit'] for row in rows])[active] > 1+1e-6)),
                    config=dataclasses.asdict(c.lateral_mpc.config) if ctrl_kind == 'mpc' else None,
                    assumptions=dict(wheelbase_m=wheelbase, motor_max_mps=motor_max,
+                                    local_waypoints=int(local_waypoint_count),
                                     accel_mps2=sim.VESC_ACC, decel_mps2=sim.VESC_DEC,
                                     lateral_accel_mps2=4.5, motor_tau_s=sim.VESC_TAU, **cfg))
     (output/'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
@@ -217,12 +229,15 @@ def main():
     parser.add_argument('--laps', type=int, default=11)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--set', nargs='*', default=[], metavar='KEY=VALUE')
+    parser.add_argument('--local-waypoints', type=int, default=80)
+    parser.add_argument('--plant-max-speed-mps', type=float, default=23250/4614)
     args = parser.parse_args()
     extra = {}
     for item in args.set:
         key, value = item.split('=', 1)
         extra[key] = yaml.safe_load(value)
-    return run(args.controller, args.profile, args.scenario, args.output, args.laps, extra)
+    return run(args.controller, args.profile, args.scenario, args.output, args.laps, extra,
+               args.local_waypoints, args.plant_max_speed_mps)
 
 
 if __name__ == '__main__':

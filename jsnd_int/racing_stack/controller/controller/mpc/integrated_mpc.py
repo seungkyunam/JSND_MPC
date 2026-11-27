@@ -27,6 +27,10 @@ class IntegratedConfig(MPCConfig):
     max_decel: float = 2.5
     max_lateral_accel: float = 3.0
     lateral_plan_fraction: float = .85
+    # Speed reserved at the end of a rolling local-waypoint window. Zero retains
+    # the legacy full-stop envelope. A positive value is still capped by the
+    # endpoint's physical curvature limit and path-horizon validation remains on.
+    terminal_speed_mps: float = 0.0
     q_speed: float = 8.0
     r_accel: float = .15
     braking_preview_ratio: float = .85
@@ -41,7 +45,7 @@ class IntegratedConfig(MPCConfig):
     # starts before the corner, tightening only). steer_preview_s: steering
     # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
     ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s', 'time_weighted_accel_cost',
-                    'time_scaled_objective')
+                    'time_scaled_objective', 'terminal_speed_mps')
     brake_lead_s: float = 0.
     steer_preview_s: float = 0.
     # Opt-in until command/pose delay is measured: equal stage penalties charge
@@ -63,6 +67,9 @@ class IntegratedConfig(MPCConfig):
         if (not np.isfinite(self.lateral_plan_fraction)
                 or not .70 <= self.lateral_plan_fraction <= 1.0):
             raise ValueError('lateral_plan_fraction must be within [0.70, 1.0]')
+        if (not np.isfinite(self.terminal_speed_mps)
+                or not 0. <= self.terminal_speed_mps <= self.max_speed):
+            raise ValueError('terminal_speed_mps must be within [0, max_speed]')
         if (not np.isfinite(self.braking_recovery_max_mps)
                 or not .30 <= self.braking_recovery_max_mps <= 2.0):
             raise ValueError('braking_recovery_max_mps must be within [0.30, 2.0]')
@@ -305,7 +312,7 @@ class IntegratedMPC:
             lateral_cap = np.array([lateral_cap[i:j].min() for i, j in enumerate(reach.tolist())])
         v2 = np.minimum(min(c.max_speed, safety_speed_cap), lateral_cap)**2
         # Unknown path beyond the supplied endpoint: reserve enough distance to stop.
-        v2[-1] = 0.
+        v2[-1] = min(v2[-1], c.terminal_speed_mps**2)
         # Backward braking pass on the same g-g ellipse the raceline generator uses:
         # decel available at point i = D*sqrt(1-(a_y/Y)^2) with a_y = v^2*kappa_i.
         ds = np.diff(arc).tolist()

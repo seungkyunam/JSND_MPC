@@ -1,0 +1,25 @@
+# Simulation-only lap-time candidate evaluated on 2026-11-27.
+# It preserves the stable one-second MPC dynamics and 0.35 m avoidance offset,
+# and only extends the rolling local path.  It is NOT selected for real-car use:
+# test0 improved by 1.6%, but 20 ms cycle overruns rose to 11.1%, minimum body
+# clearance fell to 0.031 m, and the short 11_18_6 map caps this window at 70.
+controller_manager:
+  ros__parameters:
+    mpc_speed_source: integrated
+    mpc_horizon: 10
+    mpc_preview_dt: 0.10888888888888888
+    mpc_preview_grid_power: 1.5
+    mpc_time_scaled_objective: true
+    mpc_q_position: 20.0
+    mpc_q_speed: 20.0
+    mpc_r_accel: 0.05
+    mpc_terminal_speed_mps: 0.0
+    mpc_braking_recovery_max_mps: 1.0
+    mpc_lateral_plan_fraction: 0.85
+    mpc_brake_lead_s: 0.08
+    mpc_steer_preview_s: 0.03
+    mpc_cmd_accel_lead_mps: 1.2
+
+state_machine:
+  ros__parameters:
+    n_loc_wpnts: 160

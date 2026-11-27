@@ -24,7 +24,9 @@ from PIL import Image
 from scipy.ndimage import binary_erosion
 
 ROOT = Path(__file__).resolve().parents[1]
-MAP_DIR = ROOT / "stack_master/maps/test0"
+MAP_NAME = os.environ.get('OFFLINE_MAP_NAME', 'test0')
+MAP_DIR = (ROOT/'stack_master/maps'/MAP_NAME if (ROOT/'stack_master/maps'/MAP_NAME).exists()
+           else ROOT/'jsnd_int/racing_stack/stack_master/maps'/MAP_NAME)
 sys.path[:0] = [str(ROOT/'jsnd_int/racing_stack/controller'), str(ROOT/'controller/test'),
                 str(ROOT/'race_utils/f110_utils/libs/frenet_conversion'),
                 str(ROOT/'planner/spliner'), str(ROOT/'planner/grid_filter'),
@@ -47,17 +49,23 @@ from f110_msgs.msg import Obstacle, OTWpntArray, Wpnt, WpntArray
 from spliner.static_avoidance_node import StaticObstacleSpliner
 from vel_planner.vel_planner import calc_vel_profile
 
-MAP_META = yaml.safe_load((MAP_DIR/'test0.yaml').read_text())
+MAP_META = yaml.safe_load((MAP_DIR/f'{MAP_NAME}.yaml').read_text())
 MAP_IMAGE = np.asarray(Image.open(MAP_DIR/MAP_META['image']).convert('L'))
 RAW = json.loads((MAP_DIR/'global_waypoints.json').read_text())['global_traj_wpnts_iqp']['wpnts']
 TRACK_LEN = float(RAW[-1]['s_m'])
 VEHICLE_LENGTH = .52
 VEHICLE_WIDTH = .29
 OBSTACLE_SIZE = .30
-OBSTACLES = (
+OBSTACLES = ((
     dict(id=101, label='corner_entry', s=15.18, d=0.00, size=OBSTACLE_SIZE),
     dict(id=102, label='straight', s=28.97, d=0.00, size=OBSTACLE_SIZE),
-)
+) if MAP_NAME == 'test0' else (
+    # 11_18_6 has no true straight and is only 13.91 m long. Offset the two
+    # obstacles by 0.10 m toward the narrow side so the unchanged 0.35 m
+    # evasion distance fits inside the measured track bounds.
+    dict(id=301, label='corner_a', s=2.09, d=-0.10, size=OBSTACLE_SIZE),
+    dict(id=302, label='corner_b', s=7.25, d=0.10, size=OBSTACLE_SIZE),
+))
 OBSTACLE_LAYOUTS = {
     'baseline': OBSTACLES,
     # Independent feasible placement: a mild corner and the long straight.
@@ -66,7 +74,7 @@ OBSTACLE_LAYOUTS = {
     'alternate': (
         dict(id=201, label='mild_corner', s=9.00, d=0.00, size=OBSTACLE_SIZE),
         dict(id=202, label='long_straight', s=34.00, d=0.00, size=OBSTACLE_SIZE),
-    ),
+    ) if MAP_NAME == 'test0' else OBSTACLES,
 }
 
 _INI = configparser.ConfigParser()
@@ -257,7 +265,8 @@ def body_clearance(x, y, yaw, spec):
 
 
 def run(controller_name, profile_name, scenario_name, output, laps=11, path_refresh_s=None,
-        extra_overrides=None, seed=None, obstacle_layout='baseline'):
+        extra_overrides=None, seed=None, obstacle_layout='baseline', local_waypoints=80,
+        plant_max_speed_mps=23250/4614):
     kind = 'pp' if controller_name == 'pp' else 'mpc'
     overrides=profile(profile_name); overrides.update(extra_overrides or {})
     c, params = sim.build(kind, '5p0', overrides, 50)
@@ -307,7 +316,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
                 elif key in ('obs', 'target'):
                     safe_dbg[key] = int(value.id)
             planner_log.append(dict(t=t, lap=len(lap_marks)+1, **safe_dbg))
-        wp = path_to_array(active_path,x,y,s)
+        wp = path_to_array(active_path,x,y,s,n=local_waypoints)
         if kind == 'pp': wp = pp_physical_governor(wp)
         if cfg['pose_delay']:
             poses.append((x,y,yaw)); px,py,pyaw=poses.popleft()
@@ -323,7 +332,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
             failure=not res.success
             if command<=0: c.reset_mpc_speed_command()
             c.record_applied_steering(steer)
-        motor=float(np.clip(command,0.,23250/4614))
+        motor=float(np.clip(command,0.,plant_max_speed_mps))
         # Shared actuator/tire safety envelope. The old PP comparison allowed the
         # kinematic model to realize lateral accelerations that the tires cannot.
         lateral_steer_limit = math.atan(4.5*wheelbase/max(v*v, 1e-6))
@@ -336,9 +345,23 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         available=long_lim*math.sqrt(max(0.,1-(ay/4.5)**2)); accel=float(np.clip(desired,-available,available))
         combined=(accel/long_lim)**2+(ay/4.5)**2
         clearances=[body_clearance(x,y,yaw,o) for o in obstacles]
+        path_speed_cap = float(wp[0, 2])
+        if kind == 'mpc':
+            try:
+                arc, caps = c.lateral_mpc._geometry_caps(wp, np.inf)
+                seg = np.diff(wp[:, :2], axis=0)
+                frac = np.clip(np.sum((np.array([x, y])-wp[:-1, :2])*seg, axis=1)
+                               / np.maximum(np.sum(seg*seg, axis=1), 1e-9), 0., 1.)
+                projection = wp[:-1, :2]+frac[:, None]*seg
+                j = int(np.argmin(np.linalg.norm(projection-np.array([x, y]), axis=1)))
+                path_speed_cap = float(np.interp(arc[j]+frac[j]*(arc[j+1]-arc[j]), arc, caps))
+            except (ValueError, IndexError, TypeError):
+                path_speed_cap = float('nan')
+        global_kappa = float(np.interp(s, sim.FULL[:, 4], sim.FULL[:, 5]))
         rows.append(dict(t=t,lap=len(lap_marks)+1,s=s,d=d,x=x,y=y,yaw=yaw,speed=v,measured_speed=measured_v,
             command_speed=command,motor_command=motor,command_steer=steer,actual_steer=delta,accel=accel,lateral_accel=ay,
-            combined_limit=combined,status=status,solver_ms=solver_ms,elapsed_ms=elapsed_ms,iterations=iterations,
+            combined_limit=combined,global_kappa=global_kappa,path_speed_cap=path_speed_cap,
+            status=status,solver_ms=solver_ms,elapsed_ms=elapsed_ms,iterations=iterations,
             solver_failure=int(failure),avoidance_active=int(active_path is not None),clearance_corner_m=clearances[0],clearance_straight_m=clearances[1]))
         accel_history[1:]=accel_history[:-1]; accel_history[0]=accel
         x+=dt*v*math.cos(yaw); y+=dt*v*math.sin(yaw); yaw+=dt*v*math.tan(delta)/wheelbase
@@ -369,7 +392,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
             passages.append(dict(lap=lap,obstacle=spec['label'],min_clearance_m=min((r[field] for r in near),default=None),
                 speed_before_mps=float(np.mean(before)) if before else None,speed_after_mps=float(np.mean(after)) if after else None,
                 collision=any(r[field]<0 for r in near),success=bool(near) and not any(r[field]<0 for r in near)))
-    summary=dict(controller=controller_name,profile=profile_name,scenario=scenario_name,map='test0',completed_laps=len(lap_marks),
+    summary=dict(controller=controller_name,profile=profile_name,scenario=scenario_name,map=MAP_NAME,completed_laps=len(lap_marks),
         excluded_laps=1,lap_times_s=lap_times.tolist(),best_lap_s=float(np.min(lap_times)) if len(lap_times) else None,
         worst_lap_s=float(np.max(lap_times)) if len(lap_times) else None,
         mean_lap_s=float(np.mean(lap_times)) if len(lap_times) else None,lap_std_s=float(np.std(lap_times,ddof=1)) if len(lap_times)>1 else None,
@@ -383,6 +406,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         config=dataclasses.asdict(c.lateral_mpc.config) if kind=='mpc' else dict(pp_physical_governor_lat_mps2=4.3,brake_mps2=5.0),
         assumptions=dict(vehicle_length_m=VEHICLE_LENGTH,vehicle_width_m=VEHICLE_WIDTH,obstacle_size_m=OBSTACLE_SIZE,
             obstacle_layout=obstacle_layout, obstacle_placements=obstacles,
+            local_waypoints=int(local_waypoints), plant_max_speed_mps=float(plant_max_speed_mps),
             planner_input='synthetic tracked Obstacle messages',full_perception_and_ros_state_machine=False,**cfg))
     (output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print(json.dumps(summary)); return 0 if len(lap_marks)==laps else 1
@@ -396,10 +420,12 @@ def main():
     p.add_argument('--path-refresh-s',type=float,default=None)
     p.add_argument('--seed',type=int,default=None)
     p.add_argument('--obstacle-layout',choices=sorted(OBSTACLE_LAYOUTS),default='baseline')
+    p.add_argument('--local-waypoints',type=int,default=80)
+    p.add_argument('--plant-max-speed-mps',type=float,default=23250/4614)
     p.add_argument('--set',nargs='*',default=[],metavar='KEY=VALUE')
     a=p.parse_args(); extra={}
     for item in a.set:
         key,value=item.split('=',1); extra[key]=yaml.safe_load(value)
     return run(a.controller,a.profile,a.scenario,a.output,a.laps,a.path_refresh_s,
-               extra,a.seed,a.obstacle_layout)
+               extra,a.seed,a.obstacle_layout,a.local_waypoints,a.plant_max_speed_mps)
 if __name__=='__main__': raise SystemExit(main())
