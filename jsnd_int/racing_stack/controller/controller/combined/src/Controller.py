@@ -279,6 +279,13 @@ class Controller:
             # exit); any deceleration request passes through unchanged.
             accel = min(accel, max(0.0, self.mpc_applied_accel)
                         + self.mpc_accel_jerk_mps3 * self.lateral_mpc.config.dt)
+        # A verified fresh plan that asks to accelerate must not keep integrating
+        # from a stale braking/fallback setpoint below the measured speed.  That
+        # made the VESC continue braking for several ticks after the MPC had
+        # switched to positive acceleration.  Rebase only fresh positive solves;
+        # continuation, recovery, braking and STOP behaviour remain unchanged.
+        if accel > 0.0 and result.status in ('solved', 'solved_late'):
+            base = max(base, measured)
         self.mpc_applied_accel = accel
         command = base + accel * self.lateral_mpc.config.dt
         # Step 52 (vehicle bag 18:20): on straights the 0.5 m/s lead clipped 62% of the

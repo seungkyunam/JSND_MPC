@@ -329,9 +329,18 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         out=c.main_loop('OVERTAKE' if active_path is not None else 'GB_TRACK',pose,wp,measured_v,None,np.array([s,d,measured_v,0.]),accel_history,TRACK_LEN)
         command,steer=float(out[0]),float(out[3])
         status,solver_ms,elapsed_ms,iterations,failure='PP',0.,0.,0,False
+        optimal_accel = applied_accel = predicted_first = predicted_peak = float('nan')
+        lead_mps = command_upper = float('nan')
         if kind=='mpc':
             res=c.mpc_result; status,solver_ms,elapsed_ms,iterations=res.status,res.solver_s*1000,res.elapsed_s*1000,res.iterations
             failure=not res.success
+            diag=c.mpc_speed_diagnostics
+            optimal_accel=float(diag.get('optimal_accel_mps2',float('nan')))
+            applied_accel=float(diag.get('applied_accel_mps2',float('nan')))
+            predicted_first=float(diag.get('predicted_first_mps',float('nan')))
+            predicted_peak=float(diag.get('predicted_peak_mps',float('nan')))
+            lead_mps=float(diag.get('lead_mps',float('nan')))
+            command_upper=float(diag.get('command_upper_mps',float('nan')))
             if command<=0: c.reset_mpc_speed_command()
             c.record_applied_steering(steer)
         motor=float(np.clip(command,0.,plant_max_speed_mps))
@@ -363,6 +372,9 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         rows.append(dict(t=t,lap=len(lap_marks)+1,s=s,d=d,x=x,y=y,yaw=yaw,speed=v,measured_speed=measured_v,
             command_speed=command,motor_command=motor,command_steer=steer,actual_steer=delta,accel=accel,lateral_accel=ay,
             combined_limit=combined,global_kappa=global_kappa,path_speed_cap=path_speed_cap,
+            mpc_optimal_accel=optimal_accel,mpc_applied_accel=applied_accel,
+            mpc_predicted_first_speed=predicted_first,mpc_predicted_peak_speed=predicted_peak,
+            mpc_command_lead=lead_mps,mpc_command_upper=command_upper,
             status=status,solver_ms=solver_ms,elapsed_ms=elapsed_ms,iterations=iterations,
             solver_failure=int(failure),avoidance_active=int(active_path is not None),clearance_corner_m=clearances[0],clearance_straight_m=clearances[1]))
         accel_history[1:]=accel_history[:-1]; accel_history[0]=accel
