@@ -243,10 +243,9 @@ class Controller:
     def _mpc_speed_command(self, result, measured):
         """Convert the MPC acceleration into the VESC speed setpoint.
 
-        The solver keeps using the measured odom speed as feedback. The setpoint,
-        however, is integrated from the previous setpoint: v_cmd += a*dt. Using
-        v_meas + a*dt (the solver's own first prediction) never leaves standstill,
-        because 0 + 1.5*0.025 = 0.04 m/s (~170 ERPM) keeps the wheels still.
+        The solver keeps using measured odom speed as feedback.  For a configured
+        first-order VESC response, v_dot=(v_cmd-v)/tau, invert that model here so
+        the plant realizes the acceleration used by the MPC prediction.
         Bounds: never above the speed the MPC plan itself reaches in its horizon
         (already within the profile/curvature/max_speed caps), never more than
         mpc_cmd_max_lead_mps above the measured speed (anti-windup), never < 0.
@@ -261,7 +260,9 @@ class Controller:
             # estop/TTC and the not-engaged guard still force 0 downstream.
             if self._mpc_soft_stop(measured):
                 cfg = self.lateral_mpc.config
-                self.mpc_speed_cmd = max(0.0, self.mpc_speed_cmd - cfg.max_decel * cfg.dt)
+                legacy = max(0.0, self.mpc_speed_cmd - cfg.max_decel * cfg.dt)
+                response_target = max(0.0, measured - cfg.speed_response_tau_s * cfg.max_decel)
+                self.mpc_speed_cmd = min(legacy, response_target) if cfg.speed_response_tau_s > 0. else legacy
                 self.mpc_applied_accel = 0.0
                 self.mpc_cmd_lead = self.mpc_cmd_max_lead_mps
                 return self.mpc_speed_cmd
@@ -287,7 +288,11 @@ class Controller:
         if accel > 0.0 and result.status in ('solved', 'solved_late'):
             base = max(base, measured)
         self.mpc_applied_accel = accel
-        command = base + accel * self.lateral_mpc.config.dt
+        cfg = self.lateral_mpc.config
+        if cfg.speed_response_tau_s > 0.:
+            command = measured + cfg.speed_response_tau_s * accel
+        else:
+            command = base + accel * cfg.dt
         # Step 52 (vehicle bag 18:20): on straights the 0.5 m/s lead clipped 62% of the
         # accelerating ticks (optimal 2.4 m/s^2, real 1.4-1.6, motor current p95 27 A).
         # A larger lead is allowed only while a fully solved plan accelerates and never
@@ -314,6 +319,8 @@ class Controller:
             predicted_speed_mps=result.predicted[:, 3].tolist(),
             optimal_accel_horizon_mps2=result.controls[:, 0].tolist(),
             command_unclipped_mps=float(command), command_clipped_mps=self.mpc_speed_cmd,
+            response_tau_s=float(cfg.speed_response_tau_s),
+            response_compensated=bool(cfg.speed_response_tau_s > 0.),
             command_upper_mps=float(upper), lead_limit_mps=float(measured + lead), lead_mps=float(lead),
             jerk_limited=bool(accel < result.acceleration - 1e-6),
             lead_limited=bool(command > measured + lead + 1e-6),

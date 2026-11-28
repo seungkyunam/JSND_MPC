@@ -99,6 +99,7 @@ controller_manager:
     mpc_time_scaled_objective: false
     # --- step 47 corner entry/exit (integrated only, 0 = step 46 behaviour) ---
     mpc_brake_lead_s: 0.12        # curvature speed cap applied 0.12*v m earlier (VESC speed-loop lag); lowers caps only
+    mpc_speed_response_tau_s: 0.12 # lap_sim/VESC first-order speed response; shared by envelope and command conversion
     mpc_steer_preview_s: 0.03     # steering feed-forward/linearisation sampled 0.03*v m ahead
     mpc_accel_jerk_mps3: 20.0     # corner-exit acceleration ramp (0 -> 5 m/s^2 in 0.25 s); braking never limited
     # --- acceleration -> VESC speed setpoint ---

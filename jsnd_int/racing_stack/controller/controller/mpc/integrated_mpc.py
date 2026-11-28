@@ -44,9 +44,13 @@ class IntegratedConfig(MPCConfig):
     # applies brake_lead_s*v earlier along the path (VESC speed-loop lag -> braking
     # starts before the corner, tightening only). steer_preview_s: steering
     # linearisation/feed-forward reference sampled steer_preview_s*v ahead.
-    ZERO_ALLOWED = ('brake_lead_s', 'steer_preview_s', 'time_weighted_accel_cost',
-                    'time_scaled_objective', 'terminal_speed_mps')
+    ZERO_ALLOWED = ('brake_lead_s', 'speed_response_tau_s', 'steer_preview_s',
+                    'time_weighted_accel_cost', 'time_scaled_objective',
+                    'terminal_speed_mps')
     brake_lead_s: float = 0.
+    # First-order VESC/plant speed-loop response.  It is used both to anticipate
+    # curvature braking and to convert MPC acceleration to a speed setpoint.
+    speed_response_tau_s: float = 0.
     steer_preview_s: float = 0.
     # Opt-in until command/pose delay is measured: equal stage penalties charge
     # the 20 ms executed action as much as a 50 ms future action (postponement).
@@ -75,7 +79,7 @@ class IntegratedConfig(MPCConfig):
             raise ValueError('braking_recovery_max_mps must be within [0.30, 2.0]')
         if not np.isfinite(self.preview_grid_power) or not 1. <= self.preview_grid_power <= 3.:
             raise ValueError('preview_grid_power must be within [1, 3]')
-        for name in ('brake_lead_s', 'steer_preview_s'):
+        for name in ('brake_lead_s', 'speed_response_tau_s', 'steer_preview_s'):
             value = getattr(self, name)
             if not np.isfinite(value) or not 0. <= value <= .5:
                 raise ValueError(name + ' must be within [0, 0.5] s')
@@ -325,9 +329,11 @@ class IntegratedMPC:
         # curvature factor. Lateral cap = sqrt(Y/|kappa|) (a_long = 0 at the limit).
         kappa = np.maximum(abs(curvature), 1e-6)
         lateral_cap = np.sqrt(c.lateral_plan_fraction*c.max_lateral_accel/kappa)
-        if c.brake_lead_s > 0.:
-            # Step 47: a corner cap also holds brake_lead_s*v before it (only lowers caps).
-            reach = np.searchsorted(envelope_arc, envelope_arc+c.brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
+        brake_lead_s = max(c.brake_lead_s, c.speed_response_tau_s)
+        if brake_lead_s > 0.:
+            # Apply the measured speed-loop delay to the same curvature envelope
+            # used by the optimizer.  max() avoids double-counting a legacy lead.
+            reach = np.searchsorted(envelope_arc, envelope_arc+brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
             lateral_cap = np.array([lateral_cap[i:j].min() for i, j in enumerate(reach.tolist())])
         v2 = np.minimum(min(c.max_speed, safety_speed_cap), lateral_cap)**2
         # Unknown path beyond the supplied endpoint: reserve enough distance to stop.

@@ -97,7 +97,8 @@ def test_telemetry_separates_jerk_plan_and_lead():
     assert d['jerk_limited'] and d['command_clipped_mps']<=1.5
     c.mpc_accel_jerk_mps3=0.;c.mpc_speed_cmd=2.
     c._mpc_speed_command(r,1.)
-    assert c.mpc_speed_diagnostics['lead_limited']
+    assert c.mpc_speed_diagnostics['response_compensated']
+    assert not c.mpc_speed_diagnostics['lead_limited']
 
 
 def test_fresh_acceleration_rebases_stale_braking_setpoint():
@@ -107,7 +108,9 @@ def test_fresh_acceleration_rebases_stale_braking_setpoint():
     c.mpc_speed_cmd = .5
     command = c._mpc_speed_command(r, 1.)
     assert command >= 1. and command == pytest.approx(min(
-        1.+r.acceleration*c.lateral_mpc.config.dt, np.max(r.predicted[:, 3])))
+        1.+r.acceleration*c.lateral_mpc.config.speed_response_tau_s,
+        np.max(r.predicted[:, 3])))
+    assert (command-1.)/c.lateral_mpc.config.speed_response_tau_s == pytest.approx(r.acceleration)
 
 @pytest.mark.parametrize('weighted',[False,True])
 @pytest.mark.parametrize('curvature,speed',[(0.,3.),(.2,2.),(.6,1.)])
