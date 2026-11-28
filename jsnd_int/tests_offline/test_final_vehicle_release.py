@@ -49,6 +49,22 @@ def test_launch_load_order_and_fixed_budget_are_fail_closed():
         assert required in validator
 
 
+def test_extended_speed_profiles_change_only_the_operator_ceiling():
+    expected = {'6p0': 6.0, '7p0': 7.0, '8p0': 8.0, '9p0': 9.0, '10p0': 10.0}
+    validator = (STACK/'stack_master/launch/validate_final_vehicle.launch.py').read_text()
+    launcher = (ROOT/'jsnd_int/run/step45_run.sh').read_text()
+    compatibility_launcher = (ROOT/'jsnd_int/run/race_mpc.sh').read_text()
+    stage = load_stage_module()
+    for name, value in expected.items():
+        params = yaml.safe_load(
+            (STACK/f'stack_master/config/mpc_profile_{name}.yaml').read_text()
+        )['controller_manager']['ros__parameters']
+        assert params == {'mpc_max_speed_mps': value}
+        assert f"'{name}'" in validator
+        assert name in launcher and name in compatibility_launcher
+        assert f'stack_master/config/mpc_profile_{name}.yaml' in stage.FILES
+
+
 def test_runtime_wiring_retains_response_and_global_successor_and_records_required_data():
     manager = (STACK/'controller/controller/controller_manager.py').read_text()
     integrated = (STACK/'controller/controller/mpc/integrated_mpc.py').read_text()
@@ -61,7 +77,7 @@ def test_runtime_wiring_retains_response_and_global_successor_and_records_requir
     assert 'command = measured + cfg.speed_response_tau_s * accel' in controller
     recorder = (ROOT/'jsnd_int/run/step45_rec.sh').read_text()
     for topic in ('/controller/mpc_diagnostics', '/controller/mpc_predicted_path',
-                  '/vesc/ackermann_cmd', '/vesc/odom', '/tracking/obstacles',
+                  '/vesc/ackermann_cmd', '/vesc/commands/motor/speed', '/vesc/odom', '/tracking/obstacles',
                   '/simple_mux/estop_state'):
         assert topic in recorder
 
@@ -94,4 +110,6 @@ def test_final_stage_backup_and_restore_are_checksum_guarded(tmp_path):
     stage.restore(backup)
     assert not (target/'stack_master/launch/validate_final_vehicle.launch.py').exists()
     assert not (target/'stack_master/config/mpc_profile_obstacle_1s.yaml').exists()
+    for profile in ('6p0', '7p0', '8p0', '9p0', '10p0'):
+        assert not (target/f'stack_master/config/mpc_profile_{profile}.yaml').exists()
     assert (target/stage.FILES[0]).read_text() == 'previous clean checkout\n'

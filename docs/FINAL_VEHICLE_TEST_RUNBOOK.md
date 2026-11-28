@@ -22,9 +22,12 @@ MPC 실행 시 launch와 controller가 이 조건을 각각 검사한다.
 - solver time limit/deadline 모두 20 ms
 - 기존 차량 물리 한계와 `simple_mux` E-stop 경로 유지
 
-기존 `lowspeed`, `1p5`, `2p25`, `3p0`, `4p0`, `5p0` 파일은 속도 상한만
-선택한다. 최종 MPC YAML이 그 뒤에 로드되므로 N, 시간격자, 가중치, VESC 보상은
-속도 프로파일로 바뀌지 않는다. 다른 프로파일과 `jsnd` 속도 소스는 시작 전에 거부된다.
+`lowspeed`, `1p5`, `2p25`, `3p0`, `4p0`, `5p0`, `6p0`, `7p0`, `8p0`,
+`9p0`, `10p0` 파일은 속도 상한만 선택한다. 최종 MPC YAML이 그 뒤에 로드되므로
+N, 시간격자, 가중치, VESC 보상은 속도 프로파일로 바뀌지 않는다. 다른 프로파일과
+`jsnd` 속도 소스는 시작 전에 거부된다. 6p0 이상을 선택해도 VESC driver의
+23250 ERPM(현재 gain 기준 약 5.039 m/s) 제한은 그대로다. 계층별 상세는
+`docs/VEHICLE_SPEED_LIMITS.md`를 참조한다.
 
 ## 현장 배포 준비와 복구점
 
@@ -102,7 +105,8 @@ bash "$HOME/JSND_MPC_vehicle_final/jsnd_int/run/step45_rec.sh" mpc
 
 - MPC 요구/저크 적용 가속도, IMU 측정 가속도, VESC 명령·측정 속도:
   `/controller/mpc_diagnostics`, `/imu/data`, `/vesc/sensors/imu_corrected`,
-  `/vesc/high_level/ackermann_cmd`, `/vesc/ackermann_cmd`, `/vesc/odom`, `/car_state/odom`
+  `/vesc/high_level/ackermann_cmd`, `/vesc/ackermann_cmd`, `/vesc/commands/motor/speed`,
+  `/vesc/odom`, `/car_state/odom`
 - 예측 경로: `/controller/mpc_predicted_path`
 - 계산 시간/실패 원인: `/controller/mpc_elapsed_ms`, `/controller/mpc_cycle_ms`,
   `/controller/mpc_loop_period_ms`, `/controller/mpc_status`
@@ -145,7 +149,9 @@ python3 "$HOME/JSND_MPC_vehicle_final/jsnd_int/run/vesc_tau_report.py" \
 5. 짧은 직선 가감속 후 정지하여 bag과 tau를 먼저 확인한다.
 6. MPC 저속 1랩, 장애물이 있으면 보행 속도 접근부터 회피 상태를 확인한다.
 7. 각 단계 후 bag 분석과 안전 검토가 통과한 경우에만 1p5 → 2p25 → 3p0 → 4p0 → 5p0
-   순서로 별도 재시작한다. 이 문서는 속도 상승을 자동 승인하지 않는다.
+   순서로 별도 재시작한다. 6p0~10p0은 선택 가능하지만 VESC 제한을 높이지 않으며,
+   별도의 현장 안전 승인 없이 단계 상승 대상으로 간주하지 않는다. 이 문서는 속도 상승을
+   자동 승인하지 않는다.
 8. 이상 시 A/물리 E-stop, launch 종료, PP 또는 기존 overlay로 복구한다.
 
 ## 비상정지와 복구

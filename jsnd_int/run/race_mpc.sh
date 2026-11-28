@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Compatibility launcher for the final c16bced vehicle MPC.
-# usage: bash run/race_mpc.sh <lowspeed|1p5|2p25|3p0|4p0|5p0> [map=11_18_6]
+# usage: bash run/race_mpc.sh <lowspeed|1p5|2p25|3p0|4p0|5p0|6p0|7p0|8p0|9p0|10p0> [map=11_18_6]
 # Runs in tmux session "race" (foreground log tee). Stop: Ctrl-C in tmux, or `tmux kill-session -t race`.
 set -eo pipefail
-PROFILE=${1:?profile: lowspeed|1p5|2p25|3p0|4p0|5p0}; MAP=${2:-11_18_6}
+PROFILE=${1:?profile: lowspeed|1p5|2p25|3p0|4p0|5p0|6p0|7p0|8p0|9p0|10p0}; MAP=${2:-11_18_6}
 [[ $# -le 2 ]] || { echo "ABORT: speed source is fixed to integrated"; exit 2; }
-case $PROFILE in lowspeed|1p5|2p25|3p0|4p0|5p0) ;; *) echo "ABORT: staged speed-only profile required"; exit 2;; esac
+case $PROFILE in lowspeed|1p5|2p25|3p0|4p0|5p0|6p0|7p0|8p0|9p0|10p0) ;; *) echo "ABORT: staged speed-only profile required"; exit 2;; esac
 [ "$(id -u)" -eq 0 ] && { echo "ABORT: run as jsnd, not root/sudo"; exit 1; }
 [ "$(hostname)" = "jsnd" ] || { echo "ABORT: run on Jetson (ssh jsnd@172.20.10.4)"; exit 1; }
 vehicle_overlay=${JSND_INT_OVERLAY:-$HOME/JSND_INT}

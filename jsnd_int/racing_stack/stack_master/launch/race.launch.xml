@@ -24,7 +24,7 @@
   <arg name="controller" default="pp"
        description="pp: legacy Pure-Pursuit + speed control (default). mpc: integrated speed+steering MPC (config/mpc_car.yaml). Any other value starts no controller."/>
   <arg name="mpc_profile" default="lowspeed"
-       description="controller:=mpc only: staged speed ceiling. Final vehicle release accepts lowspeed, 1p5, 2p25, 3p0, 4p0 or 5p0; all other MPC parameters are fixed by mpc_profile_obstacle_1s.yaml."/>
+       description="controller:=mpc only: operator speed ceiling. Final vehicle release accepts lowspeed, 1p5, 2p25, 3p0, 4p0, 5p0, 6p0, 7p0, 8p0, 9p0 or 10p0; all other MPC parameters are fixed by mpc_profile_obstacle_1s.yaml and the VESC driver limit is unchanged."/>
   <arg name="mpc_speed_source" default="integrated" description="Final vehicle release requires integrated; retained as an argument only so invalid legacy commands fail with an explicit validation error."/>
   <arg name="mpc_rate_hz" default="50"
        description="Final vehicle release requires 50 Hz. Other values are rejected before nodes start."/>

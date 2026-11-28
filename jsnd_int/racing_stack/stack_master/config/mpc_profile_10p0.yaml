@@ -1,0 +1,6 @@
+# 10.0 m/s operator ceiling. This overlay changes no MPC weight, timing, or physical constraint.
+# The downstream VESC driver still clips motor speed to +/-23250 ERPM (about 5.039 m/s at
+# speed_to_erpm_gain=4614); selecting this profile does not raise that hardware-side limit.
+controller_manager:
+  ros__parameters:
+    mpc_max_speed_mps: 10.0

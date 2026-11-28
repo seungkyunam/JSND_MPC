@@ -5,7 +5,10 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 
 
-SAFE_PROFILES = ('lowspeed', '1p5', '2p25', '3p0', '4p0', '5p0')
+SAFE_PROFILES = (
+    'lowspeed', '1p5', '2p25', '3p0', '4p0', '5p0',
+    '6p0', '7p0', '8p0', '9p0', '10p0',
+)
 
 
 def _validate(context):

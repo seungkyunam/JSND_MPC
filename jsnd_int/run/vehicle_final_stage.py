@@ -30,10 +30,20 @@ FILES = (
     'stack_master/launch/validate_final_vehicle.launch.py',
     'stack_master/config/mpc_car.yaml',
     'stack_master/config/mpc_profile_obstacle_1s.yaml',
+    'stack_master/config/mpc_profile_6p0.yaml',
+    'stack_master/config/mpc_profile_7p0.yaml',
+    'stack_master/config/mpc_profile_8p0.yaml',
+    'stack_master/config/mpc_profile_9p0.yaml',
+    'stack_master/config/mpc_profile_10p0.yaml',
 )
 NEW_FILES_ALLOWED = {
     'stack_master/launch/validate_final_vehicle.launch.py',
     'stack_master/config/mpc_profile_obstacle_1s.yaml',
+    'stack_master/config/mpc_profile_6p0.yaml',
+    'stack_master/config/mpc_profile_7p0.yaml',
+    'stack_master/config/mpc_profile_8p0.yaml',
+    'stack_master/config/mpc_profile_9p0.yaml',
+    'stack_master/config/mpc_profile_10p0.yaml',
 }
 
 

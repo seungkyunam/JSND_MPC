@@ -1,6 +1,6 @@
 # c16bced final one-second obstacle profile. In the final vehicle branch this is
 # loaded after the existing staged speed-ceiling file. It intentionally does not
-# set mpc_max_speed_mps: lowspeed/1p5/2p25/3p0/4p0/5p0 remain the operator gate.
+# set mpc_max_speed_mps: the selected lowspeed through 10p0 overlay remains the operator gate.
 # Objective weights and physical limits are not tuned here beyond the validated
 # c16bced configuration.
 controller_manager:
