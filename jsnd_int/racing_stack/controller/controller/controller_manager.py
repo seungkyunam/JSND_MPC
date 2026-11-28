@@ -252,6 +252,11 @@ class ControllerManager(Node):
         if len(data.wpnts) < 2:
             return
         self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        if self.lateral_mpc is not None and hasattr(self.lateral_mpc, 'set_global_path'):
+            self.lateral_mpc.set_global_path(np.array([
+                [wpnt.x_m, wpnt.y_m, wpnt.vx_mps, 0., wpnt.s_m,
+                 wpnt.kappa_radpm, wpnt.psi_rad, wpnt.ax_mps2, wpnt.d_m]
+                for wpnt in data.wpnts], dtype=float))
         # ROS1 read /global_republisher/track_length; derive from the waypoints' s_m
         self.track_length = data.wpnts[-1].s_m
         self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])

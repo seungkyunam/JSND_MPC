@@ -172,6 +172,9 @@ class IntegratedMPC:
         self.config = config
         self.osqp, self.sparse = osqp, sparse
         self.solver = None
+        # Optional closed global path used only to continue the braking envelope
+        # beyond a rolling local window.  It never changes the MPC horizon/state.
+        self._global_braking_path = None
         n = config.horizon
         size = 2*n
         self.p_rows = np.concatenate([np.arange(j+1) for j in range(size)])
@@ -227,6 +230,19 @@ class IntegratedMPC:
         self.plan = None          # last accepted, fully verified plan (absolute coordinates)
         self.continuation = 0     # consecutive ticks served from that plan
         self.reset()
+
+    def set_global_path(self, waypoints):
+        """Register a safe closed-path successor for endpoint braking.
+
+        Standard waypoint columns [x, y, ..., s, curvature, heading] are required.
+        Invalid data disables continuation, preserving the legacy stop-at-end rule.
+        """
+        path = np.asarray(waypoints, float)
+        valid = (path.ndim == 2 and path.shape[1] >= 7 and len(path) >= 3
+                 and np.isfinite(path[:, [0, 1, 4, 5, 6]]).all()
+                 and np.all(np.diff(path[:, 4]) >= 0.))
+        self._global_braking_path = path.copy() if valid else None
+        self._caps_cache = None
 
     def reset(self):
         """External reset invalidates commands as well as solver warm starts."""
@@ -300,22 +316,25 @@ class IntegratedMPC:
 
     def _geometry_caps_uncached(self, path, safety_speed_cap):
         c = self.config
-        arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1))]
-        yaw, curvature = self._path_geometry(path, arc)
+        local_count = len(path)
+        envelope_path = self._append_global_successor(path)
+        envelope_arc = np.r_[0., np.cumsum(np.linalg.norm(
+            np.diff(envelope_path[:, :2], axis=0), axis=1))]
+        yaw, curvature = self._path_geometry(envelope_path, envelope_arc)
         # Full friction-ellipse limits (step 26): no Y/sqrt(2) allocation, no 0.85
         # curvature factor. Lateral cap = sqrt(Y/|kappa|) (a_long = 0 at the limit).
         kappa = np.maximum(abs(curvature), 1e-6)
         lateral_cap = np.sqrt(c.lateral_plan_fraction*c.max_lateral_accel/kappa)
         if c.brake_lead_s > 0.:
             # Step 47: a corner cap also holds brake_lead_s*v before it (only lowers caps).
-            reach = np.searchsorted(arc, arc+c.brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
+            reach = np.searchsorted(envelope_arc, envelope_arc+c.brake_lead_s*np.minimum(lateral_cap, c.max_speed), 'right')
             lateral_cap = np.array([lateral_cap[i:j].min() for i, j in enumerate(reach.tolist())])
         v2 = np.minimum(min(c.max_speed, safety_speed_cap), lateral_cap)**2
         # Unknown path beyond the supplied endpoint: reserve enough distance to stop.
         v2[-1] = min(v2[-1], c.terminal_speed_mps**2)
         # Backward braking pass on the same g-g ellipse the raceline generator uses:
         # decel available at point i = D*sqrt(1-(a_y/Y)^2) with a_y = v^2*kappa_i.
-        ds = np.diff(arc).tolist()
+        ds = np.diff(envelope_arc).tolist()
         k = kappa.tolist()
         vv = v2.tolist()
         dec, ylim = c.braking_preview_ratio*c.max_decel, c.max_lateral_accel
@@ -324,7 +343,37 @@ class IntegratedMPC:
             if vv[i] > nxt:
                 r = nxt*k[i]/ylim
                 vv[i] = min(vv[i], nxt + 2.*dec*np.sqrt(max(0., 1.-r*r))*ds[i])
-        return arc, np.sqrt(np.asarray(vv))
+        local_arc = envelope_arc[:local_count]
+        return local_arc, np.sqrt(np.asarray(vv[:local_count]))
+
+    def _append_global_successor(self, path):
+        """Append verified global geometry far enough to stop after the MPC preview."""
+        global_path = self._global_braking_path
+        if global_path is None or path.shape[1] < 7 or not np.isfinite(path[-1, [0, 1, 4, 6]]).all():
+            return path
+        s = float(path[-1, 4])
+        index = int(np.searchsorted(global_path[:, 4], s, side='right')) % len(global_path)
+        first = global_path[index]
+        spacing = np.linalg.norm(np.diff(global_path[:, :2], axis=0), axis=1)
+        join_limit = max(.10, 2.5*float(np.median(spacing[spacing > 1e-6])))
+        heading_error = abs((float(first[6])-float(path[-1, 6])+np.pi) % (2*np.pi)-np.pi)
+        if np.linalg.norm(first[:2]-path[-1, :2]) > join_limit or heading_error > .35:
+            return path
+        required = (self.config.max_speed*float(np.sum(self.periods))
+                    + self.config.max_speed**2
+                    / (2*self.config.braking_preview_ratio*self.config.max_decel))
+        successor, distance, previous = [], 0., path[-1, :2]
+        for offset in range(len(global_path)):
+            point = global_path[(index+offset) % len(global_path)]
+            step = float(np.linalg.norm(point[:2]-previous))
+            if not 1e-6 < step <= 2*join_limit:
+                return path
+            successor.append(point)
+            distance += step
+            previous = point[:2]
+            if distance >= required:
+                return np.vstack((path, successor))
+        return path
 
     @staticmethod
     def _path_geometry(path, arc):

@@ -270,7 +270,9 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
     kind = 'pp' if controller_name == 'pp' else 'mpc'
     overrides=profile(profile_name); overrides.update(extra_overrides or {})
     c, params = sim.build(kind, '5p0', overrides, 50)
-    if kind == 'mpc': c.mpc_cmd_accel_lead_mps = params['mpc_cmd_accel_lead_mps']
+    if kind == 'mpc':
+        c.mpc_cmd_accel_lead_mps = params['mpc_cmd_accel_lead_mps']
+        c.lateral_mpc.set_global_path(sim.GB)
     cfg, planner = scenario(scenario_name), build_planner()
     if seed is not None: cfg['seed'] = int(seed)
     rng = np.random.default_rng(cfg['seed'])

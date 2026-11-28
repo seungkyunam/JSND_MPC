@@ -161,3 +161,28 @@ def test_nonuniform_grid_preserves_total_time_and_densifies_near_term():
     assert dense.periods.sum()==pytest.approx(1.0)
     assert dense.periods[1]<uniform.periods[1]
     assert np.all(np.diff(dense.periods[1:])>0.)
+
+
+def test_verified_global_successor_removes_local_endpoint_stop_cap():
+    c = config(max_speed=3., max_decel=3., braking_preview_ratio=.8)
+    x = np.linspace(0., 20., 201)
+    global_path = np.column_stack((x, np.zeros_like(x), np.full_like(x, 3.),
+        np.zeros_like(x), x, np.zeros_like(x), np.zeros_like(x)))
+    local = global_path[:31]
+    legacy = IntegratedMPC(c)
+    _, stopped = legacy._geometry_caps(local, np.inf)
+    extended = IntegratedMPC(c)
+    extended.set_global_path(global_path)
+    _, continued = extended._geometry_caps(local, np.inf)
+    assert stopped[-1] == 0.
+    assert continued[-1] == pytest.approx(c.max_speed)
+
+
+def test_global_successor_fails_closed_on_disconnected_path():
+    c = config(max_speed=3.)
+    local = np.column_stack((np.linspace(0., 3., 31), np.zeros(31), np.full(31, 3.),
+        np.zeros(31), np.linspace(0., 3., 31), np.zeros(31), np.zeros(31)))
+    bad = local.copy(); bad[:, 0] += 10.
+    mpc = IntegratedMPC(c); mpc.set_global_path(bad)
+    _, caps = mpc._geometry_caps(local, np.inf)
+    assert caps[-1] == 0.
