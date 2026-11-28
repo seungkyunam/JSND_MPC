@@ -24,12 +24,12 @@
   <arg name="controller" default="pp"
        description="pp: legacy Pure-Pursuit + speed control (default). mpc: integrated speed+steering MPC (config/mpc_car.yaml). Any other value starts no controller."/>
   <arg name="mpc_profile" default="lowspeed"
-       description="controller:=mpc only: loads config/mpc_profile_&lt;name&gt;.yaml after mpc_car.yaml. lowspeed = 1.0 m/s (real car). exp2mps = 2.0 m/s (wheels-lifted bench experiment only)."/>
-  <arg name="mpc_speed_source" default="jsnd" description="jsnd: preserved steering MPC; integrated: geometry-only joint MPC v2."/>
+       description="controller:=mpc only: staged speed ceiling. Final vehicle release accepts lowspeed, 1p5, 2p25, 3p0, 4p0 or 5p0; all other MPC parameters are fixed by mpc_profile_obstacle_1s.yaml."/>
+  <arg name="mpc_speed_source" default="integrated" description="Final vehicle release requires integrated; retained as an argument only so invalid legacy commands fail with an explicit validation error."/>
   <arg name="mpc_rate_hz" default="50"
-       description="controller:=mpc only: control loop rate (MPC solved every tick). 50 default since 2026-11-22 step 14: the full real-car stack reached only ~89 Hz at 100 (MPC p99 11 ms). MPC deadline = 0.8/rate, OSQP time limit = 0.4/rate (100 Hz -> 8/4 ms as before, 50 Hz -> 16/8 ms)."/>
+       description="Final vehicle release requires 50 Hz. Other values are rejected before nodes start."/>
   <arg name="mpc_heading_robust" default="false" description="Integrated MPC only: EKF yaw-rate-assisted heading innovation limiter."/>
-  <arg name="mpc_history_prediction" default="false" description="Integrated MPC only: command-history prediction replaces last-command latency compensation."/>
+  <arg name="mpc_history_prediction" default="true" description="Final vehicle release requires true: command-history prediction preserves the existing latency compensation."/>
   <arg name="mpc_monitor" default="false"
        description="controller:=mpc only: start mpc_monitor_node (2 Hz summary on /pitwall/mpc_monitor for the pitwall panel). Off by default: the rclpy node costs ~27 % of a core on the car."/>
   <!-- simple_mux options, forwarded through base_system/localization/low_level -->
@@ -62,6 +62,14 @@
   <arg name="launch_joy" default="true"
        description="Start joy_node (/joy) on the real car (never in sim). Pass launch_joy:=false if it already runs elsewhere."/>
   <arg name="joy_device_id" default="0" description="joy_node device_id (/dev/input/jsN)"/>
+  <include file="$(find-pkg-share stack_master)/launch/validate_final_vehicle.launch.py">
+    <arg name="controller" value="$(var controller)"/>
+    <arg name="mpc_profile" value="$(var mpc_profile)"/>
+    <arg name="mpc_rate_hz" value="$(var mpc_rate_hz)"/>
+    <arg name="mpc_speed_source" value="$(var mpc_speed_source)"/>
+    <arg name="mpc_heading_robust" value="$(var mpc_heading_robust)"/>
+    <arg name="mpc_history_prediction" value="$(var mpc_history_prediction)"/>
+  </include>
   <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
   <let name="racecar_version" value="SIM" if="$(var sim)"/>
   <let name="racecar_version" value="CAR" unless="$(var sim)"/>
@@ -215,14 +223,18 @@
     <!-- Integrated MPC: replaces PP steering AND legacy speed control. FTGONLY still runs FTG;
          behavior_strategy, simple_mux, estop and VESC paths are unchanged. -->
     <param from="$(find-pkg-share stack_master)/config/mpc_car.yaml"/>
-    <!-- speed profile overlay: config/mpc_profile_<mpc_profile>.yaml (unknown name -> launch fails) -->
+    <!-- Existing staged files contribute only the operator-approved speed ceiling. -->
     <param from="$(find-pkg-share stack_master)/config/mpc_profile_$(var mpc_profile).yaml"/>
+    <!-- Final c16bced controller settings load last, so speed profiles cannot alter N,
+         horizon, weights, VESC response compensation or physical limits. -->
+    <param from="$(find-pkg-share stack_master)/config/mpc_profile_obstacle_1s.yaml"/>
     <param name="mpc_speed_source" value="$(var mpc_speed_source)" type="str"/>
     <param name="mpc_heading_robust" value="$(var mpc_heading_robust)" type="bool"/>
     <param name="mpc_history_prediction" value="$(var mpc_history_prediction)" type="bool"/>
     <param name="control_loop_rate_hz" value="$(var mpc_rate_hz)" type="int"/>
-    <param name="mpc_deadline_s" value="$(eval '0.8 / $(var mpc_rate_hz)')" type="float"/>
-    <param name="mpc_solver_time_limit_s" value="$(eval '0.4 / $(var mpc_rate_hz)')" type="float"/>
+    <param name="mpc_deadline_s" value="0.020" type="float"/>
+    <param name="mpc_solver_time_limit_s" value="0.020" type="float"/>
+    <param name="mpc_final_vehicle_config" value="true" type="bool"/>
     <param name="lateral_controller" value="MPC" type="str"/>
     <env name="PYTHONPATH" value="$(var mpc_pydeps):$(env PYTHONPATH '')"/>
   </node>

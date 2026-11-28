@@ -1,5 +1,8 @@
-# Simulation-selected one-second obstacle profile (2026-11-27).
-# Real-car use must follow the staged speed gates in final_validation/REAL_CAR_RUNBOOK.md.
+# c16bced final one-second obstacle profile. In the final vehicle branch this is
+# loaded after the existing staged speed-ceiling file. It intentionally does not
+# set mpc_max_speed_mps: lowspeed/1p5/2p25/3p0/4p0/5p0 remain the operator gate.
+# Objective weights and physical limits are not tuned here beyond the validated
+# c16bced configuration.
 controller_manager:
   ros__parameters:
     mpc_speed_source: integrated
@@ -7,6 +10,7 @@ controller_manager:
     mpc_preview_dt: 0.10888888888888888
     mpc_preview_grid_power: 1.5
     mpc_time_scaled_objective: true
+    mpc_time_weighted_accel_cost: false
     mpc_q_position: 20.0
     mpc_q_speed: 20.0
     mpc_r_accel: 0.05

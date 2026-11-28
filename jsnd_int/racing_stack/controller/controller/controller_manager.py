@@ -140,6 +140,20 @@ class ControllerManager(Node):
             from controller.mpc.integrated_mpc import IntegratedMPC  # imports OSQP
             config = make_config(mpc_values, self.wheelbase, wheelbase_explicit, self.loop_rate)
             self.lateral_mpc = IntegratedMPC(config)
+            if bool(self._get_param('mpc_final_vehicle_config', False)):
+                expected = {
+                    'dt': .02, 'horizon': 10, 'preview_dt': .98/9,
+                    'speed_response_tau_s': .12, 'q_position': 20.,
+                    'q_heading': 16., 'q_speed': 20., 'r_steer': .2,
+                    'r_rate': 3., 'r_accel': .05, 'deadline': .02,
+                    'solver_time_limit': .02,
+                }
+                wrong = [f'{name}={getattr(config, name)!r}' for name, value in expected.items()
+                         if not np.isclose(getattr(config, name), value, rtol=0., atol=1e-9)]
+                if not np.isclose(np.sum(self.lateral_mpc.periods), 1., rtol=0., atol=1e-9):
+                    wrong.append(f'prediction_s={np.sum(self.lateral_mpc.periods)!r}')
+                if wrong:
+                    raise ValueError('final MPC vehicle runtime invariant failed: ' + ', '.join(wrong))
             self.get_logger().info(f"[{self.name}] Integrated MPC selected: {config}")
         self.measuring = self._get_param('measure', False)
         self.state_machine_rate = self._get_param('state_machine_rate', 40)
@@ -552,6 +566,9 @@ class ControllerManager(Node):
                 diagnostic = dict(self.controller.mpc_speed_diagnostics)
                 diagnostic.update(stamp_ns=self.get_clock().now().nanoseconds,
                                   state=str(self.state), guarded_speed_mps=float(speed),
+                                  vesc_speed_command_mps=float(speed),
+                                  requested_accel_mps2=float(result.acceleration),
+                                  measured_accel_mps2=float(self.acc_now[0]),
                                   steering_rad=float(self.controller.curr_applied_steering), iterations=int(result.iterations),
                                   solver_ms=float(result.solver_s * 1000),
                                   status=str(result.status))
