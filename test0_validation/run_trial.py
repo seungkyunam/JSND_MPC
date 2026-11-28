@@ -266,10 +266,19 @@ def body_clearance(x, y, yaw, spec):
 
 def run(controller_name, profile_name, scenario_name, output, laps=11, path_refresh_s=None,
         extra_overrides=None, seed=None, obstacle_layout='baseline', local_waypoints=80,
-        plant_max_speed_mps=23250/4614):
+        plant_max_speed_mps=23250/4614, control_rate_hz=50, prediction_s=None):
     kind = 'pp' if controller_name == 'pp' else 'mpc'
     overrides=profile(profile_name); overrides.update(extra_overrides or {})
-    c, params = sim.build(kind, '5p0', overrides, 50)
+    control_rate_hz = int(control_rate_hz)
+    if control_rate_hz <= 0:
+        raise ValueError('control_rate_hz must be positive')
+    if kind == 'mpc' and prediction_s is not None:
+        horizon = int(overrides.get('mpc_horizon', 10))
+        preview_s = float(prediction_s)-1.0/control_rate_hz
+        if horizon < 2 or preview_s <= 0.:
+            raise ValueError('prediction_s must exceed one control period')
+        overrides['mpc_preview_dt'] = preview_s/(horizon-1)
+    c, params = sim.build(kind, '5p0', overrides, control_rate_hz)
     if kind == 'mpc':
         c.mpc_cmd_accel_lead_mps = params['mpc_cmd_accel_lead_mps']
         c.lateral_mpc.set_global_path(sim.GB)
@@ -279,7 +288,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
     obstacles = OBSTACLE_LAYOUTS[obstacle_layout]
     if path_refresh_s is not None: planner.path_refresh_s=float(path_refresh_s)
     planner.last_good_geometry_time=-np.inf
-    dt, wheelbase = .02, .324
+    dt, wheelbase = 1.0/control_rate_hz, .324
     x,y,yaw = map(float, sim.FULL[0,[0,1,6]])
     v = delta = t = total = 0.0
     prev_s = float(c.converter.get_frenet([x],[y])[0,0])
@@ -295,7 +304,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         total += signed_gap(s, prev_s); prev_s = s
         while total >= TRACK_LEN*(len(lap_marks)+1): lap_marks.append(t)
         if len(lap_marks) >= laps: break
-        if cfg['obstacles'] and tick % 5 == 0:
+        if cfg['obstacles'] and tick % max(1, round(.1*control_rate_hz)) == 0:
             measured = [make_obstacle(o,rng,cfg['obstacle_noise']) for o in obstacles]
             if cfg['pose_delay']:
                 obstacle_measurements.append(measured); measured = obstacle_measurements.popleft()
@@ -380,7 +389,8 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         accel_history[1:]=accel_history[:-1]; accel_history[0]=accel
         x+=dt*v*math.cos(yaw); y+=dt*v*math.sin(yaw); yaw+=dt*v*math.tan(delta)/wheelbase
         v=max(0.,v+accel*dt); t=(tick+1)*dt
-        if t > 5.0 and len(rows) >= 250 and max(r['speed'] for r in rows[-250:]) < .1:
+        stop_window = max(1, round(5.0*control_rate_hz))
+        if t > 5.0 and len(rows) >= stop_window and max(r['speed'] for r in rows[-stop_window:]) < .1:
             terminal_stop = True
             break
     output.mkdir(parents=True,exist_ok=False)
@@ -413,7 +423,7 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         max_speed_mps=float(np.max(speeds)) if len(speeds) else None,mean_speed_mps=float(np.mean(speeds)) if len(speeds) else None,
         tracking_rmse_m=float(np.sqrt(np.mean(errors**2))) if len(errors) else None,
         solver_ms={q:(float(np.percentile(solve,p)) if len(solve) else None) for q,p in [('p50',50),('p95',95),('p99',99),('max',100)]},
-        cycle_overrun_pct=float(100*np.mean(elapsed>20)) if len(elapsed) else None,
+        cycle_overrun_pct=float(100*np.mean(elapsed>1000/control_rate_hz)) if len(elapsed) else None,
         solver_failure_pct=float(100*np.mean(failures)) if len(failures) else None,collision_events=events(collision), terminal_stop=terminal_stop,
         stop_events=events(stopped),physical_violation_pct=(float(100*np.mean(np.asarray([r['combined_limit'] for r in rows])[active]>1+1e-6)) if np.any(active) else None),
         avoidance_success_pct=float(100*np.mean([p['success'] for p in passages])) if passages else None,passages=passages,
@@ -421,6 +431,8 @@ def run(controller_name, profile_name, scenario_name, output, laps=11, path_refr
         assumptions=dict(vehicle_length_m=VEHICLE_LENGTH,vehicle_width_m=VEHICLE_WIDTH,obstacle_size_m=OBSTACLE_SIZE,
             obstacle_layout=obstacle_layout, obstacle_placements=obstacles,
             local_waypoints=int(local_waypoints), plant_max_speed_mps=float(plant_max_speed_mps),
+            control_rate_hz=control_rate_hz,
+            prediction_s=(float(np.sum(c.lateral_mpc.periods)) if kind=='mpc' else None),
             planner_input='synthetic tracked Obstacle messages',full_perception_and_ros_state_machine=False,**cfg))
     (output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print(json.dumps(summary)); return 0 if len(lap_marks)==laps else 1
@@ -436,10 +448,13 @@ def main():
     p.add_argument('--obstacle-layout',choices=sorted(OBSTACLE_LAYOUTS),default='baseline')
     p.add_argument('--local-waypoints',type=int,default=80)
     p.add_argument('--plant-max-speed-mps',type=float,default=23250/4614)
+    p.add_argument('--rate',type=int,choices=(25,50,75,100),default=50)
+    p.add_argument('--prediction-s',type=float,default=None)
     p.add_argument('--set',nargs='*',default=[],metavar='KEY=VALUE')
     a=p.parse_args(); extra={}
     for item in a.set:
         key,value=item.split('=',1); extra[key]=yaml.safe_load(value)
     return run(a.controller,a.profile,a.scenario,a.output,a.laps,a.path_refresh_s,
-               extra,a.seed,a.obstacle_layout,a.local_waypoints,a.plant_max_speed_mps)
+               extra,a.seed,a.obstacle_layout,a.local_waypoints,a.plant_max_speed_mps,
+               a.rate,a.prediction_s)
 if __name__=='__main__': raise SystemExit(main())

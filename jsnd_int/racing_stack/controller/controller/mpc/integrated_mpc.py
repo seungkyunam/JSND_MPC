@@ -142,10 +142,11 @@ class IntegratedMPC:
     ACCEPT_VERIFIED_INEXACT = True
     ACCEPT_VERIFIED_LATE = True   # step 34: verified solve late vs deadline but within dt is served
     INEXACT_STATUSES = ('solved inaccurate', 'maximum iterations reached', 'run time limit reached')
-    # Step 49: 5 -> 10 consecutive ticks (200 ms at 50 Hz; the plan spans 0.57 s). Real car 16:14:
+    # Step 49: up to 200 ms (10 ticks at 50 Hz). Real car 16:14:
     # 14 deadline_exceeded + 7 osqp STOPs in 42 s, clustered in hairpin braking where the CPU
     # misses come in bursts longer than 5 ticks. Every served tick is still re-verified.
-    MAX_CONTINUATION_TICKS = 10
+    MAX_CONTINUATION_S = .2
+    MAX_CONTINUATION_TICKS = 10  # legacy 50 Hz test/API alias; runtime uses seconds
     # Step 48: speed 0.30 -> 0.50 m/s. The plan assumes v follows a instantly; the real VESC
     # speed loop lags the setpoint by up to mpc_cmd_max_lead (0.5, cmd-meas p90 0.48 on the car),
     # so every compute miss during accel/braking was refused -> STOP -> soft-stop decel ramp.
@@ -495,7 +496,7 @@ class IntegratedMPC:
     def _continue_plan(self, state, previous_steering, reason, started):
         """Serve the next stage of the last verified plan for a compute-budget miss.
 
-        Bounded (MAX_CONTINUATION_TICKS), and only while the measured state still
+        Bounded by MAX_CONTINUATION_S, and only while the measured state still
         matches what that plan predicted for this instant. The command is re-limited
         against the current steering (rate), the plan's steering bound and verified
         stage speed cap, and the lateral-acceleration limit; any miss -> None (STOP).
@@ -503,7 +504,8 @@ class IntegratedMPC:
         The status stays visible as 'plan_continuation:<reason>'.
         """
         c, plan = self.config, self.plan
-        if plan is None or self.continuation >= self.MAX_CONTINUATION_TICKS:
+        max_continuation_ticks = max(1, round(self.MAX_CONTINUATION_S/c.dt))
+        if plan is None or self.continuation >= max_continuation_ticks:
             return None
         try:
             state = np.asarray(state, float)
@@ -511,7 +513,7 @@ class IntegratedMPC:
             if state.shape != (4,) or not np.isfinite(state).all() or state[3] < 0 or not np.isfinite(prev) or abs(prev) > c.max_steer:
                 return None
             age = perf_counter()-plan['started']
-            if age > (self.MAX_CONTINUATION_TICKS+1)*c.dt:
+            if age > self.MAX_CONTINUATION_S+c.dt:
                 return None
             t = max((self.continuation+1)*c.dt, age)
             stage = int(np.searchsorted(self.node_times, t, 'right'))-1

@@ -307,7 +307,8 @@ class Controller:
             # gradually instead of 1.2 -> 0.5 in one tick (0.7 m/s setpoint drop at corner
             # exit). Plan peak / max_speed caps below still bound the command; any
             # decelerating tick or other status drops to the 0.5 lead immediately.
-            lead = max(lead, self.mpc_cmd_lead - self.ACCEL_LEAD_RAMP_PER_TICK_MPS)
+            lead = max(lead, self.mpc_cmd_lead
+                       - self.ACCEL_LEAD_RAMP_MPS2 * self.lateral_mpc.config.dt)
         self.mpc_cmd_lead = lead
         upper = min(float(np.max(result.predicted[:, 3])), measured + lead,
                     self.lateral_mpc.config.max_speed)  # hard cap: remove solver tolerance
@@ -332,7 +333,9 @@ class Controller:
     # 1.2 -> 0.5 for one tick = 0.7 m/s command drop (hesitation). Real braking inside the
     # horizon (>= 0.2 m/s in the bag) still counts as braking.
     ACCEL_LEAD_PLAN_DROP_TOL_MPS = 0.05
-    ACCEL_LEAD_RAMP_PER_TICK_MPS = 0.05  # 1.2 -> 0.5 lead over ~14 ticks (~0.3 s)
+    # 0.05 m/s per tick at the original 50 Hz, expressed per second so changing
+    # controller frequency does not change the physical acceleration ramp.
+    ACCEL_LEAD_RAMP_MPS2 = 2.5
 
     @classmethod
     def _plan_never_brakes(cls, speeds):
